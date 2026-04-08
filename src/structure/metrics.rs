@@ -624,6 +624,27 @@ mod tests {
     }
 
     #[test]
+    fn test_dms_pas_sos_interleaved_odd_length_input() {
+        let mut metrics = StructureSimilarityMetrics::new();
+        metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(
+            &[
+                [0.0_f32, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+            &[
+                [0.0_f32, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+        );
+
+        assert_eq!(metrics.dms, 0.0);
+        assert_eq!(metrics.pas, 0.0);
+        assert_eq!(metrics.sos, 0.0);
+    }
+
+    #[test]
     fn test_metrics_calculate_all_with_identical() {
         let coords = vec![
             [0.0, 0.0, 0.0],

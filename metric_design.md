@@ -18,7 +18,7 @@ These metrics are computed in existing structure modules (primarily
 For two aligned motifs with Cα coordinates \(Q\) and \(H\):
 
 \[
-s(i,j)=\max\left(0,1-\frac{|d_Q(i,j)-d_H(i,j)|}{D_{TOL}}\right),\quad D_{TOL}=2.0\AA
+s(i,j)=\max\left(0,1-\frac{|d_Q(i,j)-d_H(i,j)|}{D_{TOL}}\right),\quad D_{TOL}=2.0\ \text{Å}
 \]
 
 \[
