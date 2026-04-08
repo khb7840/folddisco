@@ -35,9 +35,16 @@ libc = "0.2.155"
 dashmap = { version = "6.1.0", features = ["rayon"] }
 
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
 [build-dependencies]
 bindgen = { version = "0.69.4", optional = true }
 cmake = { version = "0.1.50", optional = true }
+
+[[bench]]
+name = "metric_benchmark"
+harness = false
 
 
 [features]
