@@ -110,6 +110,9 @@ fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
     dist_sq_as_f64(a, b).sqrt() as f32
 }
 
+/// Distance tolerance (Å) for the Distance Matrix Score (DMS).
+pub const D_TOL: f32 = 2.0;
+
 /// TM-score normalization function for final evaluation
 /// d0(L) = 1.24 * (L - 15)^(1/3) - 1.8 for L > 19
 /// d0(L) = 0.5 for L <= 21
@@ -272,6 +275,109 @@ pub fn rmsd(distances: &PrecomputedDistances) -> f32 {
     ((sum_sq / distances.n as f64).sqrt()) as f32
 }
 
+/// Distance Matrix Score (DMS) on Cα coordinates.
+///
+/// Returns 1.0 for N < 2.
+pub fn distance_matrix_score(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> f32 {
+    let n = reference_coords.len().min(coords.len());
+    if n < 2 {
+        return 1.0;
+    }
+    let total_pairs = n * (n - 1) / 2;
+    let mut sum = 0.0_f32;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let d_ref = dist(reference_coords[i], reference_coords[j]);
+            let d_model = dist(coords[i], coords[j]);
+            let diff = (d_ref - d_model).abs();
+            sum += (1.0 - diff / D_TOL).max(0.0);
+        }
+    }
+    sum / total_pairs as f32
+}
+
+#[inline]
+fn pseudo_bond_angle(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
+    let v1 = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let v2 = [c[0] - b[0], c[1] - b[1], c[2] - b[2]];
+    let dot = v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
+    let len1 = (v1[0] * v1[0] + v1[1] * v1[1] + v1[2] * v1[2]).sqrt();
+    let len2 = (v2[0] * v2[0] + v2[1] * v2[1] + v2[2] * v2[2]).sqrt();
+    if len1 < 1e-6 || len2 < 1e-6 {
+        return 0.0;
+    }
+    (dot / (len1 * len2)).clamp(-1.0, 1.0).acos()
+}
+
+/// Pseudo-Bond Angle Score (PAS) on Cα coordinates.
+///
+/// Returns 1.0 for N < 3.
+pub fn pseudo_bond_angle_score(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> f32 {
+    let n = reference_coords.len().min(coords.len());
+    if n < 3 {
+        return 1.0;
+    }
+    let count = n - 2;
+    let sum: f32 = (0..count)
+        .map(|k| {
+            let theta_ref = pseudo_bond_angle(reference_coords[k], reference_coords[k + 1], reference_coords[k + 2]);
+            let theta_model = pseudo_bond_angle(coords[k], coords[k + 1], coords[k + 2]);
+            let delta = theta_ref - theta_model;
+            (1.0 + delta.cos()) / 2.0
+        })
+        .sum();
+    sum / count as f32
+}
+
+#[inline]
+fn cb_direction(ca: [f32; 3], cb: [f32; 3]) -> Option<[f32; 3]> {
+    let dx = cb[0] - ca[0];
+    let dy = cb[1] - ca[1];
+    let dz = cb[2] - ca[2];
+    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    if len < 1e-6 {
+        None
+    } else {
+        Some([dx / len, dy / len, dz / len])
+    }
+}
+
+/// Side-chain Orientation Score (SOS) using Cα/Cβ vectors.
+///
+/// Returns 1.0 when no valid residue pair exists.
+pub fn side_chain_orientation_score(
+    reference_ca: &[[f32; 3]],
+    coords_ca: &[[f32; 3]],
+    reference_cb: &[[f32; 3]],
+    coords_cb: &[[f32; 3]],
+) -> f32 {
+    let n = reference_ca
+        .len()
+        .min(coords_ca.len())
+        .min(reference_cb.len())
+        .min(coords_cb.len());
+    if n == 0 {
+        return 1.0;
+    }
+    let mut sum = 0.0_f32;
+    let mut count = 0usize;
+    for i in 0..n {
+        if let (Some(d_ref), Some(d_model)) = (
+            cb_direction(reference_ca[i], reference_cb[i]),
+            cb_direction(coords_ca[i], coords_cb[i]),
+        ) {
+            let cos_sim = d_ref[0] * d_model[0] + d_ref[1] * d_model[1] + d_ref[2] * d_model[2];
+            sum += (1.0 + cos_sim.clamp(-1.0, 1.0)) / 2.0;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        1.0
+    } else {
+        sum / count as f32
+    }
+}
+
 
 /// Structure similarity metrics calculator
 #[derive(Debug, Clone, Default, PartialEq, Copy)]
@@ -279,6 +385,9 @@ pub struct StructureSimilarityMetrics {
     pub tm_score: f32,
     pub gdt_ts: f32,
     pub gdt_ha: f32,
+    pub dms: f32,
+    pub pas: f32,
+    pub sos: f32,
     pub chamfer_distance: f32,
     pub hausdorff_distance: f32,
 }
@@ -301,6 +410,9 @@ impl StructureSimilarityMetrics {
             tm_score: 0.0,
             gdt_ts: 0.0,
             gdt_ha: 0.0,
+            dms: 0.0,
+            pas: 0.0,
+            sos: 0.0,
             chamfer_distance: 0.0,
             hausdorff_distance: 0.0,
         }
@@ -326,12 +438,63 @@ impl StructureSimilarityMetrics {
         hausdorff_distance(precomputed)
     }
 
+    pub fn calculate_dms(&self, reference_ca: &[[f32; 3]], coords_ca: &[[f32; 3]]) -> f32 {
+        distance_matrix_score(reference_ca, coords_ca)
+    }
+
+    pub fn calculate_pas(&self, reference_ca: &[[f32; 3]], coords_ca: &[[f32; 3]]) -> f32 {
+        pseudo_bond_angle_score(reference_ca, coords_ca)
+    }
+
+    pub fn calculate_sos(
+        &self,
+        reference_ca: &[[f32; 3]],
+        coords_ca: &[[f32; 3]],
+        reference_cb: &[[f32; 3]],
+        coords_cb: &[[f32; 3]],
+    ) -> f32 {
+        side_chain_orientation_score(reference_ca, coords_ca, reference_cb, coords_cb)
+    }
+
     pub fn calculate_all(&mut self, precomputed: &PrecomputedDistances) {
         self.tm_score = self.calculate_tm_score(precomputed);
         self.gdt_ts = self.calculate_gdt_ts(precomputed);
         self.gdt_ha = self.calculate_gdt_ha(precomputed);
         self.chamfer_distance = self.calculate_chamfer_distance(precomputed);
         self.hausdorff_distance = self.calculate_hausdorff_distance(precomputed);
+    }
+
+    /// Calculate DMS/PAS/SOS from interleaved [CA, CB, CA, CB, ...] coordinates.
+    pub fn calculate_dms_pas_sos_from_interleaved_ca_cb(
+        &mut self,
+        reference_coords: &[[f32; 3]],
+        coords: &[[f32; 3]],
+    ) {
+        if reference_coords.is_empty()
+            || reference_coords.len() != coords.len()
+            || reference_coords.len() % 2 != 0
+        {
+            self.dms = 0.0;
+            self.pas = 0.0;
+            self.sos = 0.0;
+            return;
+        }
+
+        let mut reference_ca = Vec::with_capacity(reference_coords.len() / 2);
+        let mut reference_cb = Vec::with_capacity(reference_coords.len() / 2);
+        let mut coords_ca = Vec::with_capacity(coords.len() / 2);
+        let mut coords_cb = Vec::with_capacity(coords.len() / 2);
+
+        for i in (0..reference_coords.len()).step_by(2) {
+            reference_ca.push(reference_coords[i]);
+            reference_cb.push(reference_coords[i + 1]);
+            coords_ca.push(coords[i]);
+            coords_cb.push(coords[i + 1]);
+        }
+
+        self.dms = self.calculate_dms(&reference_ca, &coords_ca);
+        self.pas = self.calculate_pas(&reference_ca, &coords_ca);
+        self.sos = self.calculate_sos(&reference_ca, &coords_ca, &reference_cb, &coords_cb);
     }
     
     /// Print metrics in a formatted way
@@ -340,6 +503,9 @@ impl StructureSimilarityMetrics {
         println!("  TM-score:           {:.4}", self.tm_score);
         println!("  GDT-TS:             {:.4}", self.gdt_ts);
         println!("  GDT-HA:             {:.4}", self.gdt_ha);
+        println!("  DMS:                {:.4}", self.dms);
+        println!("  PAS:                {:.4}", self.pas);
+        println!("  SOS:                {:.4}", self.sos);
         println!("  Chamfer Distance:   {:.4} Å", self.chamfer_distance);
         println!("  Hausdorff Distance: {:.4} Å", self.hausdorff_distance);
     }
@@ -350,10 +516,13 @@ impl fmt::Display for StructureSimilarityMetrics {
         // Print all metrics in a tab-separated format with 4 decimal places
         write!(
             f,
-            "{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
+            "{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
             self.tm_score,
             self.gdt_ts,
             self.gdt_ha,
+            self.dms,
+            self.pas,
+            self.sos,
             self.chamfer_distance,
             self.hausdorff_distance
         )

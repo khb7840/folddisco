@@ -769,6 +769,22 @@ pub fn rmsd_with_calpha_and_rottran(
     let target_calpha: Vec<Coordinate> = index2.iter().map(
         |&i| compact2.ca_vector.get_coord(i).unwrap()
     ).collect();
+
+    fn compute_similarity_metrics(
+        reference_coords: &Option<Vec<[f32; 3]>>,
+        transformed_coords: &Option<Vec<[f32; 3]>>,
+    ) -> StructureSimilarityMetrics {
+        match (reference_coords, transformed_coords) {
+            (Some(ref_coords), Some(trans_coords)) => {
+                let precomputed_distances = PrecomputedDistances::new(ref_coords, trans_coords);
+                let mut metrics = StructureSimilarityMetrics::new();
+                metrics.calculate_all(&precomputed_distances);
+                metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(ref_coords, trans_coords);
+                metrics
+            }
+            _ => StructureSimilarityMetrics::new(),
+        }
+    }
     
     match lms {
         true => {
@@ -778,17 +794,10 @@ pub fn rmsd_with_calpha_and_rottran(
                 superposer.run();
 
                 // Calculate target metrics
-                let target_metrics = match (&superposer.reference_coords, &superposer.transformed_coords) {
-                    (Some(ref_coords), Some(trans_coords)) => {
-                        let precomputed_distances = PrecomputedDistances::new(
-                            &ref_coords, &trans_coords
-                        );
-                        let mut metrics = StructureSimilarityMetrics::new();
-                        metrics.calculate_all(&precomputed_distances);
-                        metrics
-                    },
-                    _ => StructureSimilarityMetrics::new(),
-                };
+                let target_metrics = compute_similarity_metrics(
+                    &superposer.reference_coords,
+                    &superposer.transformed_coords,
+                );
 
                 (superposer.get_rms(), superposer.rot.unwrap(), superposer.tran.unwrap(), target_calpha, target_metrics)
             } else {
@@ -797,17 +806,10 @@ pub fn rmsd_with_calpha_and_rottran(
                 superposer.run();
                 
                 // Calculate target metrics
-                let target_metrics = match (&superposer.reference_coords, &superposer.transformed_coords) {
-                    (Some(ref_coords), Some(trans_coords)) => {
-                        let precomputed_distances = PrecomputedDistances::new(
-                            &ref_coords, &trans_coords
-                        );
-                        let mut metrics = StructureSimilarityMetrics::new();
-                        metrics.calculate_all(&precomputed_distances);
-                        metrics
-                    },
-                    _ => StructureSimilarityMetrics::new(),
-                };
+                let target_metrics = compute_similarity_metrics(
+                    &superposer.reference_coords,
+                    &superposer.transformed_coords,
+                );
                 
                 (superposer.get_rms_inliers(), superposer.rot.unwrap(), superposer.tran.unwrap(), target_calpha, target_metrics)
             }
@@ -817,17 +819,10 @@ pub fn rmsd_with_calpha_and_rottran(
             superposer.set_atoms(&coord_vec1, &coord_vec2);
             superposer.run();
             // Calculate target metrics
-            let target_metrics = match (&superposer.reference_coords, &superposer.transformed_coords) {
-                (Some(ref_coords), Some(trans_coords)) => {
-                    let precomputed_distances = PrecomputedDistances::new(
-                        &ref_coords, &trans_coords
-                    );
-                    let mut metrics = StructureSimilarityMetrics::new();
-                    metrics.calculate_all(&precomputed_distances);
-                    metrics
-                },
-                _ => StructureSimilarityMetrics::new(),
-            };
+            let target_metrics = compute_similarity_metrics(
+                &superposer.reference_coords,
+                &superposer.transformed_coords,
+            );
             (superposer.get_rms(), superposer.rot.unwrap(), superposer.tran.unwrap(), target_calpha, target_metrics)
         }
     }
