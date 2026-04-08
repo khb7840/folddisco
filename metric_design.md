@@ -1,116 +1,77 @@
-# GRAMS: Geometric Alignment Motif Score
+# Structural Metric Design: DMS, PAS, SOS
 
 ## Overview
 
-GRAMS is a fully geometry-focused composite ranking metric for structural motif
-search results in folddisco.  It scores hits using only Cα coordinates — no
-sequence identity or residue type information is needed.
+The current motif quality design is based on three explicit geometry metrics:
 
----
+- **DMS** (Distance Matrix Score): pairwise Cα distance consistency
+- **PAS** (Pseudo-Bond Angle Score): local Cα backbone curvature consistency
+- **SOS** (Side-chain Orientation Score): Cα→Cβ orientation consistency
 
-## Three Candidate Metric Concepts (Geometry-Focused)
+These metrics are computed in existing structure modules (primarily
+`src/structure/metrics.rs`) and propagated through retrieval/sorting/output.
 
-### Concept 1 — GRAMS with TM + DMS + PAS (selected)
+## Definitions
 
-**Theory**: Combines three complementary, purely geometric quality measures:
-global backbone quality (TM-score), internal distance-matrix consistency (DMS),
-and local backbone curvature agreement (PAS).
+### 1) DMS — Distance Matrix Score
 
-**Mathematical formulation**:
+For two aligned motifs with Cα coordinates \(Q\) and \(H\):
 
-```
-GRAMS(Q, H) = α · TM(Q, H) + β · DMS(Q, H) + γ · PAS(Q, H)
-```
+\[
+s(i,j)=\max\left(0,1-\frac{|d_Q(i,j)-d_H(i,j)|}{D_{TOL}}\right),\quad D_{TOL}=2.0\AA
+\]
 
-where
+\[
+DMS(Q,H)=\frac{1}{\binom{N}{2}}\sum_{i<j}s(i,j)
+\]
 
-| Symbol | Description |
-|--------|-------------|
-| `TM(Q, H)` | TM-score computed from post-superimposition Cα distances |
-| `DMS(Q, H)` | Distance Matrix Score: pairwise Cα distance agreement |
-| `PAS(Q, H)` | Pseudo-Bond Angle Score: Cα-Cα-Cα bond-angle agreement |
-| α, β, γ | Non-negative weights with α+β+γ = 1 (defaults: 0.5, 0.3, 0.2) |
+- Range: \([0,1]\)
+- Complexity: \(O(N^2)\)
 
-**DMS**:
+### 2) PAS — Pseudo-Bond Angle Score
 
-```
-s(i,j) = max(0, 1 − |d_Q(i,j) − d_H(i,j)| / D_TOL)     D_TOL = 2.0 Å
-DMS(Q, H) = (1 / C(N,2)) · Σ_{i<j} s(i,j)
-```
+\[
+PAS(Q,H)=\frac{1}{N-2}\sum_{k=0}^{N-3}\frac{1+\cos(\theta^Q_k-\theta^H_k)}{2}
+\]
 
-**PAS**:
+where \(\theta_k\) is the angle formed by \((C\alpha_k, C\alpha_{k+1}, C\alpha_{k+2})\).
 
-```
-PAS(Q, H) = (1/(N−2)) · Σ_{k=0}^{N−3} (1 + cos(θ_Q_k − θ_H_k)) / 2
-```
+- Range: \([0,1]\)
+- Complexity: \(O(N)\)
 
-where θ_k is the angle at Cα_{k+1} formed by the triplet (Cα_k, Cα_{k+1}, Cα_{k+2}).
+### 3) SOS — Side-chain Orientation Score
 
-**Time complexity**: TM and PAS are O(N); DMS is O(N²).
-For small motifs (N ≤ 10) common in folddisco, N² ≤ 45 distance evaluations.
+Using unit vectors \(u_i=\widehat{C\beta_i-C\alpha_i}\):
 
----
+\[
+SOS(Q,H)=\frac{1}{M}\sum_{i\in valid}\frac{1+\left(u^Q_i\cdot u^H_i\right)}{2}
+\]
 
-### Concept 2 — Torsion-Angle Profile Similarity
+where `valid` residues have non-degenerate Cα→Cβ vectors in both motifs.
 
-**Theory**: For each consecutive pair of backbone Cα positions, derive a
-pseudo-torsion angle from four successive Cα atoms and compare the resulting
-torsion-angle profiles between query and hit.
+- Range: \([0,1]\)
+- Complexity: \(O(N)\)
 
-**Mathematical formulation**:
+## Input conventions
 
-```
-TAPS(Q, H) = (1/(N−3)) · Σ_{k=0}^{N−4} (1 + cos(τ_Q_k − τ_H_k)) / 2
-```
+- DMS and PAS operate on aligned Cα coordinate arrays.
+- SOS operates on aligned Cα and Cβ arrays.
+- In retrieval, DMS/PAS/SOS are computed from interleaved `[CA, CB, ...]` pairs via
+  `StructureSimilarityMetrics::calculate_dms_pas_sos_from_interleaved_ca_cb`.
 
-where τ_k is the torsion angle of the quadruple (Cα_k, Cα_{k+1}, Cα_{k+2}, Cα_{k+3}).
+## Edge-case policy
 
-**Limitation**: Requires N ≥ 4; carries less information for very short motifs
-(3–4 residues) where only 0–1 torsion angles are available.
+- Empty/mismatched coordinates in retrieval-level interleaved computation:
+  DMS = PAS = SOS = 0.0.
+- Direct standalone functions:
+  - DMS returns 1.0 for \(N < 2\)
+  - PAS returns 1.0 for \(N < 3\)
+  - SOS returns 1.0 when no valid orientation vectors exist
 
----
+## Integration status
 
-### Concept 3 — Voronoi-Weighted Shape Descriptor
-
-**Theory**: Tessellate the motif Cα point cloud and compare normalised Voronoi
-cell volumes between query and hit as a rotation/translation-invariant shape
-descriptor.
-
-**Limitation**: Computing Voronoi tessellations in 3D requires additional
-algorithmic complexity and a third-party crate (e.g. `voro-rs`), conflicting
-with the constraint against heavy external dependencies.
-
----
-
-## Rationale for Selecting GRAMS (Concept 1)
-
-1. **Purely geometric**: All three terms depend only on Cα coordinates; no
-   sequence information or residue type tables are consulted.
-2. **Complementary coverage**: TM captures global alignment quality; DMS detects
-   distortion of the internal distance geometry; PAS flags incorrect local
-   backbone curvature.
-3. **Normalisation**: Every term is independently bounded in [0, 1], making scores
-   directly comparable across motifs of different sizes.
-4. **Computational efficiency**: O(N²) at most — negligible for motifs of size ≤ 10.
-5. **Pure Rust**: No C bindings, no external ML runtimes.
-
----
-
-## Inputs
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `ref_ca` | `&[[f32; 3]]` | Query Cα coordinates (post-superimposition, Å) |
-| `model_ca` | `&[[f32; 3]]` | Hit Cα coordinates (post-superimposition, Å) |
-| `weights` | `GramsWeights` | tm, distance, angle weights (auto-normalised) |
-
-## Edge Cases
-
-| Scenario | Handling |
-|----------|----------|
-| N = 0 | Returns 0.0 |
-| Length mismatch | Returns 0.0 |
-| N = 1 | DMS = 1.0, PAS = 1.0 (no pairs/triplets); TM uses d₀ = 0.5 |
-| N = 2 | PAS = 1.0 (no triplets); DMS and TM computed normally |
-| Coincident atoms | `pseudo_bond_angle` returns 0.0 (degenerate check) |
-| NaN coordinates | Propagates; guarded by `clamp(-1,1)` in acos call |
+- **Computation**: `src/structure/metrics.rs`
+- **Retrieval path wiring**: `src/controller/retrieve.rs`
+- **Sorting keys**: `src/controller/sort.rs` (`dms`, `pas`, `sos`)
+- **Result columns**: `src/controller/result.rs` (`dms`, `pas`, `sos`)
+- **CLI help text**: `src/cli/workflows/query_pdb.rs`

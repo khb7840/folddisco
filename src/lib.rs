@@ -7,7 +7,6 @@ pub mod cli;
 pub mod controller;
 pub mod geometry;
 pub mod index;
-pub mod ranking;
 pub mod structure;
 pub mod utils;
 

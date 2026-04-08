@@ -538,6 +538,92 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_dms_pas_sos_identical() {
+        let ca = vec![
+            [0.0_f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [3.0, 1.0, 1.0],
+        ];
+        let cb = vec![
+            [0.0_f32, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [3.0, 2.0, 1.0],
+        ];
+
+        assert!((distance_matrix_score(&ca, &ca) - 1.0).abs() < 1e-6);
+        assert!((pseudo_bond_angle_score(&ca, &ca) - 1.0).abs() < 1e-6);
+        assert!((side_chain_orientation_score(&ca, &ca, &cb, &cb) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dms_pas_sos_ranges() {
+        let ca_ref = vec![
+            [0.0_f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ];
+        let ca_model = vec![
+            [0.0_f32, 0.0, 0.0],
+            [0.5, 1.0, 0.0],
+            [1.5, -1.0, 0.0],
+            [3.5, 0.0, 0.5],
+        ];
+        let cb_ref = vec![
+            [0.0_f32, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [3.0, 1.0, 0.0],
+        ];
+        let cb_model = vec![
+            [0.0_f32, -1.0, 0.0],
+            [0.5, 2.0, 0.0],
+            [1.5, -2.0, 0.0],
+            [3.5, -1.0, 0.5],
+        ];
+
+        let dms = distance_matrix_score(&ca_ref, &ca_model);
+        let pas = pseudo_bond_angle_score(&ca_ref, &ca_model);
+        let sos = side_chain_orientation_score(&ca_ref, &ca_model, &cb_ref, &cb_model);
+
+        assert!((0.0..=1.0).contains(&dms));
+        assert!((0.0..=1.0).contains(&pas));
+        assert!((0.0..=1.0).contains(&sos));
+    }
+
+    #[test]
+    fn test_dms_pas_sos_interleaved_input() {
+        let interleaved_ref = vec![
+            [0.0_f32, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [2.0, 2.0, 0.0],
+        ];
+        let interleaved_model = interleaved_ref.clone();
+
+        let mut metrics = StructureSimilarityMetrics::new();
+        metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(&interleaved_ref, &interleaved_model);
+
+        assert!((metrics.dms - 1.0).abs() < 1e-6);
+        assert!((metrics.pas - 1.0).abs() < 1e-6);
+        assert!((metrics.sos - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dms_pas_sos_interleaved_invalid_input() {
+        let mut metrics = StructureSimilarityMetrics::new();
+        metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(&[[0.0, 0.0, 0.0]], &[[0.0, 0.0, 0.0]]);
+
+        assert_eq!(metrics.dms, 0.0);
+        assert_eq!(metrics.pas, 0.0);
+        assert_eq!(metrics.sos, 0.0);
+    }
+
+    #[test]
     fn test_metrics_calculate_all_with_identical() {
         let coords = vec![
             [0.0, 0.0, 0.0],
