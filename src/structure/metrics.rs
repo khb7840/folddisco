@@ -277,7 +277,8 @@ pub fn rmsd(distances: &PrecomputedDistances) -> f32 {
 
 /// Distance Matrix Score (DMS) on Cα coordinates.
 ///
-/// Returns 1.0 for N < 2.
+/// Returns 1.0 for N < 2, treating underspecified motifs as a neutral/perfect
+/// agreement case because no pairwise distance disagreement can be measured.
 pub fn distance_matrix_score(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> f32 {
     let n = reference_coords.len().min(coords.len());
     if n < 2 {
@@ -311,7 +312,8 @@ fn pseudo_bond_angle(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
 
 /// Pseudo-Bond Angle Score (PAS) on Cα coordinates.
 ///
-/// Returns 1.0 for N < 3.
+/// Returns 1.0 for N < 3, treating underspecified motifs as a neutral/perfect
+/// agreement case because no pseudo-bond angle disagreement can be measured.
 pub fn pseudo_bond_angle_score(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> f32 {
     let n = reference_coords.len().min(coords.len());
     if n < 3 {
@@ -344,7 +346,7 @@ fn cb_direction(ca: [f32; 3], cb: [f32; 3]) -> Option<[f32; 3]> {
 
 /// Side-chain Orientation Score (SOS) using Cα/Cβ vectors.
 ///
-/// Returns 1.0 when no valid residue pair exists.
+/// Returns 1.0 when no valid residues exist for orientation comparison.
 pub fn side_chain_orientation_score(
     reference_ca: &[[f32; 3]],
     coords_ca: &[[f32; 3]],

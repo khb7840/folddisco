@@ -753,6 +753,22 @@ pub fn rmsd_for_matched(
     }
 }
 
+fn compute_similarity_metrics(
+    reference_coords: &Option<Vec<[f32; 3]>>,
+    transformed_coords: &Option<Vec<[f32; 3]>>,
+) -> StructureSimilarityMetrics {
+    match (reference_coords, transformed_coords) {
+        (Some(ref_coords), Some(trans_coords)) => {
+            let precomputed_distances = PrecomputedDistances::new(ref_coords, trans_coords);
+            let mut metrics = StructureSimilarityMetrics::new();
+            metrics.calculate_all(&precomputed_distances);
+            metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(ref_coords, trans_coords);
+            metrics
+        }
+        _ => StructureSimilarityMetrics::new(),
+    }
+}
+
 pub fn rmsd_with_calpha_and_rottran(
     compact1: &CompactStructure, compact2: &CompactStructure, 
     index1: &Vec<usize>, index2: &Vec<usize>, lms: bool
@@ -770,22 +786,6 @@ pub fn rmsd_with_calpha_and_rottran(
         |&i| compact2.ca_vector.get_coord(i).unwrap()
     ).collect();
 
-    fn compute_similarity_metrics(
-        reference_coords: &Option<Vec<[f32; 3]>>,
-        transformed_coords: &Option<Vec<[f32; 3]>>,
-    ) -> StructureSimilarityMetrics {
-        match (reference_coords, transformed_coords) {
-            (Some(ref_coords), Some(trans_coords)) => {
-                let precomputed_distances = PrecomputedDistances::new(ref_coords, trans_coords);
-                let mut metrics = StructureSimilarityMetrics::new();
-                metrics.calculate_all(&precomputed_distances);
-                metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(ref_coords, trans_coords);
-                metrics
-            }
-            _ => StructureSimilarityMetrics::new(),
-        }
-    }
-    
     match lms {
         true => {
             if index1.len() <= 3 {
