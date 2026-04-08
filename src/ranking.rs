@@ -1,12 +1,13 @@
 //! # GRAMS: Geometric Alignment Motif Score
 //!
 //! A fully geometry-focused composite ranking metric for structural motif search
-//! results in folddisco.
+//! results in folddisco.  Uses both Cα (backbone) and Cβ (side-chain orientation)
+//! coordinates, mirroring folddisco's own pairwise feature representation.
 //!
 //! ## Mathematical Formulation
 //!
 //! ```text
-//! GRAMS(Q, H) = α · TM(Q, H) + β · DMS(Q, H) + γ · PAS(Q, H)
+//! GRAMS(Q, H) = α·TM(Q,H) + β·DMS(Q,H) + γ·PAS(Q,H) + δ·SOS(Q,H)
 //! ```
 //!
 //! | Term | Description |
@@ -14,12 +15,13 @@
 //! | `TM(Q, H)` | TM-score over post-superimposition Cα distances |
 //! | `DMS(Q, H)` | Distance Matrix Score: agreement of all-pairs inter-residue Cα distances |
 //! | `PAS(Q, H)` | Pseudo-Bond Angle Score: agreement of Cα-Cα-Cα pseudo-bond angles |
-//! | α, β, γ | Non-negative weights summing to 1 (defaults: 0.5, 0.3, 0.2) |
+//! | `SOS(Q, H)` | Side-chain Orientation Score: cosine similarity of per-residue Cβ−Cα unit vectors |
+//! | α, β, γ, δ | Non-negative weights summing to 1 (defaults: 0.4, 0.2, 0.15, 0.25) |
 //!
-//! All three terms are independently bounded in **[0, 1]**, so GRAMS ∈ [0, 1].
-//! Higher scores indicate better structural agreement.
+//! All four terms are independently bounded in **[0, 1]**, so GRAMS ∈ [0, 1].
+//! Higher scores indicate better structural and side-chain agreement.
 //!
-//! ## Why these three terms?
+//! ## Why these four terms?
 //!
 //! - **TM-score** evaluates global Cα backbone quality after superimposition, using a
 //!   length-dependent normalization that is robust to outlier residues.
@@ -29,16 +31,24 @@
 //!   tolerance similar in spirit to lDDT.
 //! - **PAS** measures local backbone bend geometry via Cα pseudo-bond angles.  A
 //!   motif with correct Cα positions but locally wrong curvature scores lower here.
+//! - **SOS** directly mirrors how folddisco builds its pairwise geometric features:
+//!   the Cβ−Cα direction vector encodes side-chain orientation without requiring any
+//!   residue-type information.  Two motifs that superimpose well but whose side-chains
+//!   point in opposite directions will receive a lower SOS.
 //!
-//! Together the three terms penalise global misalignment (TM), internal distance
-//! distortion (DMS), and local backbone topology errors (PAS) — all purely from Cα
-//! coordinates, with no reliance on sequence identity.
+//! ## Graceful Cβ Fallback
+//!
+//! Cβ coordinates are passed as `Option<&[[f32; 3]]>`.  When Cβ is unavailable
+//! (e.g. coordinates not yet computed), the orientation weight δ is redistributed
+//! proportionally among the remaining three terms so GRAMS degrades gracefully to
+//! the three-term Cα-only formula.
 //!
 //! ## Time Complexity
 //!
 //! - TM-score: **O(N)**
 //! - DMS: **O(N²)**
 //! - PAS: **O(N)**
+//! - SOS: **O(N)**
 //!
 //! For small motifs (N ≤ 10) common in folddisco, the N² DMS term is negligible
 //! (at most 45 distance evaluations per hit).
@@ -48,9 +58,10 @@
 //! ```rust
 //! use folddisco::ranking::{grams_score, GramsWeights};
 //!
-//! // Identical structures → GRAMS ≈ 1.0
-//! let coords = vec![[1.0_f32, 0.0, 0.0], [4.0, 0.0, 0.0], [7.0, 0.0, 0.0]];
-//! let score = grams_score(&coords, &coords, GramsWeights::default());
+//! // Identical structures with Cβ provided → GRAMS ≈ 1.0
+//! let ca = vec![[0.0_f32, 0.0, 0.0], [4.0, 0.0, 0.0], [8.0, 0.0, 0.0]];
+//! let cb = vec![[0.0_f32, 1.5, 0.0], [4.0, 1.5, 0.0], [8.0, 1.5, 0.0]];
+//! let score = grams_score(&ca, &ca, Some(&cb), Some(&cb), GramsWeights::default());
 //! assert!((score - 1.0_f32).abs() < 1e-4, "Expected ~1.0, got {score}");
 //! ```
 
@@ -172,30 +183,116 @@ pub fn pseudo_bond_angle_score(ref_ca: &[[f32; 3]], model_ca: &[[f32; 3]]) -> f3
 }
 
 // ---------------------------------------------------------------------------
+// Side-chain Orientation Score (SOS)
+// ---------------------------------------------------------------------------
+
+/// Compute the unit Cβ−Cα direction vector for a single residue.
+///
+/// Returns `None` if `cb` and `ca` are coincident (vector length < 1e-6 Å).
+#[inline]
+fn cb_direction(ca: [f32; 3], cb: [f32; 3]) -> Option<[f32; 3]> {
+    let dx = cb[0] - ca[0];
+    let dy = cb[1] - ca[1];
+    let dz = cb[2] - ca[2];
+    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    if len < 1e-6 {
+        None
+    } else {
+        Some([dx / len, dy / len, dz / len])
+    }
+}
+
+/// Compute the **Side-chain Orientation Score** between two motifs.
+///
+/// This term directly mirrors how folddisco builds its pairwise geometric features:
+/// the Cβ−Cα direction vector encodes side-chain orientation.  For each residue `i`,
+/// the unit direction vector is:
+///
+/// ```text
+/// d_i = normalize(Cβ_i − Cα_i)
+/// ```
+///
+/// The per-residue cosine similarity between query and hit direction vectors is
+/// mapped to [0, 1] via the cosine kernel:
+///
+/// ```text
+/// sos_i = (1 + dot(d_Q_i, d_H_i)) / 2
+/// SOS(Q, H) = mean over valid residue pairs of sos_i
+/// ```
+///
+/// Residues where either Cβ−Cα vector has length < 1e-6 Å are skipped.
+/// Returns 1.0 if no valid residue pairs exist.
+///
+/// # Arguments
+///
+/// * `ref_ca` — Query Cα coordinates.
+/// * `model_ca` — Hit Cα coordinates.
+/// * `ref_cb` — Query Cβ coordinates (same length as `ref_ca`).
+/// * `model_cb` — Hit Cβ coordinates (same length as `model_ca`).
+///
+/// # Returns
+///
+/// A value in **[0, 1]**.
+pub fn side_chain_orientation_score(
+    ref_ca: &[[f32; 3]],
+    model_ca: &[[f32; 3]],
+    ref_cb: &[[f32; 3]],
+    model_cb: &[[f32; 3]],
+) -> f32 {
+    let n = ref_ca.len().min(model_ca.len()).min(ref_cb.len()).min(model_cb.len());
+    if n == 0 {
+        return 1.0;
+    }
+    let mut sum = 0.0_f32;
+    let mut count = 0usize;
+    for i in 0..n {
+        if let (Some(d_ref), Some(d_model)) = (
+            cb_direction(ref_ca[i], ref_cb[i]),
+            cb_direction(model_ca[i], model_cb[i]),
+        ) {
+            let cos_sim = d_ref[0] * d_model[0] + d_ref[1] * d_model[1] + d_ref[2] * d_model[2];
+            sum += (1.0 + cos_sim.clamp(-1.0, 1.0)) / 2.0;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        1.0
+    } else {
+        sum / count as f32
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GramsWeights
 // ---------------------------------------------------------------------------
 
 /// Weights controlling the contribution of each GRAMS geometry sub-score.
 ///
-/// The three weights must be non-negative.  They are automatically normalised
+/// The four weights must be non-negative.  They are automatically normalised
 /// to sum to 1.0 inside [`grams_score`], so you can supply raw relative
-/// importances (e.g. `GramsWeights { tm: 5.0, distance: 3.0, angle: 2.0 }`).
+/// importances (e.g. `GramsWeights { tm: 4.0, distance: 2.0, angle: 1.5, orientation: 2.5 }`).
+///
+/// When Cβ coordinates are not provided to [`grams_score`], the `orientation`
+/// weight is redistributed proportionally among the other three terms.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GramsWeights {
-    /// Weight for the TM-score (global backbone quality after superimposition). Default: 0.5.
+    /// Weight for the TM-score (global backbone quality after superimposition). Default: 0.4.
     pub tm: f32,
-    /// Weight for the Distance Matrix Score (internal distance geometry). Default: 0.3.
+    /// Weight for the Distance Matrix Score (internal Cα distance geometry). Default: 0.2.
     pub distance: f32,
-    /// Weight for the Pseudo-Bond Angle Score (local backbone curvature). Default: 0.2.
+    /// Weight for the Pseudo-Bond Angle Score (local backbone curvature). Default: 0.15.
     pub angle: f32,
+    /// Weight for the Side-chain Orientation Score (Cβ−Cα direction agreement). Default: 0.25.
+    pub orientation: f32,
 }
 
 impl Default for GramsWeights {
     fn default() -> Self {
         Self {
-            tm: 0.5,
-            distance: 0.3,
-            angle: 0.2,
+            tm: 0.4,
+            distance: 0.2,
+            angle: 0.15,
+            orientation: 0.25,
         }
     }
 }
@@ -206,17 +303,18 @@ impl GramsWeights {
     /// # Panics
     ///
     /// Panics in debug mode if any weight is negative or if all weights are zero.
-    pub fn new(tm: f32, distance: f32, angle: f32) -> Self {
+    pub fn new(tm: f32, distance: f32, angle: f32, orientation: f32) -> Self {
         debug_assert!(
-            tm >= 0.0 && distance >= 0.0 && angle >= 0.0,
+            tm >= 0.0 && distance >= 0.0 && angle >= 0.0 && orientation >= 0.0,
             "GRAMS weights must be non-negative"
         );
-        let total = tm + distance + angle;
+        let total = tm + distance + angle + orientation;
         debug_assert!(total > 0.0, "GRAMS weights must not all be zero");
         Self {
             tm: tm / total,
             distance: distance / total,
             angle: angle / total,
+            orientation: orientation / total,
         }
     }
 }
@@ -236,6 +334,9 @@ pub struct GramsComponents {
     pub distance_matrix_score: f32,
     /// Pseudo-Bond Angle Score (local Cα backbone curvature agreement), in [0, 1].
     pub pseudo_bond_angle_score: f32,
+    /// Side-chain Orientation Score (Cβ−Cα direction agreement), in [0, 1].
+    /// Set to 1.0 when Cβ coordinates are not provided.
+    pub side_chain_orientation_score: f32,
     /// Final GRAMS composite score, in [0, 1].
     pub grams: f32,
 }
