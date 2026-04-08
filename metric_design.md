@@ -1,25 +1,25 @@
-# GRAMS: Geometric-Residue Alignment Motif Score
+# GRAMS: Geometric Alignment Motif Score
 
 ## Overview
 
-GRAMS is a composite ranking metric for structural motif search results in folddisco.
-It addresses a fundamental limitation of pure backbone RMSD metrics: two motifs can
-have identical backbone geometry yet differ significantly in biochemical function if
-their side-chain residue identities are dissimilar.
+GRAMS is a fully geometry-focused composite ranking metric for structural motif
+search results in folddisco.  It scores hits using only Cα coordinates — no
+sequence identity or residue type information is needed.
 
 ---
 
-## Three Candidate Metric Concepts
+## Three Candidate Metric Concepts (Geometry-Focused)
 
-### Concept 1 — GRAMS (selected)
+### Concept 1 — GRAMS with TM + DMS + PAS (selected)
 
-**Theory**: Combines backbone geometric quality (TM-score), residue-level biochemical
-compatibility (normalised BLOSUM62), and a steric-clash penalty.
+**Theory**: Combines three complementary, purely geometric quality measures:
+global backbone quality (TM-score), internal distance-matrix consistency (DMS),
+and local backbone curvature agreement (PAS).
 
 **Mathematical formulation**:
 
 ```
-GRAMS(Q, H) = α · TM(Q, H) + β · ResComp(Q, H) + γ · (1 − ClashFrac(H))
+GRAMS(Q, H) = α · TM(Q, H) + β · DMS(Q, H) + γ · PAS(Q, H)
 ```
 
 where
@@ -27,85 +27,72 @@ where
 | Symbol | Description |
 |--------|-------------|
 | `TM(Q, H)` | TM-score computed from post-superimposition Cα distances |
-| `ResComp(Q, H)` | Mean normalised BLOSUM62 score over matched residue pairs |
-| `ClashFrac(H)` | Fraction of intra-hit Cα pairs closer than 3.0 Å |
-| α, β, γ | Non-negative weights with α + β + γ = 1 (defaults: 0.5, 0.3, 0.2) |
+| `DMS(Q, H)` | Distance Matrix Score: pairwise Cα distance agreement |
+| `PAS(Q, H)` | Pseudo-Bond Angle Score: Cα-Cα-Cα bond-angle agreement |
+| α, β, γ | Non-negative weights with α+β+γ = 1 (defaults: 0.5, 0.3, 0.2) |
 
-**ResComp**:
-
-```
-ResComp(Q, H) = (1/N) · Σ_i  b62_norm(q_i, h_i)
-
-b62_norm(a, b) = (BLOSUM62[a][b] − B62_MIN) / (B62_MAX − B62_MIN)   ∈ [0, 1]
-```
-
-where `B62_MIN = −4` (minimum value across the entire BLOSUM62 matrix, used as the
-normalisation lower bound) and `B62_MAX = 11` (maximum value — the Trp self-score,
-used as the normalisation upper bound).
-
-**ClashFrac**:
+**DMS**:
 
 ```
-ClashFrac(H) = |{(i, j) : i < j, d_Cα(h_i, h_j) < D_CLASH}| / C(N, 2)
-D_CLASH = 3.0 Å
+s(i,j) = max(0, 1 − |d_Q(i,j) − d_H(i,j)| / D_TOL)     D_TOL = 2.0 Å
+DMS(Q, H) = (1 / C(N,2)) · Σ_{i<j} s(i,j)
 ```
 
-Because all three components are in [0, 1], GRAMS ∈ [0, 1].
-A higher GRAMS indicates a better match.
+**PAS**:
 
-**Time complexity**: O(N) for TM and ResComp; O(N²) for ClashFrac.
-For small motifs (N ≤ 10) typical in folddisco, the N² term is negligible.
+```
+PAS(Q, H) = (1/(N−2)) · Σ_{k=0}^{N−3} (1 + cos(θ_Q_k − θ_H_k)) / 2
+```
+
+where θ_k is the angle at Cα_{k+1} formed by the triplet (Cα_k, Cα_{k+1}, Cα_{k+2}).
+
+**Time complexity**: TM and PAS are O(N); DMS is O(N²).
+For small motifs (N ≤ 10) common in folddisco, N² ≤ 45 distance evaluations.
 
 ---
 
-### Concept 2 — SP-Extended with Side-Chain Dihedral Deviation
+### Concept 2 — Torsion-Angle Profile Similarity
 
-**Theory**: Extends the SP (Sum-of-Pairs) contact-map score with a χ₁ side-chain
-dihedral-angle agreement term to penalise rotameric mismatch.
+**Theory**: For each consecutive pair of backbone Cα positions, derive a
+pseudo-torsion angle from four successive Cα atoms and compare the resulting
+torsion-angle profiles between query and hit.
 
 **Mathematical formulation**:
 
 ```
-SPX(Q, H) = SP(Q, H) − δ · (1/N) · Σ_i min(|Δχ₁_i|, π) / π
+TAPS(Q, H) = (1/(N−3)) · Σ_{k=0}^{N−4} (1 + cos(τ_Q_k − τ_H_k)) / 2
 ```
 
-where `SP(Q, H)` is the standard SP-score, `Δχ₁_i` is the difference in χ₁ dihedral
-angles for residue i, and δ is a weighting factor.
+where τ_k is the torsion angle of the quadruple (Cα_k, Cα_{k+1}, Cα_{k+2}, Cα_{k+3}).
 
-**Limitation**: Requires explicit side-chain coordinates and a reliable rotamer
-library, increasing data requirements and complexity.
+**Limitation**: Requires N ≥ 4; carries less information for very short motifs
+(3–4 residues) where only 0–1 torsion angles are available.
 
 ---
 
-### Concept 3 — Weighted Distance-Physicochemical Score (WDPS)
+### Concept 3 — Voronoi-Weighted Shape Descriptor
 
-**Theory**: Reweights RMSD contributions residue-by-residue using a physicochemical
-similarity factor derived from hydrophobicity, charge, and size differences.
+**Theory**: Tessellate the motif Cα point cloud and compare normalised Voronoi
+cell volumes between query and hit as a rotation/translation-invariant shape
+descriptor.
 
-**Mathematical formulation**:
-
-```
-WDPS(Q, H) = 1 − sqrt( (1/N) · Σ_i  w_i · d_i² ) / d_max
-
-w_i = Physico_sim(q_i, h_i)   (normalised to Σ w_i = N)
-```
-
-**Limitation**: The physicochemical weight scheme requires careful calibration and
-does not capture co-evolutionary substitution tolerance as well as BLOSUM62 does.
+**Limitation**: Computing Voronoi tessellations in 3D requires additional
+algorithmic complexity and a third-party crate (e.g. `voro-rs`), conflicting
+with the constraint against heavy external dependencies.
 
 ---
 
-## Rationale for Selecting GRAMS
+## Rationale for Selecting GRAMS (Concept 1)
 
-1. **Computational efficiency**: All operations are O(N) or O(N²) with small constants;
-   no rotamer libraries or external data files are needed.
-2. **Biological soundness**: BLOSUM62 encodes evolutionary substitution frequencies,
-   providing a principled biochemical similarity measure.  The clash penalty naturally
-   filters steric impossibilities.
+1. **Purely geometric**: All three terms depend only on Cα coordinates; no
+   sequence information or residue type tables are consulted.
+2. **Complementary coverage**: TM captures global alignment quality; DMS detects
+   distortion of the internal distance geometry; PAS flags incorrect local
+   backbone curvature.
 3. **Normalisation**: Every term is independently bounded in [0, 1], making scores
    directly comparable across motifs of different sizes.
-4. **Pure Rust**: No C bindings, no external ML runtimes — the entire implementation
-   is a single self-contained Rust module.
+4. **Computational efficiency**: O(N²) at most — negligible for motifs of size ≤ 10.
+5. **Pure Rust**: No C bindings, no external ML runtimes.
 
 ---
 
@@ -115,9 +102,7 @@ does not capture co-evolutionary substitution tolerance as well as BLOSUM62 does
 |-----------|------|-------------|
 | `ref_ca` | `&[[f32; 3]]` | Query Cα coordinates (post-superimposition, Å) |
 | `model_ca` | `&[[f32; 3]]` | Hit Cα coordinates (post-superimposition, Å) |
-| `ref_residues` | `&[u8]` | Query residue one-letter codes (ASCII uppercase) |
-| `model_residues` | `&[u8]` | Hit residue one-letter codes (ASCII uppercase) |
-| `weights` | `GramsWeights` | α, β, γ weights (must sum to 1.0) |
+| `weights` | `GramsWeights` | tm, distance, angle weights (auto-normalised) |
 
 ## Edge Cases
 
@@ -125,7 +110,7 @@ does not capture co-evolutionary substitution tolerance as well as BLOSUM62 does
 |----------|----------|
 | N = 0 | Returns 0.0 |
 | Length mismatch | Returns 0.0 |
-| Unknown residue code | BLOSUM62 lookup returns 0.0 (neutral) |
-| Single residue | ClashFrac = 0.0 (no pairs); TM-score uses d₀ = 0.5 |
-| NaN in coordinates | Propagates to 0.0 via `unwrap_or(0.0)` |
-| All clashing | ClashFrac = 1.0, γ term contributes 0.0 |
+| N = 1 | DMS = 1.0, PAS = 1.0 (no pairs/triplets); TM uses d₀ = 0.5 |
+| N = 2 | PAS = 1.0 (no triplets); DMS and TM computed normally |
+| Coincident atoms | `pseudo_bond_angle` returns 0.0 (degenerate check) |
+| NaN coordinates | Propagates; guarded by `clamp(-1,1)` in acos call |
