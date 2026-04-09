@@ -537,6 +537,111 @@ mod tests {
 
     use super::*;
 
+    #[inline]
+    fn rotate_x(v: [f32; 3], angle: f32) -> [f32; 3] {
+        let (s, c) = angle.sin_cos();
+        [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]]
+    }
+
+    #[inline]
+    fn rotate_z(v: [f32; 3], angle: f32) -> [f32; 3] {
+        let (s, c) = angle.sin_cos();
+        [c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]]
+    }
+
+    fn mock_per_residue_rt_false_positive(
+        reference_interleaved: &[[f32; 3]],
+        base_angle: f32,
+        base_shift: f32,
+        cb_extra_angle: f32,
+    ) -> Vec<[f32; 3]> {
+        let mut transformed = Vec::with_capacity(reference_interleaved.len());
+        for i in (0..reference_interleaved.len()).step_by(2) {
+            let residue_idx = (i / 2) as f32 + 1.0;
+            let ca = reference_interleaved[i];
+            let cb = reference_interleaved[i + 1];
+            let translation = [
+                base_shift * residue_idx * 0.31,
+                -base_shift * residue_idx * 0.17,
+                base_shift * residue_idx * 0.11,
+            ];
+
+            let ca_shifted = [
+                ca[0] + translation[0],
+                ca[1] + translation[1],
+                ca[2] + translation[2],
+            ];
+
+            let mut ca_cb = [cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2]];
+            let angle = base_angle * residue_idx;
+            ca_cb = rotate_z(ca_cb, angle);
+            ca_cb = rotate_x(ca_cb, angle * 0.5 + cb_extra_angle);
+
+            let cb_shifted = [
+                ca_shifted[0] + ca_cb[0],
+                ca_shifted[1] + ca_cb[1],
+                ca_shifted[2] + ca_cb[2],
+            ];
+
+            transformed.push(ca_shifted);
+            transformed.push(cb_shifted);
+        }
+        transformed
+    }
+
+    fn dms_pas_sos_average(
+        reference_interleaved: &[[f32; 3]],
+        model_interleaved: &[[f32; 3]],
+    ) -> (f32, f32, f32, f32) {
+        let mut metrics = StructureSimilarityMetrics::new();
+        metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(reference_interleaved, model_interleaved);
+        let avg = (metrics.dms + metrics.pas + metrics.sos) / 3.0;
+        (metrics.dms, metrics.pas, metrics.sos, avg)
+    }
+
+    #[test]
+    fn test_real_motif_and_mocked_false_positive_validity() {
+        use crate::prelude::PDBReader;
+
+        let query_reader = PDBReader::from_file("query/1G2F.pdb").unwrap();
+        let query_structure = query_reader.read_structure().unwrap().to_compact();
+        let reference_indices = vec![
+            query_structure.get_index(&b'F', &207).unwrap(),
+            query_structure.get_index(&b'F', &212).unwrap(),
+            query_structure.get_index(&b'F', &225).unwrap(),
+            query_structure.get_index(&b'F', &229).unwrap(),
+        ];
+
+        let reference_interleaved = vec![
+            query_structure.get_ca(reference_indices[0]).unwrap().to_array(),
+            query_structure.get_cb(reference_indices[0]).unwrap().to_array(),
+            query_structure.get_ca(reference_indices[1]).unwrap().to_array(),
+            query_structure.get_cb(reference_indices[1]).unwrap().to_array(),
+            query_structure.get_ca(reference_indices[2]).unwrap().to_array(),
+            query_structure.get_cb(reference_indices[2]).unwrap().to_array(),
+            query_structure.get_ca(reference_indices[3]).unwrap().to_array(),
+            query_structure.get_cb(reference_indices[3]).unwrap().to_array(),
+        ];
+
+        // Composition-matched motif labels (same multiset, reordered)
+        let aa_exact = [b'F', b'F', b'F', b'F'];
+        let aa_composition_matched_different = [b'F', b'F', b'F', b'F'];
+        assert_eq!(aa_exact, aa_composition_matched_different);
+
+        let exact = reference_interleaved.clone();
+        let slight_deviation = mock_per_residue_rt_false_positive(&reference_interleaved, 0.06, 0.12, 0.0);
+        let composition_matched_different = mock_per_residue_rt_false_positive(&reference_interleaved, 0.9, 1.2, 0.75);
+
+        let (_, _, _, exact_avg) = dms_pas_sos_average(&reference_interleaved, &exact);
+        let (_, _, _, slight_avg) = dms_pas_sos_average(&reference_interleaved, &slight_deviation);
+        let (_, _, _, different_avg) =
+            dms_pas_sos_average(&reference_interleaved, &composition_matched_different);
+
+        assert!((exact_avg - 1.0).abs() < 1e-6);
+        assert!(exact_avg > slight_avg);
+        assert!(slight_avg > different_avg);
+    }
+
     #[test]
     fn test_dms_pas_sos_identical() {
         let ca = vec![
