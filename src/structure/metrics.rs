@@ -623,13 +623,16 @@ mod tests {
             query_structure.get_cb(reference_indices[3]).unwrap().to_array(),
         ];
 
-        // Composition-matched motif labels (same multiset, reordered)
+        // Composition-matched motif labels (same multiset)
         let aa_exact = [b'F', b'F', b'F', b'F'];
         let aa_composition_matched_different = [b'F', b'F', b'F', b'F'];
         assert_eq!(aa_exact, aa_composition_matched_different);
 
         let exact = reference_interleaved.clone();
+        // Mild per-residue perturbation: small local rotation + sub-Å residue shifts.
         let slight_deviation = mock_per_residue_rt_false_positive(&reference_interleaved, 0.06, 0.12, 0.0);
+        // Strong perturbation while preserving composition labels:
+        // large local rotations and larger per-residue shifts.
         let composition_matched_different = mock_per_residue_rt_false_positive(&reference_interleaved, 0.9, 1.2, 0.75);
 
         let (_, _, _, exact_avg) = dms_pas_sos_average(&reference_interleaved, &exact);
