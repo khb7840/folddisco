@@ -7,6 +7,36 @@ use std::fmt;
 
 use crate::controller::result::{MatchResult, StructureResult, evalue_fitting};
 
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+/// Format an f32 metric as a string, returning "NA" when the value equals the
+/// sentinel (typically `f32::MAX` meaning "not computed").
+#[inline]
+fn format_optional_f32(value: f32, sentinel: f32, fmt_str: &str) -> String {
+    if value == sentinel {
+        "NA".to_string()
+    } else if fmt_str == "{:.4}" {
+        format!("{:.4}", value)
+    } else {
+        format!("{:.4e}", value)
+    }
+}
+
+/// Format an f64 metric as a string, returning "NA" when the value equals the
+/// sentinel (typically `f64::MAX` meaning "not computed").
+#[inline]
+fn format_optional_f64(value: f64, sentinel: f64, fmt_str: &str) -> String {
+    if value == sentinel {
+        "NA".to_string()
+    } else if fmt_str == "{:.4}" {
+        format!("{:.4}", value)
+    } else {
+        format!("{:.4e}", value)
+    }
+}
+
 /// Three-tier classification of motif novelty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoveltyTier {
@@ -115,13 +145,15 @@ impl NoveltyReport {
             };
         }
 
-        // Find the result with the highest node (residue) coverage
+        // Find the result with the highest node (residue) coverage.
+        // When coverage is equal, prefer lower RMSD (better geometric match),
+        // so we reverse the RMSD ordering in the tiebreaker.
         let best = results.iter().max_by(|a, b| {
             let cov_a = a.1.max_matching_node_count;
             let cov_b = b.1.max_matching_node_count;
             cov_a.cmp(&cov_b)
                 .then_with(|| a.1.min_rmsd_with_max_match.partial_cmp(&b.1.min_rmsd_with_max_match)
-                    .map(|ord| ord.reverse())
+                    .map(|ord| ord.reverse()) // lower RMSD is better → reverse for max_by
                     .unwrap_or(std::cmp::Ordering::Equal))
         });
 
@@ -255,16 +287,8 @@ impl NoveltyReport {
     /// Format the report as a single TSV line (no trailing newline).
     pub fn to_tsv(&self) -> String {
         let best_hit = self.best_hit.as_deref().unwrap_or("NA");
-        let rmsd_str = if self.best_hit_rmsd == f32::MAX {
-            "NA".to_string()
-        } else {
-            format!("{:.4}", self.best_hit_rmsd)
-        };
-        let evalue_str = if self.best_hit_evalue == f64::MAX {
-            "NA".to_string()
-        } else {
-            format!("{:.4e}", self.best_hit_evalue)
-        };
+        let rmsd_str = format_optional_f32(self.best_hit_rmsd, f32::MAX, "{:.4}");
+        let evalue_str = format_optional_f64(self.best_hit_evalue, f64::MAX, "{:.4e}");
         let sub_motif = self.sub_motif_summary.as_ref()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "NA".to_string());

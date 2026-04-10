@@ -196,8 +196,13 @@ pub fn check_novelty(env: AppArgs) {
                     }
                 };
 
+                let default_chain = if query_structure.chains.is_empty() {
+                    b'A'
+                } else {
+                    query_structure.chains[0]
+                };
                 let (query_res_parsed, aa_substitutions) =
-                    parse_query_string(&query_residues_str, query_structure.chains[0]);
+                    parse_query_string(&query_residues_str, default_chain);
 
                 let residue_count = if query_res_parsed.is_empty() {
                     query_structure.num_residues

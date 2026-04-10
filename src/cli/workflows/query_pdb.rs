@@ -544,7 +544,9 @@ fn print_novelty_verdict_from_match_results(
     coverage_threshold: f32,
     output_path: &str,
 ) {
-    // Find the match with the highest node_count
+    // Find the match with the highest node_count.
+    // When node counts are equal, prefer lower RMSD (better match),
+    // so compare b vs a to invert the natural ascending order.
     let best = match_results.iter()
         .map(|(_, r)| r)
         .max_by(|a, b| a.node_count.cmp(&b.node_count)
@@ -612,7 +614,9 @@ fn print_novelty_verdict_from_structure_results(
             } else {
                 "NOVEL"
             };
-            let rmsd_str = if r.min_rmsd_with_max_match == 0.0 && skip_match {
+            // In skip-match mode min_rmsd_with_max_match is never computed (stays at 0.0).
+            // Use epsilon comparison so we don't accidentally display a real 0.0 RMSD as NA.
+            let rmsd_str = if skip_match && r.min_rmsd_with_max_match < f32::EPSILON {
                 "NA".to_string()
             } else {
                 format!("{:.4}", r.min_rmsd_with_max_match)
