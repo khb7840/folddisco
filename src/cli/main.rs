@@ -6,7 +6,7 @@
 //! Main entry point for Folddisco CLI
 
 // use crate::*;
-use folddisco::cli::{workflows::{build_index, benchmark, query_pdb}, *};
+use folddisco::cli::{workflows::{build_index, benchmark, query_pdb, novelty}, *};
 
 const VERSION_STRING: &str = env!("FOLDDISCO_BUILD_VERSION");
 const HELP: &str = "\
@@ -15,6 +15,7 @@ usage: folddisco <command> [<args>]
 subcommands:
   index     Create a new index table from multiple protein structures
   query     Query a motif from an index table
+  novelty   Check whether a structural motif is novel against reference database(s)
   benchmark Benchmark the performance of folddisco
   analyze   Analyze the distribution of encodings in the index
   version   Print version information
@@ -93,6 +94,8 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             header: args.contains("--header"),
             serial_query: args.contains("--serial-index"),
             output: args.value_from_str(["-o", "--output"]).unwrap_or("".into()),
+            novelty_mode: args.contains("--novelty-mode"),
+            novelty_coverage_threshold: args.value_from_str("--novelty-coverage").unwrap_or(0.8),
             verbose: args.contains(["-v", "--verbose"]),
             help: args.contains(["-h", "--help"]),
         }),
@@ -122,6 +125,23 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             min_support: args.value_from_str("--min-support").unwrap_or(4),
             max_pos: args.value_from_str("--max-pos").unwrap_or(32),
             threads: args.value_from_str(["-t", "--threads"]).unwrap_or(1),
+            verbose: args.contains(["-v", "--verbose"]),
+            help: args.contains(["-h", "--help"]),
+        }),
+        Some("novelty") => Ok(AppArgs::Novelty {
+            pdb_path: args.value_from_str(["-p", "--pdb"]).unwrap_or("".into()),
+            query_string: args.value_from_str(["-q", "--query"]).unwrap_or("".into()),
+            index_paths: args.value_from_str(["-i", "--index"]).unwrap_or("".into()),
+            threads: args.value_from_str(["-t", "--threads"]).unwrap_or(1),
+            dist_threshold: args.value_from_str(["-d", "--distance"]).unwrap_or("0.5".into()),
+            angle_threshold: args.value_from_str(["-a", "--angle"]).unwrap_or("5".into()),
+            ca_dist_threshold: args.value_from_str("--ca-distance").unwrap_or(1.0),
+            skip_match: args.contains("--skip-match"),
+            coverage_threshold: args.value_from_str("--coverage").unwrap_or(0.8),
+            sub_motif: args.contains("--sub-motif"),
+            covered_node_ratio: args.value_from_str("--covered-node-ratio").unwrap_or(0.0),
+            output: args.value_from_str(["-o", "--output"]).unwrap_or("".into()),
+            header: args.contains("--header"),
             verbose: args.contains(["-v", "--verbose"]),
             help: args.contains(["-h", "--help"]),
         }),
@@ -180,6 +200,14 @@ fn main() {
         AppArgs::Test { .. } => {
             println!("Testing");
             // temp::query_test_for_swissprot(parsed_args);
+        }
+        AppArgs::Novelty { help, .. } => {
+            if help {
+                print_logo();
+                eprintln!("{}", workflows::novelty::HELP_NOVELTY);
+            } else {
+                novelty::check_novelty(parsed_args);
+            }
         }
     }
 }

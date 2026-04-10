@@ -9,6 +9,7 @@ pub mod feature;
 pub mod filter;
 pub mod graph;
 pub mod io;
+pub mod novelty;
 pub mod query;
 pub mod result;
 pub mod retrieve;

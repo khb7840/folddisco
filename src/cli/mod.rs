@@ -82,6 +82,9 @@ pub enum AppArgs {
         header: bool,
         serial_query: bool,
         output: String,
+        // novelty mode: suppress normal output and emit a one-line verdict
+        novelty_mode: bool,
+        novelty_coverage_threshold: f32,
         verbose: bool,
         help: bool,
     },
@@ -126,6 +129,32 @@ pub enum AppArgs {
     Test {
         index_path: String,
         verbose: bool,
+    },
+    Novelty {
+        // Input
+        pdb_path: String,
+        query_string: String,
+        /// Comma-separated list of index paths to search against.
+        index_paths: String,
+        // Search parameters (reuse query defaults)
+        threads: usize,
+        dist_threshold: String,
+        angle_threshold: String,
+        ca_dist_threshold: f32,
+        skip_match: bool,
+        // Novelty-specific parameters
+        /// Minimum fraction of query residues that must be covered to call a
+        /// motif KNOWN (default 0.8).
+        coverage_threshold: f32,
+        /// Compute sub-motif (pair-level) overlap summary.
+        sub_motif: bool,
+        // Filtering
+        covered_node_ratio: f32,
+        // Output
+        output: String,
+        header: bool,
+        verbose: bool,
+        help: bool,
     },
 }
 

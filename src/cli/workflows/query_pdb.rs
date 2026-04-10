@@ -7,12 +7,14 @@
 // When querying PDB files, we need index table and query file.
 
 use std::io::BufRead;
+use std::io::Write;
 
 use rayon::prelude::*;
 
 use crate::cli::config::read_index_config_from_file;
 use crate::controller::filter::{MatchFilter, StructureFilter};
 use crate::controller::mode::QueryMode;
+use crate::controller::novelty::{novelty_tier_from_match};
 use crate::controller::sort::{MatchSortStrategy, StructureSortStrategy};
 use crate::cli::*;
 use crate::controller::io::{
@@ -24,7 +26,7 @@ use crate::controller::query::{
 };
 use crate::controller::count_query::count_query;
 use crate::controller::result::{
-    convert_structure_query_result_to_match_query_results, 
+    convert_structure_query_result_to_match_query_results, MatchResult,
     sort_and_print_match_query_result, sort_and_print_structure_query_result, StructureResult
 };
 use crate::controller::retrieve::retrieval_wrapper;
@@ -100,6 +102,10 @@ display options:
  --partial-fit                    Superposition will find the best aligning substructure using LMS (Least Median of Squares)
  --superpose                      Print U, T, CA of matching residues
 
+novelty options:
+ --novelty-mode                   Suppress normal output; print one line per query: design_id, tier (NOVEL/PARTIAL_MATCH/KNOWN), best_hit, coverage, rmsd, query_residues
+ --novelty-coverage <FLOAT>       Minimum residue coverage fraction to classify a motif as KNOWN [0.8]
+
 general options:
  -v, --verbose                    Print verbose messages
  -h, --help                       Print this help menu
@@ -134,6 +140,10 @@ folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --con
 
 ## Coverage based filtering & top N filtering without residue matching
 folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --covered-node 3 --top 1000 --per-structure --skip-match
+
+# Novelty mode: one-line verdict per query (pipe to grep NOVEL to filter novel designs)
+folddisco query -p design.pdb -q A10,A20,A30 -i index/pdb_folddisco --novelty-mode
+folddisco query -q designs.txt -i index/afdb50_folddisco --novelty-mode --novelty-coverage 0.9 --skip-match
 ";
 
 pub const MIN_CONNECTED_COMPONENT_SIZE: usize = 2;
@@ -182,6 +192,8 @@ pub fn query_pdb(env: AppArgs) {
             header,
             serial_query,
             output,
+            novelty_mode,
+            novelty_coverage_threshold,
             verbose,
             help: _,
         } => {
@@ -461,12 +473,19 @@ pub fn query_pdb(env: AppArgs) {
                             total_structures as usize, residue_count
                         );
                         match_results.retain(|(_, v)| match_filter.filter(v));
-                        sort_and_print_match_query_result(
-                            &mut match_results, top_n, 
-                            &output_path, &pdb_path, &query_string, 
-                            column_refs.as_deref(), output_with_superpose, header, verbose,
-                            match_sort_strategy.clone(),
-                        );
+                        if novelty_mode {
+                            print_novelty_verdict_from_match_results(
+                                &match_results, &pdb_path, &query_string,
+                                residue_count, novelty_coverage_threshold, &output_path,
+                            );
+                        } else {
+                            sort_and_print_match_query_result(
+                                &mut match_results, top_n, 
+                                &output_path, &pdb_path, &query_string, 
+                                column_refs.as_deref(), output_with_superpose, header, verbose,
+                                match_sort_strategy.clone(),
+                            );
+                        }
                     }
                     QueryMode::Web => {
                         let mut match_results = convert_structure_query_result_to_match_query_results(
@@ -483,10 +502,17 @@ pub fn query_pdb(env: AppArgs) {
                         );
                     }
                     QueryMode::PerStructure | QueryMode::SkipMatch => {
-                        sort_and_print_structure_query_result(
-                            &mut queried_from_indices, &output_path, 
-                            &pdb_path, &query_string, column_refs.as_deref(), header, verbose, structure_sort_strategy.clone()
-                        );
+                        if novelty_mode {
+                            print_novelty_verdict_from_structure_results(
+                                &queried_from_indices, &pdb_path, &query_string,
+                                residue_count, novelty_coverage_threshold, skip_match, &output_path,
+                            );
+                        } else {
+                            sort_and_print_structure_query_result(
+                                &mut queried_from_indices, &output_path, 
+                                &pdb_path, &query_string, column_refs.as_deref(), header, verbose, structure_sort_strategy.clone()
+                            );
+                        }
                     }
                     QueryMode::ContradictoryPrintError => {
                         // This should have been caught earlier, but handle it just in case
@@ -505,6 +531,106 @@ pub fn query_pdb(env: AppArgs) {
             eprintln!("{}", HELP_QUERY);
             std::process::exit(1);
         }
+    }
+}
+
+/// Emit a single-line novelty verdict to stdout (or file) based on per-match results.
+/// Format: `<design_id>\t<NOVEL|PARTIAL_MATCH|KNOWN>\t<best_hit_or_NA>\t<coverage>\t<rmsd>`
+fn print_novelty_verdict_from_match_results(
+    match_results: &[(usize, MatchResult)],
+    design_id: &str,
+    query_residues: &str,
+    query_residue_count: usize,
+    coverage_threshold: f32,
+    output_path: &str,
+) {
+    // Find the match with the highest node_count
+    let best = match_results.iter()
+        .map(|(_, r)| r)
+        .max_by(|a, b| a.node_count.cmp(&b.node_count)
+            .then_with(|| b.rmsd.partial_cmp(&a.rmsd).unwrap_or(std::cmp::Ordering::Equal)));
+
+    let line = match best {
+        None => format!("{}\t{}\tNA\t0.0000\tNA\t{}", design_id, "NOVEL", query_residues),
+        Some(r) => {
+            let tier = novelty_tier_from_match(r, query_residue_count, coverage_threshold);
+            let coverage = if query_residue_count > 0 {
+                r.node_count as f32 / query_residue_count as f32
+            } else {
+                0.0
+            };
+            let rmsd_str = format!("{:.4}", r.rmsd);
+            format!("{}\t{}\t{}\t{:.4}\t{}\t{}",
+                design_id, tier, r.tid, coverage, rmsd_str, query_residues)
+        }
+    };
+
+    if output_path.is_empty() {
+        println!("{}", line);
+    } else {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true).append(true)
+            .open(output_path)
+            .expect(&log_msg(FAIL, &format!("Failed to open output file: {}", output_path)));
+        writeln!(file, "{}", line)
+            .expect(&log_msg(FAIL, "Failed to write novelty verdict"));
+    }
+}
+
+/// Emit a single-line novelty verdict based on per-structure results (including skip-match mode).
+fn print_novelty_verdict_from_structure_results(
+    structure_results: &[(usize, StructureResult)],
+    design_id: &str,
+    query_residues: &str,
+    query_residue_count: usize,
+    coverage_threshold: f32,
+    skip_match: bool,
+    output_path: &str,
+) {
+    // Coverage proxy: max_matching_node_count (after matching) or node_count (skip-match)
+    let best = structure_results.iter()
+        .map(|(_, r)| r)
+        .max_by(|a, b| {
+            let cov_a = if skip_match { a.node_count } else { a.max_matching_node_count };
+            let cov_b = if skip_match { b.node_count } else { b.max_matching_node_count };
+            cov_a.cmp(&cov_b)
+        });
+
+    let line = match best {
+        None => format!("{}\t{}\tNA\t0.0000\tNA\t{}", design_id, "NOVEL", query_residues),
+        Some(r) => {
+            let covered = if skip_match { r.node_count } else { r.max_matching_node_count };
+            let coverage = if query_residue_count > 0 {
+                covered as f32 / query_residue_count as f32
+            } else {
+                0.0
+            };
+            let tier = if coverage >= coverage_threshold {
+                "KNOWN"
+            } else if covered > 0 {
+                "PARTIAL_MATCH"
+            } else {
+                "NOVEL"
+            };
+            let rmsd_str = if r.min_rmsd_with_max_match == 0.0 && skip_match {
+                "NA".to_string()
+            } else {
+                format!("{:.4}", r.min_rmsd_with_max_match)
+            };
+            format!("{}\t{}\t{}\t{:.4}\t{}\t{}",
+                design_id, tier, r.tid, coverage, rmsd_str, query_residues)
+        }
+    };
+
+    if output_path.is_empty() {
+        println!("{}", line);
+    } else {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true).append(true)
+            .open(output_path)
+            .expect(&log_msg(FAIL, &format!("Failed to open output file: {}", output_path)));
+        writeln!(file, "{}", line)
+            .expect(&log_msg(FAIL, "Failed to write novelty verdict"));
     }
 }
 
@@ -570,6 +696,8 @@ mod tests {
             header: true,
             serial_query: false,
             output: String::from(""),
+            novelty_mode: false,
+            novelty_coverage_threshold: 0.8,
             verbose: true,
             help: false,
         };
@@ -623,6 +751,8 @@ mod tests {
                 header: true,
                 serial_query: false,
                 output: String::from(""),
+                novelty_mode: false,
+                novelty_coverage_threshold: 0.8,
                 verbose: true,
                 partial_fit: false,
                 help: false,
@@ -678,6 +808,8 @@ mod tests {
             header: true,
             serial_query: false,
             output: String::from(""),
+            novelty_mode: false,
+            novelty_coverage_threshold: 0.8,
             verbose: true,
             help: false,
         };
