@@ -1,17 +1,18 @@
 //! Native ANM/NMA conformational sampling for non-rigid query search.
 //!
 //! This module implements a lightweight ProDy-like ANM pipeline:
-//! 1) build a 3N×3N Hessian from Cα coordinates (cutoff ENM),
+//! 1) build a 3N×3N Hessian from backbone node coordinates (N/CA/C, cutoff ENM),
 //! 2) eigendecompose and discard rigid-body modes,
 //! 3) sample random linear combinations of low-frequency modes,
-//! 4) scale displacements to a target RMSD and apply them to N/CA/CB atoms.
+//! 4) scale displacements to a target RMSD and apply them to N/CA/C atoms,
+//! 5) reconstruct CB from perturbed backbone orientation.
 
 use nalgebra::{DMatrix, DVector, SymmetricEigen};
 use rand::Rng;
 use std::fs::File;
 use std::io::Write;
 
-use crate::structure::coordinate::Coordinate;
+use crate::structure::coordinate::{approx_cb, Coordinate};
 use crate::structure::core::CompactStructure;
 
 const ANM_CUTOFF_ANGSTROM: f64 = 15.0;
@@ -19,29 +20,33 @@ const EIGENVALUE_EPS: f64 = 1e-8;
 
 type DisplacementField = Vec<[f32; 3]>;
 
-fn extract_ca_coordinates(structure: &CompactStructure) -> Result<Vec<Coordinate>, String> {
-    let mut coords = Vec::with_capacity(structure.num_residues);
+fn extract_backbone_coordinates(structure: &CompactStructure) -> Result<Vec<Coordinate>, String> {
+    let mut coords = Vec::with_capacity(structure.num_residues * 3);
     for i in 0..structure.num_residues {
         let ca = structure
             .ca_vector
             .get_coord(i)
             .ok_or_else(|| format!("Missing CA coordinate at residue index {}", i))?;
+        let n = structure.n_vector.get_coord(i).unwrap_or(ca);
+        let c = structure.c_vector.get_coord(i).unwrap_or(ca);
+        coords.push(n);
         coords.push(ca);
+        coords.push(c);
     }
     Ok(coords)
 }
 
-fn build_anm_hessian(ca_coords: &[Coordinate], cutoff: f64) -> DMatrix<f64> {
-    let n = ca_coords.len();
+fn build_anm_hessian(coords: &[Coordinate], cutoff: f64) -> DMatrix<f64> {
+    let n = coords.len();
     let size = 3 * n;
     let mut h = DMatrix::<f64>::zeros(size, size);
     let cutoff2 = cutoff * cutoff;
 
     for i in 0..n {
         for j in (i + 1)..n {
-            let dx = (ca_coords[j].x - ca_coords[i].x) as f64;
-            let dy = (ca_coords[j].y - ca_coords[i].y) as f64;
-            let dz = (ca_coords[j].z - ca_coords[i].z) as f64;
+            let dx = (coords[j].x - coords[i].x) as f64;
+            let dy = (coords[j].y - coords[i].y) as f64;
+            let dz = (coords[j].z - coords[i].z) as f64;
             let dist2 = dx * dx + dy * dy + dz * dz;
             if dist2 <= f64::EPSILON || dist2 > cutoff2 {
                 continue;
@@ -106,9 +111,9 @@ fn select_nontrivial_modes(hessian: DMatrix<f64>, mode_count: usize) -> Vec<DVec
         .collect()
 }
 
-fn sample_displacement(modes: &[DVector<f64>], n_res: usize) -> DisplacementField {
+fn sample_displacement(modes: &[DVector<f64>], n_nodes: usize) -> DisplacementField {
     let mut rng = rand::thread_rng();
-    let mut disp = vec![[0.0f32; 3]; n_res];
+    let mut disp = vec![[0.0f32; 3]; n_nodes];
     if modes.is_empty() {
         return disp;
     }
@@ -117,7 +122,7 @@ fn sample_displacement(modes: &[DVector<f64>], n_res: usize) -> DisplacementFiel
         .map(|_| rng.gen_range(-1.0f64..1.0f64))
         .collect();
 
-    for i in 0..n_res {
+    for i in 0..n_nodes {
         for axis in 0..3 {
             let idx = 3 * i + axis;
             let mut value = 0.0f64;
@@ -174,24 +179,49 @@ fn apply_residue_displacement(
     disp: &DisplacementField,
 ) -> CompactStructure {
     let mut sampled = structure.clone();
+    debug_assert_eq!(disp.len(), structure.num_residues * 3);
+
+    let mut n_disp = vec![[0.0f32; 3]; structure.num_residues];
+    let mut ca_disp = vec![[0.0f32; 3]; structure.num_residues];
+    let mut c_disp = vec![[0.0f32; 3]; structure.num_residues];
+    for i in 0..structure.num_residues {
+        n_disp[i] = disp[3 * i];
+        ca_disp[i] = disp[3 * i + 1];
+        c_disp[i] = disp[3 * i + 2];
+    }
+
     apply_displacement_to_vector(
         &mut sampled.ca_vector.x,
         &mut sampled.ca_vector.y,
         &mut sampled.ca_vector.z,
-        disp,
+        &ca_disp,
     );
     apply_displacement_to_vector(
         &mut sampled.n_vector.x,
         &mut sampled.n_vector.y,
         &mut sampled.n_vector.z,
-        disp,
+        &n_disp,
     );
     apply_displacement_to_vector(
-        &mut sampled.cb_vector.x,
-        &mut sampled.cb_vector.y,
-        &mut sampled.cb_vector.z,
-        disp,
+        &mut sampled.c_vector.x,
+        &mut sampled.c_vector.y,
+        &mut sampled.c_vector.z,
+        &c_disp,
     );
+
+    // Reconstruct CB from backbone orientation after perturbation.
+    for i in 0..sampled.num_residues {
+        if let (Some(n), Some(ca), Some(c)) = (
+            sampled.n_vector.get_coord(i),
+            sampled.ca_vector.get_coord(i),
+            sampled.c_vector.get_coord(i),
+        ) {
+            let cb = approx_cb(&ca, &n, &c);
+            sampled.cb_vector.x[i] = Some(cb.x);
+            sampled.cb_vector.y[i] = Some(cb.y);
+            sampled.cb_vector.z[i] = Some(cb.z);
+        }
+    }
     sampled
 }
 
@@ -210,8 +240,8 @@ pub fn generate_ensemble(
         return Ok(ensemble);
     }
 
-    let ca_coords = extract_ca_coordinates(query_structure)?;
-    let hessian = build_anm_hessian(&ca_coords, ANM_CUTOFF_ANGSTROM);
+    let backbone_coords = extract_backbone_coordinates(query_structure)?;
+    let hessian = build_anm_hessian(&backbone_coords, ANM_CUTOFF_ANGSTROM);
     let modes = select_nontrivial_modes(hessian, nma_modes);
 
     if modes.is_empty() {
@@ -219,7 +249,7 @@ pub fn generate_ensemble(
     }
 
     for _ in 0..num_confs {
-        let mut disp = sample_displacement(&modes, query_structure.num_residues);
+        let mut disp = sample_displacement(&modes, query_structure.num_residues * 3);
         scale_displacement_to_rmsd(&mut disp, target_rmsd);
         ensemble.push(apply_residue_displacement(query_structure, &disp));
     }
@@ -264,6 +294,15 @@ pub fn write_conformer_as_pdb(structure: &CompactStructure, path: &str) -> Resul
                 file,
                 "{}",
                 atom_line(serial, "CA", res_name, chain, res_seq, &ca)
+            )
+            .map_err(|e| format!("Failed to write {}: {}", path, e))?;
+            serial += 1;
+        }
+        if let Some(c) = structure.c_vector.get_coord(i) {
+            writeln!(
+                file,
+                "{}",
+                atom_line(serial, "C", res_name, chain, res_seq, &c)
             )
             .map_err(|e| format!("Failed to write {}: {}", path, e))?;
             serial += 1;

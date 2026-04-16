@@ -77,6 +77,7 @@ pub enum AppArgs {
         non_rigid_save_individual: bool,
         non_rigid_dedup: bool,
         non_rigid_dedup_keys: String,
+        non_rigid_search_mode: String,
         non_rigid_integrated_output: Option<String>,
         save_query_conformers: Option<String>,
         // sorting strategy

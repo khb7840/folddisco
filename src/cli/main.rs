@@ -96,6 +96,9 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             non_rigid_dedup_keys: args
                 .value_from_str("--non-rigid-dedup-keys")
                 .unwrap_or("rmsd".into()),
+            non_rigid_search_mode: args
+                .value_from_str("--non-rigid-search-mode")
+                .unwrap_or("1".into()),
             non_rigid_integrated_output: args
                 .opt_value_from_str("--non-rigid-integrated-output")?,
             save_query_conformers: args.opt_value_from_str("--save-query-conformers")?,
