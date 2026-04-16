@@ -27,6 +27,7 @@ const MIN_C_N_PEPTIDE_BOND: f32 = 0.9;
 const MAX_C_N_PEPTIDE_BOND: f32 = 2.2;
 const MAX_ADJACENT_CA_DISTANCE: f32 = 5.0;
 const MAX_CONFORMER_SAMPLING_ATTEMPTS: usize = 8;
+const CONFORMER_RETRY_SCALE_FACTOR: f32 = 0.85;
 
 type DisplacementField = Vec<[f32; 3]>;
 
@@ -337,7 +338,7 @@ pub fn generate_ensemble(
         .map(|_| {
             for attempt in 0..MAX_CONFORMER_SAMPLING_ATTEMPTS {
                 let mut disp = sample_displacement(&modes, query_structure.num_residues * 3);
-                let attempt_scale = (0.85f32).powi(attempt as i32);
+                let attempt_scale = CONFORMER_RETRY_SCALE_FACTOR.powi(attempt as i32);
                 scale_displacement_to_rmsd(&mut disp, target_rmsd * attempt_scale);
                 cap_node_displacement(&mut disp, MAX_NODE_DISPLACEMENT_ANGSTROM);
                 let conformer = apply_residue_displacement(query_structure, &disp);
