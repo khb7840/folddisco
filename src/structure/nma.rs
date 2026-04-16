@@ -18,14 +18,16 @@ use crate::structure::core::CompactStructure;
 
 const ANM_CUTOFF_ANGSTROM: f64 = 15.0;
 const EIGENVALUE_EPS: f64 = 1e-8;
-const MAX_NODE_DISPLACEMENT_ANGSTROM: f32 = 2.5;
-const MIN_N_CA_BOND: f32 = 0.9;
-const MAX_N_CA_BOND: f32 = 2.2;
-const MIN_CA_C_BOND: f32 = 0.9;
-const MAX_CA_C_BOND: f32 = 2.2;
-const MIN_C_N_PEPTIDE_BOND: f32 = 0.9;
-const MAX_C_N_PEPTIDE_BOND: f32 = 2.2;
-const MAX_ADJACENT_CA_DISTANCE: f32 = 5.0;
+const MIN_NODE_DISPLACEMENT_CAP_ANGSTROM: f32 = 3.0;
+const MAX_NODE_DISPLACEMENT_CAP_ANGSTROM: f32 = 12.0;
+const NODE_DISPLACEMENT_CAP_TARGET_RMSD_MULTIPLIER: f32 = 3.5;
+const MIN_N_CA_BOND: f32 = 0.7;
+const MAX_N_CA_BOND: f32 = 2.6;
+const MIN_CA_C_BOND: f32 = 0.7;
+const MAX_CA_C_BOND: f32 = 2.6;
+const MIN_C_N_PEPTIDE_BOND: f32 = 0.7;
+const MAX_C_N_PEPTIDE_BOND: f32 = 2.6;
+const MAX_ADJACENT_CA_DISTANCE: f32 = 6.5;
 const MAX_CONFORMER_SAMPLING_ATTEMPTS: usize = 8;
 const CONFORMER_RETRY_SCALE_FACTOR: f32 = 0.85;
 
@@ -206,6 +208,13 @@ fn cap_node_displacement(disp: &mut DisplacementField, max_step: f32) {
     });
 }
 
+fn node_displacement_cap_for_target_rmsd(target_rmsd: f32) -> f32 {
+    (target_rmsd.abs() * NODE_DISPLACEMENT_CAP_TARGET_RMSD_MULTIPLIER).clamp(
+        MIN_NODE_DISPLACEMENT_CAP_ANGSTROM,
+        MAX_NODE_DISPLACEMENT_CAP_ANGSTROM,
+    )
+}
+
 fn is_backbone_plausible(structure: &CompactStructure) -> bool {
     if structure.num_residues < 2 {
         return true;
@@ -336,17 +345,28 @@ pub fn generate_ensemble(
     let sampled: Vec<CompactStructure> = (0..num_confs)
         .into_par_iter()
         .map(|_| {
+            let mut best_fallback: Option<(f32, CompactStructure)> = None;
+            let node_displacement_cap = node_displacement_cap_for_target_rmsd(target_rmsd);
             for attempt in 0..MAX_CONFORMER_SAMPLING_ATTEMPTS {
                 let mut disp = sample_displacement(&modes, query_structure.num_residues * 3);
                 let attempt_scale = CONFORMER_RETRY_SCALE_FACTOR.powi(attempt as i32);
                 scale_displacement_to_rmsd(&mut disp, target_rmsd * attempt_scale);
-                cap_node_displacement(&mut disp, MAX_NODE_DISPLACEMENT_ANGSTROM);
+                cap_node_displacement(&mut disp, node_displacement_cap);
+                let effective_rmsd = displacement_rmsd(&disp);
                 let conformer = apply_residue_displacement(query_structure, &disp);
                 if is_backbone_plausible(&conformer) {
                     return conformer;
                 }
+                if best_fallback
+                    .as_ref()
+                    .map_or(true, |(best_rmsd, _)| effective_rmsd > *best_rmsd)
+                {
+                    best_fallback = Some((effective_rmsd, conformer));
+                }
             }
-            query_structure.clone()
+            best_fallback
+                .map(|(_, conformer)| conformer)
+                .unwrap_or_else(|| query_structure.clone())
         })
         .collect();
     ensemble.extend(sampled);
