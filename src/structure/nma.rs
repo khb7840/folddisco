@@ -22,16 +22,35 @@ type DisplacementField = Vec<[f32; 3]>;
 
 fn extract_backbone_coordinates(structure: &CompactStructure) -> Result<Vec<Coordinate>, String> {
     let mut coords = Vec::with_capacity(structure.num_residues * 3);
+    let mut missing_backbone_atom_count = 0usize;
     for i in 0..structure.num_residues {
         let ca = structure
             .ca_vector
             .get_coord(i)
             .ok_or_else(|| format!("Missing CA coordinate at residue index {}", i))?;
-        let n = structure.n_vector.get_coord(i).unwrap_or(ca);
-        let c = structure.c_vector.get_coord(i).unwrap_or(ca);
+        let n = match structure.n_vector.get_coord(i) {
+            Some(n) => n,
+            None => {
+                missing_backbone_atom_count += 1;
+                ca
+            }
+        };
+        let c = match structure.c_vector.get_coord(i) {
+            Some(c) => c,
+            None => {
+                missing_backbone_atom_count += 1;
+                ca
+            }
+        };
         coords.push(n);
         coords.push(ca);
         coords.push(c);
+    }
+    if missing_backbone_atom_count > 0 {
+        eprintln!(
+            "Warning: {} missing backbone N/C atoms were replaced with CA coordinates for NMA sampling",
+            missing_backbone_atom_count
+        );
     }
     Ok(coords)
 }

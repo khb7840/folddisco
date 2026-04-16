@@ -563,7 +563,7 @@ pub fn query_pdb(env: AppArgs) {
 
                     let mut aggregated_results: HashMap<usize, StructureResult> =
                         HashMap::default();
-                    let mut prefiler_data: Vec<ConformerPrefilterData> = Vec::new();
+                    let mut prefilter_data: Vec<ConformerPrefilterData> = Vec::new();
                     let mut union_query_map: HashMap<GeometricHash, ((usize, usize), bool, f32)> =
                         HashMap::default();
                     let mut union_aa_dist_map: HashMap<(u8, u8), Vec<(f32, usize)>> =
@@ -812,7 +812,7 @@ pub fn query_pdb(env: AppArgs) {
                                 for nid in candidate_nids.iter() {
                                     *conformer_support_by_nid.entry(*nid).or_insert(0) += 1;
                                 }
-                                prefiler_data.push(ConformerPrefilterData {
+                                prefilter_data.push(ConformerPrefilterData {
                                     conf_idx,
                                     pdb_query_map,
                                     query_indices,
@@ -853,7 +853,7 @@ pub fn query_pdb(env: AppArgs) {
                     }
 
                     if search_mode == NonRigidSearchMode::PrefilterPerConformerThenRetrieve {
-                        for data in prefiler_data.into_iter() {
+                        for data in prefilter_data.into_iter() {
                             let query_count_map = measure_time!(
                                 count_query(
                                     &data.pdb_query,
@@ -1036,6 +1036,12 @@ pub fn query_pdb(env: AppArgs) {
                             }
                         }
                     } else if search_mode == NonRigidSearchMode::UnionHashes {
+                        if verbose {
+                            print_log_msg(
+                                INFO,
+                                "Non-rigid search mode 3 uses union hashes for prefilter/retrieval and uses the original conformer coordinates for RMSD/superposition",
+                            );
+                        }
                         let union_query = union_query_map.keys().cloned().collect::<Vec<_>>();
                         let query_count_map = measure_time!(
                             count_query(
