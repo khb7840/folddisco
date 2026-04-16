@@ -9,6 +9,7 @@
 
 use nalgebra::{DMatrix, DVector, SymmetricEigen};
 use rand::Rng;
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::Write;
 
@@ -17,6 +18,15 @@ use crate::structure::core::CompactStructure;
 
 const ANM_CUTOFF_ANGSTROM: f64 = 15.0;
 const EIGENVALUE_EPS: f64 = 1e-8;
+const MAX_NODE_DISPLACEMENT_ANGSTROM: f32 = 2.5;
+const MIN_N_CA_BOND: f32 = 0.9;
+const MAX_N_CA_BOND: f32 = 2.2;
+const MIN_CA_C_BOND: f32 = 0.9;
+const MAX_CA_C_BOND: f32 = 2.2;
+const MIN_C_N_PEPTIDE_BOND: f32 = 0.9;
+const MAX_C_N_PEPTIDE_BOND: f32 = 2.2;
+const MAX_ADJACENT_CA_DISTANCE: f32 = 5.0;
+const MAX_CONFORMER_SAMPLING_ATTEMPTS: usize = 8;
 
 type DisplacementField = Vec<[f32; 3]>;
 
@@ -131,26 +141,26 @@ fn select_nontrivial_modes(hessian: DMatrix<f64>, mode_count: usize) -> Vec<DVec
 }
 
 fn sample_displacement(modes: &[DVector<f64>], n_nodes: usize) -> DisplacementField {
-    let mut rng = rand::thread_rng();
     let mut disp = vec![[0.0f32; 3]; n_nodes];
     if modes.is_empty() {
         return disp;
     }
 
+    let mut rng = rand::thread_rng();
     let coeffs: Vec<f64> = (0..modes.len())
         .map(|_| rng.gen_range(-1.0f64..1.0f64))
         .collect();
 
-    for i in 0..n_nodes {
+    disp.par_iter_mut().enumerate().for_each(|(i, d)| {
         for axis in 0..3 {
             let idx = 3 * i + axis;
             let mut value = 0.0f64;
             for (mode, c) in modes.iter().zip(coeffs.iter()) {
                 value += *c * mode[idx];
             }
-            disp[i][axis] = value as f32;
+            d[axis] = value as f32;
         }
-    }
+    });
     disp
 }
 
@@ -158,10 +168,10 @@ fn displacement_rmsd(disp: &DisplacementField) -> f32 {
     if disp.is_empty() {
         return 0.0;
     }
-    let mut sum = 0.0f32;
-    for d in disp {
-        sum += d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-    }
+    let sum: f32 = disp
+        .par_iter()
+        .map(|d| d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+        .sum();
     (sum / (disp.len() as f32)).sqrt()
 }
 
@@ -171,11 +181,66 @@ fn scale_displacement_to_rmsd(disp: &mut DisplacementField, target_rmsd: f32) {
         return;
     }
     let scale = target_rmsd / current;
-    for d in disp.iter_mut() {
+    disp.par_iter_mut().for_each(|d| {
         d[0] *= scale;
         d[1] *= scale;
         d[2] *= scale;
+    });
+}
+
+fn cap_node_displacement(disp: &mut DisplacementField, max_step: f32) {
+    if max_step <= 0.0 {
+        return;
     }
+    let max_step2 = max_step * max_step;
+    disp.par_iter_mut().for_each(|d| {
+        let norm2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        if norm2 > max_step2 {
+            let norm = norm2.sqrt();
+            let s = max_step / norm;
+            d[0] *= s;
+            d[1] *= s;
+            d[2] *= s;
+        }
+    });
+}
+
+fn is_backbone_plausible(structure: &CompactStructure) -> bool {
+    if structure.num_residues < 2 {
+        return true;
+    }
+    for i in 0..structure.num_residues {
+        let (n, ca, c) = (
+            structure.n_vector.get_coord(i),
+            structure.ca_vector.get_coord(i),
+            structure.c_vector.get_coord(i),
+        );
+        if let (Some(n), Some(ca), Some(c)) = (n, ca, c) {
+            let n_ca = n.calc_distance(&ca);
+            let ca_c = ca.calc_distance(&c);
+            if !(MIN_N_CA_BOND..=MAX_N_CA_BOND).contains(&n_ca) {
+                return false;
+            }
+            if !(MIN_CA_C_BOND..=MAX_CA_C_BOND).contains(&ca_c) {
+                return false;
+            }
+            if i + 1 < structure.num_residues {
+                if let Some(next_n) = structure.n_vector.get_coord(i + 1) {
+                    let c_n = c.calc_distance(&next_n);
+                    if !(MIN_C_N_PEPTIDE_BOND..=MAX_C_N_PEPTIDE_BOND).contains(&c_n) {
+                        return false;
+                    }
+                }
+                if let Some(next_ca) = structure.ca_vector.get_coord(i + 1) {
+                    let ca_ca = ca.calc_distance(&next_ca);
+                    if ca_ca > MAX_ADJACENT_CA_DISTANCE {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
 }
 
 fn apply_displacement_to_vector(
@@ -267,11 +332,23 @@ pub fn generate_ensemble(
         return Ok(ensemble);
     }
 
-    for _ in 0..num_confs {
-        let mut disp = sample_displacement(&modes, query_structure.num_residues * 3);
-        scale_displacement_to_rmsd(&mut disp, target_rmsd);
-        ensemble.push(apply_residue_displacement(query_structure, &disp));
-    }
+    let sampled: Vec<CompactStructure> = (0..num_confs)
+        .into_par_iter()
+        .map(|_| {
+            for attempt in 0..MAX_CONFORMER_SAMPLING_ATTEMPTS {
+                let mut disp = sample_displacement(&modes, query_structure.num_residues * 3);
+                let attempt_scale = (0.85f32).powi(attempt as i32);
+                scale_displacement_to_rmsd(&mut disp, target_rmsd * attempt_scale);
+                cap_node_displacement(&mut disp, MAX_NODE_DISPLACEMENT_ANGSTROM);
+                let conformer = apply_residue_displacement(query_structure, &disp);
+                if is_backbone_plausible(&conformer) {
+                    return conformer;
+                }
+            }
+            query_structure.clone()
+        })
+        .collect();
+    ensemble.extend(sampled);
 
     Ok(ensemble)
 }

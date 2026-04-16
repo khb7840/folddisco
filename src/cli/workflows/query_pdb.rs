@@ -569,7 +569,8 @@ pub fn query_pdb(env: AppArgs) {
                     let mut union_aa_dist_map: HashMap<(u8, u8), Vec<(f32, usize)>> =
                         HashMap::default();
                     let mut union_query_indices: Option<Vec<usize>> = None;
-                    let mut conformer_support_by_nid: HashMap<usize, usize> = HashMap::default();
+                    let mut conformer_support_by_nid: HashMap<usize, HashSet<usize>> =
+                        HashMap::default();
 
                     for (conf_idx, sampled_query_structure) in query_ensemble.iter().enumerate() {
                         let (pdb_query_map, query_indices, aa_dist_map) = measure_time!(
@@ -711,6 +712,15 @@ pub fn query_pdb(env: AppArgs) {
                                         .retain(|(_, v)| structure_filter.filter_after_matching(v));
                                 }
 
+                                if non_rigid {
+                                    for (nid, _) in query_count_vec.iter() {
+                                        conformer_support_by_nid
+                                            .entry(*nid)
+                                            .or_default()
+                                            .insert(conf_idx);
+                                    }
+                                }
+
                                 if non_rigid && non_rigid_save_individual {
                                     let individual_output_path =
                                         with_conformer_suffix(&output_path, conf_idx);
@@ -809,9 +819,6 @@ pub fn query_pdb(env: AppArgs) {
                                     .iter()
                                     .map(|(nid, _)| *nid)
                                     .collect();
-                                for nid in candidate_nids.iter() {
-                                    *conformer_support_by_nid.entry(*nid).or_insert(0) += 1;
-                                }
                                 prefilter_data.push(ConformerPrefilterData {
                                     conf_idx,
                                     pdb_query_map,
@@ -827,7 +834,10 @@ pub fn query_pdb(env: AppArgs) {
                                     .map(|(nid, _)| *nid)
                                     .collect();
                                 for nid in candidate_nids.iter() {
-                                    *conformer_support_by_nid.entry(*nid).or_insert(0) += 1;
+                                    conformer_support_by_nid
+                                        .entry(*nid)
+                                        .or_default()
+                                        .insert(conf_idx);
                                 }
 
                                 for (hash, value) in pdb_query_map.iter() {
@@ -944,6 +954,15 @@ pub fn query_pdb(env: AppArgs) {
                                 );
                                 query_count_vec
                                     .retain(|(_, v)| structure_filter.filter_after_matching(v));
+                            }
+
+                            if non_rigid {
+                                for (nid, _) in query_count_vec.iter() {
+                                    conformer_support_by_nid
+                                        .entry(*nid)
+                                        .or_default()
+                                        .insert(data.conf_idx);
+                                }
                             }
 
                             if non_rigid && non_rigid_save_individual {
@@ -1133,18 +1152,22 @@ pub fn query_pdb(env: AppArgs) {
                                 .retain(|(_, v)| structure_filter.filter_after_matching(v));
                         }
                         for (nid, mut result) in query_count_vec {
-                            result.conformer_support_count =
-                                conformer_support_by_nid.get(&nid).copied().unwrap_or(1);
+                            result.conformer_support_count = conformer_support_by_nid
+                                .get(&nid)
+                                .map(|s| s.len())
+                                .unwrap_or(1);
                             aggregated_results.insert(nid, result);
                         }
                     }
 
                     let mut queried_from_indices: Vec<(usize, StructureResult)> =
                         aggregated_results.into_iter().collect();
-                    if non_rigid && search_mode == NonRigidSearchMode::UnionHashes {
+                    if non_rigid {
                         queried_from_indices.par_iter_mut().for_each(|(nid, result)| {
-                            result.conformer_support_count =
-                                conformer_support_by_nid.get(nid).copied().unwrap_or(1);
+                            result.conformer_support_count = conformer_support_by_nid
+                                .get(nid)
+                                .map(|s| s.len())
+                                .unwrap_or(1);
                         });
                     }
                     if non_rigid_dedup {
