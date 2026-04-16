@@ -91,6 +91,14 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             num_confs: args.value_from_str("--num-confs").unwrap_or(10),
             nma_rmsd: args.value_from_str("--nma-rmsd").unwrap_or(1.5),
             nma_modes: args.value_from_str("--nma-modes").unwrap_or(3),
+            non_rigid_save_individual: args.contains("--non-rigid-save-individual"),
+            non_rigid_dedup: args.contains("--non-rigid-dedup"),
+            non_rigid_dedup_keys: args
+                .value_from_str("--non-rigid-dedup-keys")
+                .unwrap_or("rmsd".into()),
+            non_rigid_integrated_output: args
+                .opt_value_from_str("--non-rigid-integrated-output")?,
+            save_query_conformers: args.opt_value_from_str("--save-query-conformers")?,
             // Sorting strategy (comma-separated keys)
             sort_by: args.value_from_str("--sort-by").unwrap_or("".into()),
             // Output format (comma-separated column names)

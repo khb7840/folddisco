@@ -74,6 +74,11 @@ pub enum AppArgs {
         num_confs: usize,
         nma_rmsd: f32,
         nma_modes: usize,
+        non_rigid_save_individual: bool,
+        non_rigid_dedup: bool,
+        non_rigid_dedup_keys: String,
+        non_rigid_integrated_output: Option<String>,
+        save_query_conformers: Option<String>,
         // sorting strategy
         sort_by: String,
         // output format (comma-separated column names)

@@ -18,8 +18,11 @@ use crate::controller::io::{check_and_get_indices, get_lookup_and_type, read_com
 use crate::controller::mode::QueryMode;
 use crate::controller::query::{make_query_map_from_compact, parse_threshold_string};
 use crate::controller::result::{
-    convert_structure_query_result_to_match_query_results, sort_and_print_match_query_result,
-    sort_and_print_structure_query_result, MatchResult, StructureResult,
+    convert_structure_query_result_to_match_query_results, dedup_match_results_with_keys,
+    dedup_structure_result_matches_with_keys, merge_structure_results, parse_non_rigid_dedup_keys,
+    sort_and_print_match_query_result, sort_and_print_structure_query_result, StructureResult,
+    MATCH_RESULT_DEFAULT_COLUMNS, MATCH_RESULT_SUPERPOSE_COLUMNS,
+    STRUCTURE_RESULT_DEFAULT_COLUMNS,
 };
 use crate::controller::retrieve::retrieval_wrapper;
 use crate::controller::sort::{MatchSortStrategy, StructureSortStrategy};
@@ -28,7 +31,7 @@ use crate::index::lookup::load_lookup_from_file;
 use crate::prelude::*;
 use crate::structure::nma;
 use rustc_hash::FxHashMap as HashMap;
-use std::fmt::Write;
+use std::path::Path;
 
 #[cfg(feature = "foldcomp")]
 use crate::controller::io::get_foldcomp_db_path_with_prefix;
@@ -61,6 +64,13 @@ search parameters:
  --num-confs <INT>                Number of sampled conformations to generate [10]
  --nma-rmsd <FLOAT>               Target RMSD for NMA perturbation in Angstroms [1.5]
  --nma-modes <INT>                Number of low-frequency normal modes to sample [3]
+ --non-rigid-save-individual      Save each conformer search result as separate output file
+ --non-rigid-dedup                Apply deduplication to integrated non-rigid results
+ --non-rigid-dedup-keys <KEYS>    Comma-separated priority keys for selecting best deduped hits [rmsd]
+                                  Available keys: rmsd,idf,node_count,tm_score,gdt_ts,gdt_ha,chamfer,hausdorff
+ --non-rigid-integrated-output <PATH>
+                                  Output path for integrated non-rigid result [--output path]
+ --save-query-conformers <PREFIX> Save generated query conformer coordinates as PDB (<PREFIX>_confXX.pdb)
  --skip-match                     Skip matching residues
  --serial-index                   Handle residue indices serially
 
@@ -141,98 +151,24 @@ folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --cov
 pub const MIN_CONNECTED_COMPONENT_SIZE: usize = 2;
 pub const MAX_NUM_LINES_FOR_WEB: usize = 1000;
 
-type RetrievedMatch = (
-    Vec<crate::controller::ResidueMatch>,
-    f32,
-    [[f32; 3]; 3],
-    [f32; 3],
-    Vec<crate::structure::coordinate::Coordinate>,
-    crate::structure::metrics::StructureSimilarityMetrics,
-    f32,
-);
-
-fn dedup_match_entries(entries: &mut Vec<RetrievedMatch>) {
-    let mut seen: HashMap<Vec<crate::controller::ResidueMatch>, usize> = HashMap::default();
-    let mut deduped: Vec<RetrievedMatch> = Vec::with_capacity(entries.len());
-
-    for entry in entries.drain(..) {
-        let key = entry.0.clone();
-        if let Some(&existing_idx) = seen.get(&key) {
-            if entry.1 < deduped[existing_idx].1 {
-                deduped[existing_idx] = entry;
-            }
-        } else {
-            seen.insert(key, deduped.len());
-            deduped.push(entry);
-        }
+fn with_conformer_suffix(base_output_path: &str, conformer_idx: usize) -> String {
+    if base_output_path.is_empty() {
+        return format!("conformer_{:03}.tsv", conformer_idx);
     }
-
-    *entries = deduped;
-}
-
-fn dedup_structure_result_matches(result: &mut StructureResult<'_>) {
-    dedup_match_entries(&mut result.matching_residues);
-    dedup_match_entries(&mut result.matching_residues_processed);
-}
-
-fn residue_match_signature(matches: &[crate::controller::ResidueMatch]) -> String {
-    let mut signature = String::new();
-    for entry in matches {
-        match entry {
-            Some((chain, residue)) => {
-                let _ = write!(&mut signature, "{}{};", *chain as char, residue);
-            }
-            None => signature.push_str("_;"),
-        }
+    let path = Path::new(base_output_path);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("tsv");
+    let dir = path.parent().unwrap_or_else(|| Path::new(""));
+    if dir.as_os_str().is_empty() {
+        format!("{}_conf{:03}.{}", stem, conformer_idx, ext)
+    } else {
+        dir.join(format!("{}_conf{:03}.{}", stem, conformer_idx, ext))
+            .to_string_lossy()
+            .to_string()
     }
-    signature
-}
-
-fn dedup_match_results(results: &mut Vec<(usize, MatchResult<'_>)>) {
-    let mut best_indices: HashMap<(String, String), usize> = HashMap::default();
-    let mut deduped: Vec<(usize, MatchResult)> = Vec::with_capacity(results.len());
-
-    for (k, m) in results.drain(..) {
-        let key = (m.tid.to_string(), residue_match_signature(&m.matching_residues));
-        if let Some(&idx) = best_indices.get(&key) {
-            if m.rmsd < deduped[idx].1.rmsd {
-                deduped[idx] = (k, m);
-            }
-        } else {
-            best_indices.insert(key, deduped.len());
-            deduped.push((k, m));
-        }
-    }
-
-    *results = deduped;
-}
-
-fn merge_structure_results<'a>(
-    existing: &mut StructureResult<'a>,
-    mut incoming: StructureResult<'a>,
-) {
-    existing.total_match_count = existing.total_match_count.max(incoming.total_match_count);
-    existing.node_count = existing.node_count.max(incoming.node_count);
-    existing.edge_count = existing.edge_count.max(incoming.edge_count);
-    existing.idf = existing.idf.max(incoming.idf);
-    existing.max_matching_node_count = existing
-        .max_matching_node_count
-        .max(incoming.max_matching_node_count);
-
-    if existing.min_rmsd_with_max_match == 0.0 {
-        existing.min_rmsd_with_max_match = incoming.min_rmsd_with_max_match;
-    } else if incoming.min_rmsd_with_max_match > 0.0 {
-        existing.min_rmsd_with_max_match = existing
-            .min_rmsd_with_max_match
-            .min(incoming.min_rmsd_with_max_match);
-    }
-
-    existing
-        .matching_residues
-        .append(&mut incoming.matching_residues);
-    existing
-        .matching_residues_processed
-        .append(&mut incoming.matching_residues_processed);
 }
 
 pub fn query_pdb(env: AppArgs) {
@@ -272,6 +208,11 @@ pub fn query_pdb(env: AppArgs) {
             num_confs,
             nma_rmsd,
             nma_modes,
+            non_rigid_save_individual,
+            non_rigid_dedup,
+            non_rigid_dedup_keys,
+            non_rigid_integrated_output,
+            save_query_conformers,
             sort_by,
             format_output,
             output_per_structure,
@@ -539,6 +480,19 @@ pub fn query_pdb(env: AppArgs) {
                         );
                     }
 
+                    if let Some(prefix) = save_query_conformers.as_ref() {
+                        for (conf_idx, conformer) in query_ensemble.iter().enumerate() {
+                            let path = format!("{}_conf{:03}.pdb", prefix, conf_idx);
+                            if let Err(e) = nma::write_conformer_as_pdb(conformer, &path) {
+                                print_log_msg(
+                                    FAIL,
+                                    &format!("Failed to write query conformer PDB {}: {}", path, e),
+                                );
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+
                     // Make filters out of filtering parameters
                     let structure_filter = StructureFilter::new(
                         total_match_count,
@@ -552,11 +506,26 @@ pub fn query_pdb(env: AppArgs) {
                         rmsd_cutoff,
                         residue_count,
                     );
+                    let dedup_keys = parse_non_rigid_dedup_keys(&non_rigid_dedup_keys);
+                    let evalue_cutoff = f64::MAX; // Currently not used
+                    let match_filter = MatchFilter::new(
+                        connected_node_count,
+                        connected_node_ratio,
+                        idf_score_cutoff,
+                        evalue_cutoff,
+                        rmsd_cutoff,
+                        tm_score_cutoff,
+                        gdt_ts_cutoff,
+                        gdt_ha_cutoff,
+                        chamfer_distance_cutoff,
+                        hausdorff_distance_cutoff,
+                        residue_count,
+                    );
 
                     let mut aggregated_results: HashMap<usize, StructureResult> =
                         HashMap::default();
 
-                    for sampled_query_structure in query_ensemble.iter() {
+                    for (conf_idx, sampled_query_structure) in query_ensemble.iter().enumerate() {
                         let (pdb_query_map, query_indices, aa_dist_map) = measure_time!(
                             make_query_map_from_compact(
                                 sampled_query_structure,
@@ -694,6 +663,88 @@ pub fn query_pdb(env: AppArgs) {
                                 .retain(|(_, v)| structure_filter.filter_after_matching(v));
                         }
 
+                        if non_rigid && non_rigid_save_individual {
+                            let individual_output_path =
+                                with_conformer_suffix(&output_path, conf_idx);
+                            if non_rigid_dedup {
+                                query_count_vec.par_iter_mut().for_each(|(_, result)| {
+                                    dedup_structure_result_matches_with_keys(result, &dedup_keys)
+                                });
+                            }
+
+                            match query_mode {
+                                QueryMode::PerMatch => {
+                                    let mut match_results =
+                                        convert_structure_query_result_to_match_query_results(
+                                            &query_count_vec,
+                                            skip_ca_match,
+                                            total_structures as usize,
+                                            residue_count,
+                                        );
+                                    if non_rigid_dedup {
+                                        dedup_match_results_with_keys(
+                                            &mut match_results,
+                                            &dedup_keys,
+                                        );
+                                    }
+                                    match_results.retain(|(_, v)| match_filter.filter(v));
+                                    sort_and_print_match_query_result(
+                                        &mut match_results,
+                                        top_n,
+                                        &individual_output_path,
+                                        &pdb_path,
+                                        &query_string,
+                                        column_refs.as_deref(),
+                                        output_with_superpose,
+                                        header,
+                                        verbose,
+                                        match_sort_strategy.clone(),
+                                    );
+                                }
+                                QueryMode::Web => {
+                                    let mut match_results =
+                                        convert_structure_query_result_to_match_query_results(
+                                            &query_count_vec,
+                                            skip_ca_match,
+                                            total_structures as usize,
+                                            residue_count,
+                                        );
+                                    if non_rigid_dedup {
+                                        dedup_match_results_with_keys(
+                                            &mut match_results,
+                                            &dedup_keys,
+                                        );
+                                    }
+                                    match_results.retain(|(_, v)| match_filter.filter(v));
+                                    sort_and_print_match_query_result(
+                                        &mut match_results,
+                                        MAX_NUM_LINES_FOR_WEB,
+                                        &individual_output_path,
+                                        &pdb_path,
+                                        &query_string,
+                                        column_refs.as_deref(),
+                                        true,
+                                        header,
+                                        verbose,
+                                        match_sort_strategy.clone(),
+                                    );
+                                }
+                                QueryMode::PerStructure | QueryMode::SkipMatch => {
+                                    sort_and_print_structure_query_result(
+                                        &mut query_count_vec,
+                                        &individual_output_path,
+                                        &pdb_path,
+                                        &query_string,
+                                        column_refs.as_deref(),
+                                        header,
+                                        verbose,
+                                        structure_sort_strategy.clone(),
+                                    );
+                                }
+                                QueryMode::ContradictoryPrintError => {}
+                            }
+                        }
+
                         for (nid, result) in query_count_vec {
                             if let Some(existing) = aggregated_results.get_mut(&nid) {
                                 merge_structure_results(existing, result);
@@ -705,25 +756,48 @@ pub fn query_pdb(env: AppArgs) {
 
                     let mut queried_from_indices: Vec<(usize, StructureResult)> =
                         aggregated_results.into_iter().collect();
-                    queried_from_indices
-                        .par_iter_mut()
-                        .for_each(|(_, result)| dedup_structure_result_matches(result));
+                    if non_rigid_dedup {
+                        queried_from_indices.par_iter_mut().for_each(|(_, result)| {
+                            dedup_structure_result_matches_with_keys(result, &dedup_keys)
+                        });
+                    }
                     queried_from_indices.par_sort_by(|a, b| b.1.idf.partial_cmp(&a.1.idf).unwrap());
 
-                    let evalue_cutoff = f64::MAX; // Currently not used
-                    let match_filter = MatchFilter::new(
-                        connected_node_count,
-                        connected_node_ratio,
-                        idf_score_cutoff,
-                        evalue_cutoff,
-                        rmsd_cutoff,
-                        tm_score_cutoff,
-                        gdt_ts_cutoff,
-                        gdt_ha_cutoff,
-                        chamfer_distance_cutoff,
-                        hausdorff_distance_cutoff,
-                        residue_count,
-                    );
+                    let integrated_output_path = if non_rigid {
+                        non_rigid_integrated_output
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_else(|| output_path.clone())
+                    } else {
+                        output_path.clone()
+                    };
+
+                    let integrated_column_refs: Option<Vec<&str>> = if non_rigid {
+                        if let Some(cols) = &column_refs {
+                            Some(cols.clone())
+                        } else {
+                            match query_mode {
+                                QueryMode::PerStructure | QueryMode::SkipMatch => {
+                                    let mut cols = STRUCTURE_RESULT_DEFAULT_COLUMNS.to_vec();
+                                    cols.push("conformer_support");
+                                    Some(cols)
+                                }
+                                QueryMode::PerMatch | QueryMode::Web => {
+                                    let mut cols =
+                                        if output_with_superpose || query_mode == QueryMode::Web {
+                                            MATCH_RESULT_SUPERPOSE_COLUMNS.to_vec()
+                                        } else {
+                                            MATCH_RESULT_DEFAULT_COLUMNS.to_vec()
+                                        };
+                                    cols.push("conformer_support");
+                                    Some(cols)
+                                }
+                                QueryMode::ContradictoryPrintError => None,
+                            }
+                        }
+                    } else {
+                        column_refs.clone()
+                    };
 
                     match query_mode {
                         QueryMode::PerMatch => {
@@ -734,15 +808,17 @@ pub fn query_pdb(env: AppArgs) {
                                     total_structures as usize,
                                     residue_count,
                                 );
-                            dedup_match_results(&mut match_results);
+                            if non_rigid_dedup {
+                                dedup_match_results_with_keys(&mut match_results, &dedup_keys);
+                            }
                             match_results.retain(|(_, v)| match_filter.filter(v));
                             sort_and_print_match_query_result(
                                 &mut match_results,
                                 top_n,
-                                &output_path,
+                                &integrated_output_path,
                                 &pdb_path,
                                 &query_string,
-                                column_refs.as_deref(),
+                                integrated_column_refs.as_deref(),
                                 output_with_superpose,
                                 header,
                                 verbose,
@@ -757,16 +833,18 @@ pub fn query_pdb(env: AppArgs) {
                                     total_structures as usize,
                                     residue_count,
                                 );
-                            dedup_match_results(&mut match_results);
+                            if non_rigid_dedup {
+                                dedup_match_results_with_keys(&mut match_results, &dedup_keys);
+                            }
                             match_results.retain(|(_, v)| match_filter.filter(v));
                             // If web, set superpose to true.
                             sort_and_print_match_query_result(
                                 &mut match_results,
                                 MAX_NUM_LINES_FOR_WEB,
-                                &output_path,
+                                &integrated_output_path,
                                 &pdb_path,
                                 &query_string,
-                                column_refs.as_deref(),
+                                integrated_column_refs.as_deref(),
                                 true,
                                 header,
                                 verbose,
@@ -776,10 +854,10 @@ pub fn query_pdb(env: AppArgs) {
                         QueryMode::PerStructure | QueryMode::SkipMatch => {
                             sort_and_print_structure_query_result(
                                 &mut queried_from_indices,
-                                &output_path,
+                                &integrated_output_path,
                                 &pdb_path,
                                 &query_string,
-                                column_refs.as_deref(),
+                                integrated_column_refs.as_deref(),
                                 header,
                                 verbose,
                                 structure_sort_strategy.clone(),
@@ -860,6 +938,11 @@ mod tests {
             num_confs: 10,
             nma_rmsd: 1.5,
             nma_modes: 3,
+            non_rigid_save_individual: false,
+            non_rigid_dedup: false,
+            non_rigid_dedup_keys: String::from("rmsd"),
+            non_rigid_integrated_output: None,
+            save_query_conformers: None,
             sort_by: String::from("node_count,rmsd"),
             format_output: None,
             output_per_structure: false,
@@ -919,6 +1002,11 @@ mod tests {
                 num_confs: 10,
                 nma_rmsd: 1.5,
                 nma_modes: 3,
+                non_rigid_save_individual: false,
+                non_rigid_dedup: false,
+                non_rigid_dedup_keys: String::from("rmsd"),
+                non_rigid_integrated_output: None,
+                save_query_conformers: None,
                 sort_by: String::from("node_count,rmsd"),
                 format_output: None,
                 output_per_structure: true,
@@ -977,6 +1065,11 @@ mod tests {
             num_confs: 10,
             nma_rmsd: 1.5,
             nma_modes: 3,
+            non_rigid_save_individual: false,
+            non_rigid_dedup: false,
+            non_rigid_dedup_keys: String::from("rmsd"),
+            non_rigid_integrated_output: None,
+            save_query_conformers: None,
             sort_by: String::from("node_count,rmsd"),
             format_output: None,
             output_per_structure: true,

@@ -8,6 +8,8 @@
 
 use nalgebra::{DMatrix, DVector, SymmetricEigen};
 use rand::Rng;
+use std::fs::File;
+use std::io::Write;
 
 use crate::structure::coordinate::Coordinate;
 use crate::structure::core::CompactStructure;
@@ -223,4 +225,59 @@ pub fn generate_ensemble(
     }
 
     Ok(ensemble)
+}
+
+fn atom_line(
+    serial: usize,
+    atom_name: &str,
+    res_name: &[u8; 3],
+    chain: u8,
+    res_seq: u64,
+    coord: &Coordinate,
+) -> String {
+    let residue = std::str::from_utf8(res_name).unwrap_or("UNK");
+    let element = atom_name.trim().chars().next().unwrap_or('C');
+    format!(
+        "ATOM  {:>5} {:<4} {:>3} {:>1}{:>4}    {:>8.3}{:>8.3}{:>8.3}  1.00  0.00           {:>2}",
+        serial, atom_name, residue, chain as char, res_seq, coord.x, coord.y, coord.z, element
+    )
+}
+
+pub fn write_conformer_as_pdb(structure: &CompactStructure, path: &str) -> Result<(), String> {
+    let mut file = File::create(path).map_err(|e| format!("Failed to create {}: {}", path, e))?;
+    let mut serial = 1usize;
+    for i in 0..structure.num_residues {
+        let chain = structure.chain_per_residue[i];
+        let res_seq = structure.residue_serial[i];
+        let res_name = &structure.residue_name[i];
+        if let Some(n) = structure.n_vector.get_coord(i) {
+            writeln!(
+                file,
+                "{}",
+                atom_line(serial, "N", res_name, chain, res_seq, &n)
+            )
+            .map_err(|e| format!("Failed to write {}: {}", path, e))?;
+            serial += 1;
+        }
+        if let Some(ca) = structure.ca_vector.get_coord(i) {
+            writeln!(
+                file,
+                "{}",
+                atom_line(serial, "CA", res_name, chain, res_seq, &ca)
+            )
+            .map_err(|e| format!("Failed to write {}: {}", path, e))?;
+            serial += 1;
+        }
+        if let Some(cb) = structure.cb_vector.get_coord(i) {
+            writeln!(
+                file,
+                "{}",
+                atom_line(serial, "CB", res_name, chain, res_seq, &cb)
+            )
+            .map_err(|e| format!("Failed to write {}: {}", path, e))?;
+            serial += 1;
+        }
+    }
+    writeln!(file, "END").map_err(|e| format!("Failed to finalize {}: {}", path, e))?;
+    Ok(())
 }
