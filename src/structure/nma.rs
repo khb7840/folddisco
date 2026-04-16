@@ -345,26 +345,26 @@ pub fn generate_ensemble(
     let sampled: Vec<CompactStructure> = (0..num_confs)
         .into_par_iter()
         .map(|_| {
-            let mut best_fallback: Option<(f32, CompactStructure)> = None;
+            let mut max_rmsd_fallback: Option<(f32, CompactStructure)> = None;
             let node_displacement_cap = node_displacement_cap_for_target_rmsd(target_rmsd);
             for attempt in 0..MAX_CONFORMER_SAMPLING_ATTEMPTS {
                 let mut disp = sample_displacement(&modes, query_structure.num_residues * 3);
                 let attempt_scale = CONFORMER_RETRY_SCALE_FACTOR.powi(attempt as i32);
                 scale_displacement_to_rmsd(&mut disp, target_rmsd * attempt_scale);
                 cap_node_displacement(&mut disp, node_displacement_cap);
-                let effective_rmsd = displacement_rmsd(&disp);
                 let conformer = apply_residue_displacement(query_structure, &disp);
                 if is_backbone_plausible(&conformer) {
                     return conformer;
                 }
-                if best_fallback
+                let effective_rmsd = displacement_rmsd(&disp);
+                if max_rmsd_fallback
                     .as_ref()
                     .map_or(true, |(best_rmsd, _)| effective_rmsd > *best_rmsd)
                 {
-                    best_fallback = Some((effective_rmsd, conformer));
+                    max_rmsd_fallback = Some((effective_rmsd, conformer));
                 }
             }
-            best_fallback
+            max_rmsd_fallback
                 .map(|(_, conformer)| conformer)
                 .unwrap_or_else(|| query_structure.clone())
         })
