@@ -19,7 +19,7 @@ use crate::controller::mode::QueryMode;
 use crate::controller::query::{make_query_map_from_compact, parse_threshold_string};
 use crate::controller::result::{
     convert_structure_query_result_to_match_query_results, sort_and_print_match_query_result,
-    sort_and_print_structure_query_result, StructureResult,
+    sort_and_print_structure_query_result, MatchResult, StructureResult,
 };
 use crate::controller::retrieve::retrieval_wrapper;
 use crate::controller::sort::{MatchSortStrategy, StructureSortStrategy};
@@ -28,6 +28,7 @@ use crate::index::lookup::load_lookup_from_file;
 use crate::prelude::*;
 use crate::structure::nma;
 use rustc_hash::FxHashMap as HashMap;
+use std::fmt::Write;
 
 #[cfg(feature = "foldcomp")]
 use crate::controller::io::get_foldcomp_db_path_with_prefix;
@@ -172,6 +173,38 @@ fn dedup_match_entries(entries: &mut Vec<RetrievedMatch>) {
 fn dedup_structure_result_matches(result: &mut StructureResult<'_>) {
     dedup_match_entries(&mut result.matching_residues);
     dedup_match_entries(&mut result.matching_residues_processed);
+}
+
+fn residue_match_signature(matches: &[crate::controller::ResidueMatch]) -> String {
+    let mut signature = String::new();
+    for entry in matches {
+        match entry {
+            Some((chain, residue)) => {
+                let _ = write!(&mut signature, "{}{};", *chain as char, residue);
+            }
+            None => signature.push_str("_;"),
+        }
+    }
+    signature
+}
+
+fn dedup_match_results(results: &mut Vec<(usize, MatchResult<'_>)>) {
+    let mut best_indices: HashMap<(String, String), usize> = HashMap::default();
+    let mut deduped: Vec<(usize, MatchResult)> = Vec::with_capacity(results.len());
+
+    for (k, m) in results.drain(..) {
+        let key = (m.tid.to_string(), residue_match_signature(&m.matching_residues));
+        if let Some(&idx) = best_indices.get(&key) {
+            if m.rmsd < deduped[idx].1.rmsd {
+                deduped[idx] = (k, m);
+            }
+        } else {
+            best_indices.insert(key, deduped.len());
+            deduped.push((k, m));
+        }
+    }
+
+    *results = deduped;
 }
 
 fn merge_structure_results<'a>(
@@ -701,26 +734,7 @@ pub fn query_pdb(env: AppArgs) {
                                     total_structures as usize,
                                     residue_count,
                                 );
-                            let mut deduped_indices: HashMap<
-                                (String, Vec<crate::controller::ResidueMatch>),
-                                usize,
-                            > = HashMap::default();
-                            let mut deduped_results: Vec<(
-                                usize,
-                                crate::controller::result::MatchResult,
-                            )> = Vec::with_capacity(match_results.len());
-                            for (k, m) in match_results.drain(..) {
-                                let key = (m.tid.to_string(), m.matching_residues.clone());
-                                if let Some(&idx) = deduped_indices.get(&key) {
-                                    if m.rmsd < deduped_results[idx].1.rmsd {
-                                        deduped_results[idx] = (k, m);
-                                    }
-                                } else {
-                                    deduped_indices.insert(key, deduped_results.len());
-                                    deduped_results.push((k, m));
-                                }
-                            }
-                            match_results = deduped_results;
+                            dedup_match_results(&mut match_results);
                             match_results.retain(|(_, v)| match_filter.filter(v));
                             sort_and_print_match_query_result(
                                 &mut match_results,
@@ -743,26 +757,7 @@ pub fn query_pdb(env: AppArgs) {
                                     total_structures as usize,
                                     residue_count,
                                 );
-                            let mut deduped_indices: HashMap<
-                                (String, Vec<crate::controller::ResidueMatch>),
-                                usize,
-                            > = HashMap::default();
-                            let mut deduped_results: Vec<(
-                                usize,
-                                crate::controller::result::MatchResult,
-                            )> = Vec::with_capacity(match_results.len());
-                            for (k, m) in match_results.drain(..) {
-                                let key = (m.tid.to_string(), m.matching_residues.clone());
-                                if let Some(&idx) = deduped_indices.get(&key) {
-                                    if m.rmsd < deduped_results[idx].1.rmsd {
-                                        deduped_results[idx] = (k, m);
-                                    }
-                                } else {
-                                    deduped_indices.insert(key, deduped_results.len());
-                                    deduped_results.push((k, m));
-                                }
-                            }
-                            match_results = deduped_results;
+                            dedup_match_results(&mut match_results);
                             match_results.retain(|(_, v)| match_filter.filter(v));
                             // If web, set superpose to true.
                             sort_and_print_match_query_result(

@@ -95,6 +95,8 @@ fn select_nontrivial_modes(hessian: DMatrix<f64>, mode_count: usize) -> Vec<DVec
 
     ranked
         .into_iter()
+        // The first six ANM eigenmodes are rigid-body motions (3 translations + 3 rotations).
+        // They do not represent internal conformational changes and are excluded from sampling.
         .skip(6)
         .filter(|(val, _)| *val > EIGENVALUE_EPS)
         .take(mode_count)
@@ -201,6 +203,7 @@ pub fn generate_ensemble(
     let mut ensemble = Vec::with_capacity(num_confs.saturating_add(1));
     ensemble.push(query_structure.clone());
 
+    // Fewer than 3 residues cannot provide meaningful internal normal modes for non-rigid sampling.
     if num_confs == 0 || nma_modes == 0 || query_structure.num_residues < 3 {
         return Ok(ensemble);
     }
