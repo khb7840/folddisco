@@ -426,8 +426,9 @@ impl GeometricHash {
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            } // append new hash type here
-              // _ => panic!("Invalid hash type"),
+            }
+            // append new hash type here
+            // _ => panic!("Invalid hash type"),
         }
     }
 
@@ -486,8 +487,9 @@ impl GeometricHash {
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            } // append new hash type here
-              // _ => panic!("Invalid hash type"),
+            }
+            // append new hash type here
+            // _ => panic!("Invalid hash type"),
         }
     }
 
@@ -705,8 +707,9 @@ impl fmt::Debug for GeometricHash {
             }
             GeometricHash::FolddiscoDist(hash) => {
                 write!(f, "FolddiscoDist({:?})", hash)
-            } // append new hash type here
-              // _ => panic!("Invalid hash type"),
+            }
+            // append new hash type here
+            // _ => panic!("Invalid hash type"),
         }
     }
 }
@@ -740,8 +743,9 @@ impl fmt::Display for GeometricHash {
             }
             GeometricHash::FolddiscoDist(hash) => {
                 write!(f, "FolddiscoDist\t{:?}", hash)
-            } // append new hash type here
-              // _ => panic!("Invalid hash type"),
+            }
+            // append new hash type here
+            // _ => panic!("Invalid hash type"),
         }
     }
 }
