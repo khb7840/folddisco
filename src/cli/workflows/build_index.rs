@@ -4,14 +4,13 @@
 // Copyright © 2023 Hyunbin Kim, All rights reserved
 
 //! This file contains the workflow for building index table
-//! For building index table, we need a directory containing PDB files, 
+//! For building index table, we need a directory containing PDB files,
 //! and the path to save the index table.
 
-
 use crate::cli::config::{write_index_config_to_file, IndexConfig};
-use crate::controller::mode::{parse_path_vec_by_id_type, IdType};
 use crate::cli::*;
 use crate::controller::io::default_index_path;
+use crate::controller::mode::{parse_path_vec_by_id_type, IdType};
 use crate::prelude::*;
 use crate::structure::io::StructureFileFormat;
 use crate::utils::cli::parse_distance_angle_pairs;
@@ -19,7 +18,7 @@ use crate::utils::cli::parse_distance_angle_pairs;
 #[cfg(feature = "foldcomp")]
 use std::path::PathBuf;
 
-#[cfg(feature= "foldcomp")] 
+#[cfg(feature = "foldcomp")]
 use crate::structure::io::fcz::*;
 
 #[cfg(feature = "foldcomp")]
@@ -79,7 +78,9 @@ pub fn build_index(env: AppArgs) {
             verbose,
             help: _,
         } => {
-            if verbose { print_logo(); }
+            if verbose {
+                print_logo();
+            }
             // Check if arguments are valid
             if pdb_container.is_none() {
                 eprintln!("{}", HELP_INDEX);
@@ -90,11 +91,12 @@ pub fn build_index(env: AppArgs) {
             let index_path = if index_path.is_empty() {
                 // Get default index path
                 default_index_path(pdb_container.as_ref().unwrap())
-            } else { 
+            } else {
                 index_path
             };
             #[cfg(feature = "foldcomp")]
-            let pdb_container_name: &'static str = Box::leak(pdb_container.clone().unwrap().into_boxed_str());
+            let pdb_container_name: &'static str =
+                Box::leak(pdb_container.clone().unwrap().into_boxed_str());
             #[allow(unused_mut)]
             let mut input_format: StructureFileFormat = StructureFileFormat::PDB;
             // Load PDB files
@@ -102,7 +104,9 @@ pub fn build_index(env: AppArgs) {
                 // Check if pdb_dir is a directory or db file
                 // If not foldcomp, just load
                 #[cfg(not(feature = "foldcomp"))]
-                { load_path(&pdb_container.unwrap(), recursive) }
+                {
+                    load_path(&pdb_container.unwrap(), recursive)
+                }
                 #[cfg(feature = "foldcomp")]
                 {
                     let pdb_container = pdb_container.unwrap();
@@ -111,13 +115,11 @@ pub fn build_index(env: AppArgs) {
                     if is_dir {
                         load_path(&pdb_container, recursive)
                     } else {
-                        let mut lookup_vec = read_foldcomp_db_lookup(&pdb_container).expect(
-                            &log_msg(FAIL, "Failed to read Foldcomp DB lookup")
-                        );
+                        let mut lookup_vec = read_foldcomp_db_lookup(&pdb_container)
+                            .expect(&log_msg(FAIL, "Failed to read Foldcomp DB lookup"));
                         lookup_vec.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                        let mut index_vec = read_foldcomp_db_index(&pdb_container).expect(
-                            &log_msg(FAIL, "Failed to read Foldcomp DB index")
-                        );
+                        let mut index_vec = read_foldcomp_db_index(&pdb_container)
+                            .expect(&log_msg(FAIL, "Failed to read Foldcomp DB index"));
                         index_vec.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
                         input_format = StructureFileFormat::FCZDB;
                         get_path_vector_out_of_lookup_and_index(&lookup_vec, &index_vec)
@@ -128,110 +130,168 @@ pub fn build_index(env: AppArgs) {
                 eprintln!("{}", HELP_INDEX);
                 std::process::exit(1);
             };
-            
+
             // Always use Big mode - set chunk_size to total number of files
             let chunk_size = pdb_path_vec.len();
-            let num_chunks = if pdb_path_vec.len() <= chunk_size { 1 } else { (pdb_path_vec.len() as f64 / chunk_size as f64).ceil() as usize };
-            if verbose { 
+            let num_chunks = if pdb_path_vec.len() <= chunk_size {
+                1
+            } else {
+                (pdb_path_vec.len() as f64 / chunk_size as f64).ceil() as usize
+            };
+            if verbose {
                 print_log_msg(
-                    INFO,&format!(
+                    INFO,
+                    &format!(
                         "Indexing {} with {} threads and {} chunks",
                         pdb_container_clone.unwrap_or("None".to_string()),
-                        num_threads, num_chunks
-                    )
+                        num_threads,
+                        num_chunks
+                    ),
                 );
             }
             let hash_type = HashType::get_with_str(hash_type.as_str());
-            if verbose { print_log_msg(INFO, &format!("Hash type: {:?}", hash_type)); }
+            if verbose {
+                print_log_msg(INFO, &format!("Hash type: {:?}", hash_type));
+            }
             let pdb_path_chunks = pdb_path_vec.chunks(chunk_size);
             let id_type = IdType::get_with_str(id_type.as_str());
-            
+
             let multiple_bins = if let Some(multiple_bins) = multiple_bins {
                 Some(parse_distance_angle_pairs(&multiple_bins))
             } else {
                 None
             };
-            
-            pdb_path_chunks.into_iter().enumerate().for_each(|(i, pdb_path_vec)| {
-                // let pdb_container_name_inner: &'static str = pdb_container_name.clone();
-                let index_path = if num_chunks == 1 {
-                    index_path.clone()
-                } else {
-                    format!("{}_{}", index_path, i)
-                };
 
-                #[cfg(not(feature = "foldcomp"))]
-                let mut folddisco = Folddisco::new(
-                    pdb_path_vec.to_vec(), hash_type, num_threads, 
-                    num_bin_dist, num_bin_angle, index_path.clone(), 
-                    grid_width, multiple_bins.clone(),
-                    mmap_on_disk,
-                );
-                #[cfg(feature = "foldcomp")]
-                let mut folddisco = if PathBuf::from(&pdb_container_name).is_dir() {
-                    Folddisco::new(
-                        pdb_path_vec.to_vec(), hash_type, num_threads, 
-                        num_bin_dist, num_bin_angle, index_path.clone(), 
-                        grid_width, multiple_bins.clone(),
+            pdb_path_chunks
+                .into_iter()
+                .enumerate()
+                .for_each(|(i, pdb_path_vec)| {
+                    // let pdb_container_name_inner: &'static str = pdb_container_name.clone();
+                    let index_path = if num_chunks == 1 {
+                        index_path.clone()
+                    } else {
+                        format!("{}_{}", index_path, i)
+                    };
+
+                    #[cfg(not(feature = "foldcomp"))]
+                    let mut folddisco = Folddisco::new(
+                        pdb_path_vec.to_vec(),
+                        hash_type,
+                        num_threads,
+                        num_bin_dist,
+                        num_bin_angle,
+                        index_path.clone(),
+                        grid_width,
+                        multiple_bins.clone(),
                         mmap_on_disk,
-                    )
-                } else {
-                    Folddisco::new_with_foldcomp_db(
-                        pdb_path_vec.to_vec(), hash_type, num_threads, 
-                        num_bin_dist, num_bin_angle, index_path.clone(), 
-                        grid_width, pdb_container_name,
-                        multiple_bins.clone(), mmap_on_disk,
-                    )
-                };
-                
-                // Indexing
-                if verbose {
-                    print_log_msg(INFO, "Collecting ids of the structures");
-                }
-                measure_time!(folddisco.collect_and_count(), verbose);
-                if verbose {
-                    print_log_msg(INFO, &format!("Hashes collected"));
-                }
-                measure_time!(folddisco.fold_disco_index.allocate_entries(), verbose);
-                measure_time!(folddisco.add_entries(), verbose);
-                measure_time!(folddisco.fold_disco_index.wrapup_offset_and_save_entries(), verbose);
-                measure_time!(folddisco.fold_disco_index.prune_to_sparse(), verbose);
-                measure_time!(folddisco.fold_disco_index.save_offset_to_file(), verbose);
-                
-                if verbose { print_log_msg(INFO,"Hash sorted"); }
-                folddisco.fill_numeric_id_vec();
+                    );
+                    #[cfg(feature = "foldcomp")]
+                    let mut folddisco = if PathBuf::from(&pdb_container_name).is_dir() {
+                        Folddisco::new(
+                            pdb_path_vec.to_vec(),
+                            hash_type,
+                            num_threads,
+                            num_bin_dist,
+                            num_bin_angle,
+                            index_path.clone(),
+                            grid_width,
+                            multiple_bins.clone(),
+                            mmap_on_disk,
+                        )
+                    } else {
+                        Folddisco::new_with_foldcomp_db(
+                            pdb_path_vec.to_vec(),
+                            hash_type,
+                            num_threads,
+                            num_bin_dist,
+                            num_bin_angle,
+                            index_path.clone(),
+                            grid_width,
+                            pdb_container_name,
+                            multiple_bins.clone(),
+                            mmap_on_disk,
+                        )
+                    };
 
-                let lookup_path = format!("{}.lookup", index_path);
-                let id_vec = parse_path_vec_by_id_type(&folddisco.path_vec, &id_type);
-                // Check if db_key_vec is empty or not
-                let key_vec_input = if folddisco.numeric_db_key_vec.is_empty() {
-                    None
-                } else {
-                    Some(&folddisco.numeric_db_key_vec)
-                };
-                measure_time!(save_lookup_to_file(
-                    &lookup_path, &id_vec, &folddisco.numeric_id_vec,
-                    Some(&folddisco.nres_vec), Some(&folddisco.plddt_vec), key_vec_input
-                ), verbose);
+                    // Indexing
+                    if verbose {
+                        print_log_msg(INFO, "Collecting ids of the structures");
+                    }
+                    measure_time!(folddisco.collect_and_count(), verbose);
+                    if verbose {
+                        print_log_msg(INFO, &format!("Hashes collected"));
+                    }
+                    measure_time!(folddisco.fold_disco_index.allocate_entries(), verbose);
+                    measure_time!(folddisco.add_entries(), verbose);
+                    measure_time!(
+                        folddisco.fold_disco_index.wrapup_offset_and_save_entries(),
+                        verbose
+                    );
+                    measure_time!(folddisco.fold_disco_index.prune_to_sparse(), verbose);
+                    measure_time!(folddisco.fold_disco_index.save_offset_to_file(), verbose);
 
-                let hash_type_path = format!("{}.type", index_path);
-                let chunk_size = pdb_path_vec.len();
-                #[cfg(not(feature = "foldcomp"))]
-                let index_config = IndexConfig::new(
-                    hash_type, num_bin_dist, num_bin_angle,
-                    grid_width, chunk_size, max_residue, input_format.clone(),
-                    None, multiple_bins.clone(),
-                );
-                #[cfg(feature = "foldcomp")]
-                let index_config = IndexConfig::new(
-                    hash_type, num_bin_dist, num_bin_angle,
-                    grid_width, chunk_size, max_residue, input_format.clone(), 
-                    Some(pdb_container_name.to_string()), multiple_bins.clone(),
-                );
-                write_index_config_to_file(&hash_type_path, index_config);
-                if verbose { print_log_msg(DONE, &format!("Indexing done for chunk {} - {}", i+1, index_path)); }
-            });
-            if verbose { print_log_msg(DONE, "Done."); }
+                    if verbose {
+                        print_log_msg(INFO, "Hash sorted");
+                    }
+                    folddisco.fill_numeric_id_vec();
+
+                    let lookup_path = format!("{}.lookup", index_path);
+                    let id_vec = parse_path_vec_by_id_type(&folddisco.path_vec, &id_type);
+                    // Check if db_key_vec is empty or not
+                    let key_vec_input = if folddisco.numeric_db_key_vec.is_empty() {
+                        None
+                    } else {
+                        Some(&folddisco.numeric_db_key_vec)
+                    };
+                    measure_time!(
+                        save_lookup_to_file(
+                            &lookup_path,
+                            &id_vec,
+                            &folddisco.numeric_id_vec,
+                            Some(&folddisco.nres_vec),
+                            Some(&folddisco.plddt_vec),
+                            key_vec_input
+                        ),
+                        verbose
+                    );
+
+                    let hash_type_path = format!("{}.type", index_path);
+                    let chunk_size = pdb_path_vec.len();
+                    #[cfg(not(feature = "foldcomp"))]
+                    let index_config = IndexConfig::new(
+                        hash_type,
+                        num_bin_dist,
+                        num_bin_angle,
+                        grid_width,
+                        chunk_size,
+                        max_residue,
+                        input_format.clone(),
+                        None,
+                        multiple_bins.clone(),
+                    );
+                    #[cfg(feature = "foldcomp")]
+                    let index_config = IndexConfig::new(
+                        hash_type,
+                        num_bin_dist,
+                        num_bin_angle,
+                        grid_width,
+                        chunk_size,
+                        max_residue,
+                        input_format.clone(),
+                        Some(pdb_container_name.to_string()),
+                        multiple_bins.clone(),
+                    );
+                    write_index_config_to_file(&hash_type_path, index_config);
+                    if verbose {
+                        print_log_msg(
+                            DONE,
+                            &format!("Indexing done for chunk {} - {}", i + 1, index_path),
+                        );
+                    }
+                });
+            if verbose {
+                print_log_msg(DONE, "Done.");
+            }
         }
         _ => {
             eprintln!("{}", HELP_INDEX);
@@ -239,9 +299,6 @@ pub fn build_index(env: AppArgs) {
         }
     }
 }
-
-
-
 
 #[cfg(test)]
 mod tests {

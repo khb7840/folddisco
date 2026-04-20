@@ -6,7 +6,7 @@
 //! This module contains the workflows for the CLI.
 //! Currently, there are two workflows: `build_index` and `query_pdb`.
 
+pub mod analyze;
+pub mod benchmark;
 pub mod build_index;
 pub mod query_pdb;
-pub mod benchmark;
-pub mod analyze;

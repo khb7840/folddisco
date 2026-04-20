@@ -7,8 +7,8 @@
 
 // Arguments of CLI app are defined here
 
-pub mod workflows;
 pub mod config;
+pub mod workflows;
 
 pub enum AppArgs {
     Global {
@@ -42,7 +42,7 @@ pub enum AppArgs {
         ca_dist_threshold: f32,
         // filtering parameters
         // These are for filtering StructQueryResult only
-        total_match_count: usize, 
+        total_match_count: usize,
         covered_node_count: usize,
         covered_node_ratio: f32,
         max_matching_node_count: usize,
@@ -69,6 +69,17 @@ pub enum AppArgs {
         sampling_ratio: Option<f32>,
         freq_filter: Option<f32>,
         length_penalty: Option<f32>,
+        // Non-rigid NMA query sampling
+        non_rigid: bool,
+        num_confs: usize,
+        nma_rmsd: f32,
+        nma_modes: usize,
+        non_rigid_save_individual: bool,
+        non_rigid_dedup: bool,
+        non_rigid_dedup_keys: String,
+        non_rigid_search_mode: String,
+        non_rigid_integrated_output: Option<String>,
+        save_query_conformers: Option<String>,
         // sorting strategy
         sort_by: String,
         // output format (comma-separated column names)
@@ -107,7 +118,7 @@ pub enum AppArgs {
         header_neutral: bool,
     },
     Analyze {
-        // Required 
+        // Required
         index_path: Option<String>,
         // Optional
         pdb_container: Option<String>,

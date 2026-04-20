@@ -34,7 +34,7 @@ pub enum SortKey {
 
 impl SortKey {
     /// Parse from string (case-insensitive)
-    /// 
+    ///
     /// # Valid key names
     /// - `node_count`, `nodes`, `n` -> NodeCount
     /// - `idf` -> Idf
@@ -56,7 +56,9 @@ impl SortKey {
             "gdt_ts" | "gdt-ts" | "gdtts" | "gdt" => Ok(Self::GdtTs),
             "gdt_ha" | "gdt-ha" | "gdtha" => Ok(Self::GdtHa),
             "chamfer" | "chamfer-distance" | "chamfer_distance" => Ok(Self::ChamferDistance),
-            "hausdorff" | "hausdorff-distance" | "hausdorff_distance" => Ok(Self::HausdorffDistance),
+            "hausdorff" | "hausdorff-distance" | "hausdorff_distance" => {
+                Ok(Self::HausdorffDistance)
+            }
             _ => Err(format!(
                 "Unknown sort key: '{}'. Valid keys: {}",
                 s,
@@ -71,15 +73,19 @@ impl SortKey {
     }
 
     /// Get the default sort order for this key
-    /// 
+    ///
     /// Higher is better: NodeCount, IDF, TM-score, GDT scores -> Descending
     /// Lower is better: RMSD, Chamfer, Hausdorff -> Ascending
     pub fn default_order(&self) -> SortOrder {
         match self {
             // Descending order for NodeCount, IDF, TM-score, GDT scores
-            Self::NodeCount | Self::Idf | Self::TmScore | Self::GdtTs | Self::GdtHa => SortOrder::Desc,
+            Self::NodeCount | Self::Idf | Self::TmScore | Self::GdtTs | Self::GdtHa => {
+                SortOrder::Desc
+            }
             // Ascending order for distance metrics: RMSD, Chamfer, Hausdorff, E-value
-            Self::Evalue | Self::Rmsd | Self::ChamferDistance | Self::HausdorffDistance => SortOrder::Asc,
+            Self::Evalue | Self::Rmsd | Self::ChamferDistance | Self::HausdorffDistance => {
+                SortOrder::Asc
+            }
         }
     }
 
@@ -103,7 +109,7 @@ impl SortKey {
         let val_a = self.extract_value(a);
         let val_b = self.extract_value(b);
         // Less comes first, Greater comes last
-        // a partial cmp b means: a < b -> Less, a == b -> Equal, a > b -> Greater. 
+        // a partial cmp b means: a < b -> Less, a == b -> Equal, a > b -> Greater.
         match order {
             SortOrder::Asc => val_a.partial_cmp(&val_b).unwrap_or(Ordering::Equal),
             SortOrder::Desc => val_b.partial_cmp(&val_a).unwrap_or(Ordering::Equal),
@@ -126,10 +132,7 @@ impl SortOrder {
         match s.trim().to_lowercase().as_str() {
             "asc" | "ascending" | "a" => Ok(Self::Asc),
             "desc" | "descending" | "d" => Ok(Self::Desc),
-            _ => Err(format!(
-                "Unknown sort order: '{}'. Use 'asc' or 'desc'",
-                s
-            )),
+            _ => Err(format!("Unknown sort order: '{}'. Use 'asc' or 'desc'", s)),
         }
     }
 }
@@ -236,12 +239,11 @@ impl MatchSortStrategy {
             .then_by_default(SortKey::NodeCount)
             .then_by_default(SortKey::Idf)
     }
-    
+
     /// IDF (desc)
     /// Pure IDF sorting
     pub fn by_idf() -> Self {
-        Self::new()
-            .then_by_default(SortKey::Idf)
+        Self::new().then_by_default(SortKey::Idf)
     }
 
     /// NodeCount (desc) -> TM-score (desc) -> RMSD (asc)
@@ -272,17 +274,20 @@ impl Default for MatchSortStrategy {
 // Display implementation for MatchSortStrategy
 impl std::fmt::Display for MatchSortStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let parts: Vec<String> = self.keys.iter().map(|(key, order)| {
-            let order_str = match order {
-                SortOrder::Asc => "asc",
-                SortOrder::Desc => "desc",
-            };
-            format!("{}:{}", format!("{:?}", key).to_lowercase(), order_str)
-        }).collect();
+        let parts: Vec<String> = self
+            .keys
+            .iter()
+            .map(|(key, order)| {
+                let order_str = match order {
+                    SortOrder::Asc => "asc",
+                    SortOrder::Desc => "desc",
+                };
+                format!("{}:{}", format!("{:?}", key).to_lowercase(), order_str)
+            })
+            .collect();
         write!(f, "{}", parts.join(", "))
     }
 }
-
 
 // ============================================================================
 // Structure-level sorting (for StructureResult)
@@ -313,13 +318,17 @@ impl StructureSortKey {
     /// Parse from string (case-insensitive)
     pub fn from_str(s: &str) -> Result<Self, String> {
         match s.trim().to_lowercase().as_str() {
-            "max_node_count" | "max-node-count" | "max_node" | "max-node" | "max_nodes" | "max-nodes" => Ok(Self::MaxNodeCount),
+            "max_node_count" | "max-node-count" | "max_node" | "max-node" | "max_nodes"
+            | "max-nodes" => Ok(Self::MaxNodeCount),
             "node_count" | "node-count" | "nodes" | "node" | "n" => Ok(Self::NodeCount),
             "idf" | "score" => Ok(Self::Idf),
             "min_rmsd" | "min-rmsd" | "rmsd" => Ok(Self::MinRmsd),
-            "total_match_count" | "total-match-count" | "total_match" | "total-match" | "matches" | "match" => Ok(Self::TotalMatchCount),
+            "total_match_count" | "total-match-count" | "total_match" | "total-match"
+            | "matches" | "match" => Ok(Self::TotalMatchCount),
             "edge_count" | "edge-count" | "edges" | "edge" | "e" => Ok(Self::EdgeCount),
-            "nres" | "num_residues" | "num-residues" | "length" | "residues" | "residue" | "l" => Ok(Self::Nres),
+            "nres" | "num_residues" | "num-residues" | "length" | "residues" | "residue" | "l" => {
+                Ok(Self::Nres)
+            }
             "plddt" => Ok(Self::Plddt),
             _ => Err(format!(
                 "Unknown structure sort key: '{}'. Valid keys: {}",
@@ -338,8 +347,13 @@ impl StructureSortKey {
     pub fn default_order(&self) -> SortOrder {
         match self {
             // Higher is better
-            Self::MaxNodeCount | Self::NodeCount | Self::Idf | Self::TotalMatchCount | 
-            Self::EdgeCount | Self::Nres | Self::Plddt => SortOrder::Desc,
+            Self::MaxNodeCount
+            | Self::NodeCount
+            | Self::Idf
+            | Self::TotalMatchCount
+            | Self::EdgeCount
+            | Self::Nres
+            | Self::Plddt => SortOrder::Desc,
             // Lower is better
             Self::MinRmsd => SortOrder::Asc,
         }
@@ -456,7 +470,7 @@ impl StructureSortStrategy {
             .then_by_default(StructureSortKey::Idf)
             .then_by_default(StructureSortKey::MinRmsd)
     }
-    
+
     /// MaxNodeCount (desc) -> MinRmsd (asc)
     /// This matches the legacy behavior
     pub fn by_max_node_count_rmsd() -> Self {
@@ -474,8 +488,7 @@ impl StructureSortStrategy {
 
     /// IDF (desc) only
     pub fn by_idf() -> Self {
-        Self::new()
-            .then_by_default(StructureSortKey::Idf)
+        Self::new().then_by_default(StructureSortKey::Idf)
     }
 }
 
@@ -489,17 +502,20 @@ impl Default for StructureSortStrategy {
 
 impl std::fmt::Display for StructureSortStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let parts: Vec<String> = self.keys.iter().map(|(key, order)| {
-            let order_str = match order {
-                SortOrder::Asc => "asc",
-                SortOrder::Desc => "desc",
-            };
-            format!("{}:{}", format!("{:?}", key).to_lowercase(), order_str)
-        }).collect();
+        let parts: Vec<String> = self
+            .keys
+            .iter()
+            .map(|(key, order)| {
+                let order_str = match order {
+                    SortOrder::Asc => "asc",
+                    SortOrder::Desc => "desc",
+                };
+                format!("{}:{}", format!("{:?}", key).to_lowercase(), order_str)
+            })
+            .collect();
         write!(f, "{}", parts.join(", "))
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -555,7 +571,6 @@ mod tests {
         let strategy = MatchSortStrategy::from_str("").unwrap();
         assert_eq!(strategy.keys.len(), 2); // Default has 2 keys
     }
-    
 
     #[test]
     fn test_strategy_with_dummy_data() {
@@ -569,7 +584,7 @@ mod tests {
             rmsd: 0.1,
             evalue: 0.00001,
             u_matrix: [[0.0; 3]; 3],
-            t_matrix: [0.0; 3], 
+            t_matrix: [0.0; 3],
             matching_coordinates: vec![],
             metrics: StructureSimilarityMetrics {
                 tm_score: 0.9,
@@ -578,6 +593,7 @@ mod tests {
                 chamfer_distance: 1.2,
                 hausdorff_distance: 2.5,
             },
+            conformer_support_count: 1,
         };
         let result_b = MatchResult {
             tid: "toyB",
@@ -589,7 +605,7 @@ mod tests {
             rmsd: 0.24,
             evalue: 0.01,
             u_matrix: [[0.0; 3]; 3],
-            t_matrix: [0.0; 3], 
+            t_matrix: [0.0; 3],
             matching_coordinates: vec![],
             metrics: StructureSimilarityMetrics {
                 tm_score: 0.75,
@@ -598,6 +614,7 @@ mod tests {
                 chamfer_distance: 2.9,
                 hausdorff_distance: 3.0,
             },
+            conformer_support_count: 1,
         };
         let result_c = MatchResult {
             tid: "toyC",
@@ -609,7 +626,7 @@ mod tests {
             rmsd: 0.5,
             evalue: 2.0,
             u_matrix: [[0.0; 3]; 3],
-            t_matrix: [0.0; 3], 
+            t_matrix: [0.0; 3],
             matching_coordinates: vec![],
             metrics: StructureSimilarityMetrics {
                 tm_score: 0.96,
@@ -618,24 +635,25 @@ mod tests {
                 chamfer_distance: 1.2,
                 hausdorff_distance: 8.0,
             },
+            conformer_support_count: 1,
         };
-        
+
         // NodeCount (desc) -> IDF (desc)
         let strategy = MatchSortStrategy::from_str("node_count:desc,idf:desc").unwrap();
         assert_eq!(strategy.compare(&result_a, &result_b), Ordering::Less); // 10,5.0 comes before 8,6.0
         assert_eq!(strategy.compare(&result_b, &result_c), Ordering::Less); // 8,6.0 comes before 7,7.0
         assert_eq!(strategy.compare(&result_c, &result_a), Ordering::Greater); // 7,7.0 comes after 10,5.0
         println!("Passed NodeCount -> IDF tests.");
-        
+
         // IDF (desc)
         // A: 5.0 | B: 6.0 | C: 7.0
         let strategy = MatchSortStrategy::from_str("idf:desc").unwrap();
         assert_eq!(strategy.compare(&result_a, &result_b), Ordering::Greater); // 5.0 comes after 6.0
         assert_eq!(strategy.compare(&result_b, &result_c), Ordering::Greater); // 6.0 comes after 7.0
         assert_eq!(strategy.compare(&result_a, &result_c), Ordering::Greater); // 5.0 comes after 7.0
-        println!("Passed IDF tests.");                
-        
-        // RMSD (asc)        
+        println!("Passed IDF tests.");
+
+        // RMSD (asc)
         let strategy = MatchSortStrategy::from_str("rmsd:asc").unwrap();
         assert_eq!(strategy.compare(&result_a, &result_b), Ordering::Less); // 0.1 comes before 0.24
         assert_eq!(strategy.compare(&result_b, &result_c), Ordering::Less); // 0.24 comes before 0.5
@@ -644,20 +662,21 @@ mod tests {
 
         // TM-score (desc)
         let strategy = MatchSortStrategy::from_str("tm_score:desc").unwrap();
-        assert_eq!(strategy.compare(&result_a, &result_b), Ordering::Less); // 0.9 comes before 0.75 
+        assert_eq!(strategy.compare(&result_a, &result_b), Ordering::Less); // 0.9 comes before 0.75
         assert_eq!(strategy.compare(&result_b, &result_c), Ordering::Greater); // 0.75 comes after 0.96
         assert_eq!(strategy.compare(&result_a, &result_c), Ordering::Greater); // 0.9 comes after 0.96
         println!("Passed TM-score tests.");
-                
+
         // GDT-TS (desc)
         let strategy = MatchSortStrategy::from_str("gdt_ts:desc").unwrap();
         assert_eq!(strategy.compare(&result_a, &result_b), Ordering::Greater); // 0.8 comes after 0.9
         assert_eq!(strategy.compare(&result_b, &result_c), Ordering::Less); // 0.9 comes before 0.3
         assert_eq!(strategy.compare(&result_a, &result_c), Ordering::Less); // 0.8 comes before 0.3
         println!("Passed GDT-TS tests.");
-        
+
         // Chamfer (asc) -> Hausdorff (asc)
-        let strategy = MatchSortStrategy::from_str("chamfer_distance:asc,hausdorff_distance:asc").unwrap();
+        let strategy =
+            MatchSortStrategy::from_str("chamfer_distance:asc,hausdorff_distance:asc").unwrap();
         assert_eq!(strategy.compare(&result_a, &result_b), Ordering::Less); // 1.2,2.5 comes before 2.9,3.0
         assert_eq!(strategy.compare(&result_b, &result_c), Ordering::Greater); // 2.9,3.0 comes after 1.2,8.0
         assert_eq!(strategy.compare(&result_a, &result_c), Ordering::Less); // 1.2,2.5 comes before 1.2,8.0
@@ -666,18 +685,39 @@ mod tests {
 
     #[test]
     fn test_structure_sort_key_from_str() {
-        assert_eq!(StructureSortKey::from_str("max_node_count").unwrap(), StructureSortKey::MaxNodeCount);
-        assert_eq!(StructureSortKey::from_str("max-node").unwrap(), StructureSortKey::MaxNodeCount);
-        assert_eq!(StructureSortKey::from_str("node_count").unwrap(), StructureSortKey::NodeCount);
-        assert_eq!(StructureSortKey::from_str("idf").unwrap(), StructureSortKey::Idf);
-        assert_eq!(StructureSortKey::from_str("min_rmsd").unwrap(), StructureSortKey::MinRmsd);
-        assert_eq!(StructureSortKey::from_str("rmsd").unwrap(), StructureSortKey::MinRmsd);
+        assert_eq!(
+            StructureSortKey::from_str("max_node_count").unwrap(),
+            StructureSortKey::MaxNodeCount
+        );
+        assert_eq!(
+            StructureSortKey::from_str("max-node").unwrap(),
+            StructureSortKey::MaxNodeCount
+        );
+        assert_eq!(
+            StructureSortKey::from_str("node_count").unwrap(),
+            StructureSortKey::NodeCount
+        );
+        assert_eq!(
+            StructureSortKey::from_str("idf").unwrap(),
+            StructureSortKey::Idf
+        );
+        assert_eq!(
+            StructureSortKey::from_str("min_rmsd").unwrap(),
+            StructureSortKey::MinRmsd
+        );
+        assert_eq!(
+            StructureSortKey::from_str("rmsd").unwrap(),
+            StructureSortKey::MinRmsd
+        );
         assert!(StructureSortKey::from_str("invalid").is_err());
     }
 
     #[test]
     fn test_structure_default_order() {
-        assert_eq!(StructureSortKey::MaxNodeCount.default_order(), SortOrder::Desc);
+        assert_eq!(
+            StructureSortKey::MaxNodeCount.default_order(),
+            SortOrder::Desc
+        );
         assert_eq!(StructureSortKey::MinRmsd.default_order(), SortOrder::Asc);
         assert_eq!(StructureSortKey::Idf.default_order(), SortOrder::Desc);
     }
@@ -718,6 +758,7 @@ mod tests {
             matching_residues_processed: vec![],
             max_matching_node_count: 10,
             min_rmsd_with_max_match: 0.5,
+            conformer_support_count: 1,
         };
 
         let result_b = StructureResult {
@@ -734,6 +775,7 @@ mod tests {
             matching_residues_processed: vec![],
             max_matching_node_count: 8,
             min_rmsd_with_max_match: 0.3,
+            conformer_support_count: 1,
         };
 
         let result_c = StructureResult {
@@ -750,6 +792,7 @@ mod tests {
             matching_residues_processed: vec![],
             max_matching_node_count: 10,
             min_rmsd_with_max_match: 0.7,
+            conformer_support_count: 1,
         };
 
         // MaxNodeCount (desc) -> MinRmsd (asc)
@@ -767,18 +810,21 @@ mod tests {
         println!("Passed IDF tests.");
 
         // NodeCount (desc) -> TotalMatchCount (desc)
-        let strategy = StructureSortStrategy::from_str("node_count:desc,total_match_count:desc").unwrap();
+        let strategy =
+            StructureSortStrategy::from_str("node_count:desc,total_match_count:desc").unwrap();
         assert_eq!(strategy.compare(&result_a, &result_b), Ordering::Greater); // 50,100 comes after 60,120
         assert_eq!(strategy.compare(&result_a, &result_c), Ordering::Less); // 50,100 comes before 40,80
         println!("Passed NodeCount -> TotalMatchCount tests.");
     }
-  
-    #[test]  
+
+    #[test]
     fn test_printing_strategies() {
-        let match_strategy = MatchSortStrategy::from_str("node_count:desc,tm_score:asc,rmsd").unwrap();
+        let match_strategy =
+            MatchSortStrategy::from_str("node_count:desc,tm_score:asc,rmsd").unwrap();
         println!("MatchSortStrategy: {}", match_strategy);
 
-        let struct_strategy = StructureSortStrategy::from_str("max_node_count:desc,min_rmsd:asc").unwrap();
+        let struct_strategy =
+            StructureSortStrategy::from_str("max_node_count:desc,min_rmsd:asc").unwrap();
         println!("StructureSortStrategy: {}", struct_strategy);
     }
 }

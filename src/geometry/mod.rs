@@ -1,10 +1,10 @@
 pub mod core;
-pub mod trrosetta;
-pub mod pdb_motif;
-pub mod pdb_motif_sincos;
-pub mod ppf;
-pub mod pdb_tr;
 pub mod folddisco_angle;
 pub mod folddisco_dist;
-pub mod tertiary_interaction;
 pub mod hybrid;
+pub mod pdb_motif;
+pub mod pdb_motif_sincos;
+pub mod pdb_tr;
+pub mod ppf;
+pub mod tertiary_interaction;
+pub mod trrosetta;
