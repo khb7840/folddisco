@@ -15,8 +15,12 @@ use crate::structure::core::CompactStructure;
 
 const TORSION_ENM_CUTOFF_ANGSTROM: f32 = 12.0;
 const EIGENVALUE_EPS: f64 = 1e-8;
-const TORSION_RADIANS_PER_ANGSTROM: f32 = 0.35;
-const MAX_TORSION_STEP_RAD: f32 = 0.65;
+const TORSION_RADIANS_PER_ANGSTROM: f32 = 0.06;
+const MAX_TORSION_STEP_RAD: f32 = 0.12;
+const MAX_TARGET_RMSD_FOR_WIGGLE: f32 = 0.75;
+const MIN_TARGET_RMSD_FOR_WIGGLE: f32 = 0.05;
+const TORSION_SMOOTHING_PASSES: usize = 2;
+const TORSION_SMOOTHING_NEIGHBOR_WEIGHT: f32 = 0.2;
 const SEQUENCE_COUPLING_WEIGHT: f64 = 1.5;
 const SPATIAL_COUPLING_WEIGHT: f64 = 1.0;
 const DIAGONAL_REGULARIZATION: f64 = 1e-5;
@@ -206,6 +210,40 @@ fn cap_torsion_step(disp: &mut TorsionField, cap: f32) {
     });
 }
 
+fn center_and_smooth_torsion_displacement(disp: &mut TorsionField) {
+    if disp.is_empty() {
+        return;
+    }
+
+    let n = disp.len() as f32;
+    let mean_phi = disp.iter().map(|d| d[0]).sum::<f32>() / n;
+    let mean_psi = disp.iter().map(|d| d[1]).sum::<f32>() / n;
+
+    for d in disp.iter_mut() {
+        d[0] -= mean_phi;
+        d[1] -= mean_psi;
+    }
+
+    if disp.len() < 3 || TORSION_SMOOTHING_PASSES == 0 {
+        return;
+    }
+
+    let mut scratch = disp.clone();
+    let self_weight = 1.0 - (2.0 * TORSION_SMOOTHING_NEIGHBOR_WEIGHT);
+    for _ in 0..TORSION_SMOOTHING_PASSES {
+        for i in 1..(disp.len() - 1) {
+            for torsion_idx in 0..2 {
+                scratch[i][torsion_idx] = disp[i][torsion_idx] * self_weight
+                    + disp[i - 1][torsion_idx] * TORSION_SMOOTHING_NEIGHBOR_WEIGHT
+                    + disp[i + 1][torsion_idx] * TORSION_SMOOTHING_NEIGHBOR_WEIGHT;
+            }
+        }
+        scratch[0] = disp[0];
+        scratch[disp.len() - 1] = disp[disp.len() - 1];
+        std::mem::swap(disp, &mut scratch);
+    }
+}
+
 fn rotate_point_around_axis(
     point: &Coordinate,
     pivot: &Coordinate,
@@ -367,6 +405,9 @@ pub fn generate_ensemble(
     if num_confs == 0 || nma_modes == 0 || query_structure.num_residues < 3 {
         return Ok(ensemble);
     }
+    let effective_target_rmsd = target_rmsd
+        .abs()
+        .clamp(MIN_TARGET_RMSD_FOR_WIGGLE, MAX_TARGET_RMSD_FOR_WIGGLE);
 
     let (n_vec, ca_vec, c_vec) = build_backbone_arrays(query_structure)?;
     let _base_torsions = extract_backbone_torsions(&n_vec, &ca_vec, &c_vec);
@@ -384,7 +425,8 @@ pub fn generate_ensemble(
             for attempt in 0..MAX_CONFORMER_SAMPLING_ATTEMPTS {
                 let mut disp = sample_torsion_displacement(&modes, query_structure.num_residues);
                 let attempt_scale = CONFORMER_RETRY_SCALE_FACTOR.powi(attempt as i32);
-                scale_torsion_displacement(&mut disp, target_rmsd * attempt_scale);
+                scale_torsion_displacement(&mut disp, effective_target_rmsd * attempt_scale);
+                center_and_smooth_torsion_displacement(&mut disp);
                 cap_torsion_step(&mut disp, MAX_TORSION_STEP_RAD);
                 let conformer =
                     apply_torsion_displacement(query_structure, &n_vec, &ca_vec, &c_vec, &disp);
@@ -393,7 +435,7 @@ pub fn generate_ensemble(
                 }
 
                 let eff = torsion_rmsd(&disp);
-                if best.as_ref().map_or(true, |(curr, _)| eff > *curr) {
+                if best.as_ref().map_or(true, |(curr, _)| eff < *curr) {
                     best = Some((eff, conformer));
                 }
             }
