@@ -452,15 +452,7 @@ pub fn generate_discretized_distribution_plot(
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
         .margin(20)
-        .caption("Discretized Encoding Distribution", ("sans-serif", 30))
-        .x_label_area_size(50)
-        .y_label_area_size(50)
         .build_cartesian_2d(0f32..(keys.len() as f32), 0u32..(max_count + 1))?;
-    chart
-        .configure_mesh()
-        .x_desc("Encoding rank")
-        .y_desc("Count")
-        .draw()?;
     for (i, key) in keys.iter().enumerate() {
         let x = i as f32;
         let a = *init_counts.get(key).unwrap_or(&0);
@@ -677,6 +669,8 @@ fn scatter_plot(
     x_desc: &str,
     points: &[(f32, f32)],
 ) -> Result<(), Box<dyn Error>> {
+    let _ = title;
+    let _ = x_desc;
     if points.is_empty() {
         return Ok(());
     }
@@ -694,15 +688,7 @@ fn scatter_plot(
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
         .margin(20)
-        .caption(title, ("sans-serif", 30))
-        .x_label_area_size(45)
-        .y_label_area_size(60)
         .build_cartesian_2d(0f32..x_max, 0f32..y_max)?;
-    chart
-        .configure_mesh()
-        .x_desc(x_desc)
-        .y_desc("Absolute Δ")
-        .draw()?;
     chart.draw_series(
         points
             .iter()
@@ -718,6 +704,7 @@ fn histogram_overlay_plot(
     initial: &[f32],
     perturbed: &[f32],
 ) -> Result<(), Box<dyn Error>> {
+    let _ = title;
     if initial.is_empty() && perturbed.is_empty() {
         return Ok(());
     }
@@ -756,15 +743,7 @@ fn histogram_overlay_plot(
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
         .margin(20)
-        .caption(title, ("sans-serif", 30))
-        .x_label_area_size(45)
-        .y_label_area_size(60)
         .build_cartesian_2d(min_v..max_v, 0u32..(max_count + 1))?;
-    chart
-        .configure_mesh()
-        .x_desc("Feature value")
-        .y_desc("Count")
-        .draw()?;
 
     chart.draw_series((0..bins).map(|i| {
         let x0 = min_v + i as f32 * bin_width;
@@ -839,6 +818,42 @@ mod tests {
         for delta in drift.absolute_delta {
             assert!(delta.abs() < 1e-4);
         }
+    }
+
+    #[test]
+    fn test_plot_generation_without_font_dependency() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "folddisco_perturbation_plot_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let records = vec![FeatureDrift {
+            residue_pair: (1, 3),
+            translation_distances_angstrom: [0.4, 0.8],
+            rotation_angles_degrees: [5.0, 10.0],
+            initial_raw_features: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            perturbed_raw_features: [1.1, 2.1, 3.2, 4.1, 5.3, 6.1, 7.4],
+            initial_discretized_encoding: 123,
+            perturbed_discretized_encoding: 456,
+            absolute_delta: [0.1, 0.1, 0.2, 0.1, 0.3, 0.1, 0.4],
+        }];
+
+        let scatter_paths = generate_feature_drift_vs_transform_plots(&records, &tmp_dir).unwrap();
+        let hist_paths = generate_raw_distribution_plots(&records, &tmp_dir).unwrap();
+        let discrete_path = tmp_dir.join("discretized_distribution.png");
+        generate_discretized_distribution_plot(&records, &discrete_path).unwrap();
+
+        assert!(!scatter_paths.is_empty());
+        assert!(!hist_paths.is_empty());
+        for path in scatter_paths.iter().chain(hist_paths.iter()) {
+            assert!(path.exists());
+        }
+        assert!(discrete_path.exists());
     }
 
     fn build_test_structure() -> CompactStructure {
