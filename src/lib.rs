@@ -4,6 +4,7 @@
 
 
 pub mod cli;
+pub mod analysis;
 pub mod controller;
 pub mod geometry;
 pub mod index;
