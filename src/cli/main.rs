@@ -6,7 +6,10 @@
 //! Main entry point for Folddisco CLI
 
 // use crate::*;
-use folddisco::cli::{workflows::{build_index, benchmark, query_pdb}, *};
+use folddisco::cli::{
+    workflows::{analyze_perturb, benchmark, build_index, query_pdb},
+    *,
+};
 
 const VERSION_STRING: &str = env!("FOLDDISCO_BUILD_VERSION");
 const HELP: &str = "\
@@ -17,6 +20,7 @@ subcommands:
   query     Query a motif from an index table
   benchmark Benchmark the performance of folddisco
   analyze   Analyze the distribution of encodings in the index
+  analyze-perturb Analyze perturbation-induced drift in features/encodings
   version   Print version information
 
 options:
@@ -32,7 +36,9 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
     {
         Some("index") => Ok(AppArgs::Index {
             pdb_container: args.opt_value_from_str(["-p", "--pdbs"])?,
-            hash_type: args.value_from_str(["-y", "--type"]).unwrap_or("default".into()),
+            hash_type: args
+                .value_from_str(["-y", "--type"])
+                .unwrap_or("default".into()),
             index_path: args.value_from_str(["-i", "--index"]).unwrap_or("".into()),
             num_threads: args.value_from_str(["-t", "--threads"]).unwrap_or(1),
             num_bin_dist: args.value_from_str(["-d", "--distance"]).unwrap_or(0),
@@ -53,7 +59,9 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             index_path: args.opt_value_from_str(["-i", "--index"])?,
             skip_match: args.contains("--skip-match"),
             // Filtering parameters
-            dist_threshold: args.value_from_str(["-d", "--distance"]).unwrap_or("0.5".into()),
+            dist_threshold: args
+                .value_from_str(["-d", "--distance"])
+                .unwrap_or("0.5".into()),
             angle_threshold: args.value_from_str(["-a", "--angle"]).unwrap_or("5".into()),
             ca_dist_threshold: args.value_from_str("--ca-distance").unwrap_or(1.0),
             total_match_count: args.value_from_str("--total-match").unwrap_or(0),
@@ -102,7 +110,9 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             neutral: args.opt_value_from_str(["-n", "--neutral"])?,
             index: args.opt_value_from_str(["-i", "--index"])?,
             input: args.opt_value_from_str("--input")?,
-            format: args.value_from_str(["-f", "--format"]).unwrap_or("tsv".into()),
+            format: args
+                .value_from_str(["-f", "--format"])
+                .unwrap_or("tsv".into()),
             fp: args.opt_value_from_str("--fp")?,
             threads: args.value_from_str(["-t", "--threads"]).unwrap_or(1),
             afdb_to_uniprot: args.contains("--afdb-to-uniprot"),
@@ -125,6 +135,20 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             verbose: args.contains(["-v", "--verbose"]),
             help: args.contains(["-h", "--help"]),
         }),
+        Some("analyze-perturb") => Ok(AppArgs::AnalyzePerturb {
+            query_dir: args.value_from_str("--query-dir").unwrap_or("".into()),
+            output: args.value_from_str(["-o", "--output"]).unwrap_or("".into()),
+            max_pairs: args.value_from_str("--max-pairs").unwrap_or(200),
+            num_bin_dist: args.value_from_str(["-d", "--distance"]).unwrap_or(0),
+            num_bin_angle: args.value_from_str(["-a", "--angle"]).unwrap_or(0),
+            translation_min: args.value_from_str("--translation-min").unwrap_or(0.1),
+            translation_max: args.value_from_str("--translation-max").unwrap_or(1.5),
+            rotation_min: args.value_from_str("--rotation-min").unwrap_or(1.0),
+            rotation_max: args.value_from_str("--rotation-max").unwrap_or(45.0),
+            dataset: args.value_from_str("--dataset").unwrap_or("both".into()),
+            verbose: args.contains(["-v", "--verbose"]),
+            help: args.contains(["-h", "--help"]),
+        }),
         Some("test") => Ok(AppArgs::Test {
             index_path: args.value_from_str(["-i", "--index"])?,
             verbose: args.contains(["-v", "--verbose"]),
@@ -132,7 +156,7 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
         Some("version") => {
             println!("{}", VERSION_STRING);
             std::process::exit(0);
-        },
+        }
         Some(_) => Err("Invalid subcommand".into()),
         None => Ok(AppArgs::Global {
             help: args.contains(["-h", "--help"]),
@@ -175,6 +199,14 @@ fn main() {
                 eprintln!("{}", workflows::analyze::HELP_ANALYZE);
             } else {
                 workflows::analyze::analyze(parsed_args);
+            }
+        }
+        AppArgs::AnalyzePerturb { help, .. } => {
+            if help {
+                print_logo();
+                eprintln!("{}", workflows::analyze_perturb::HELP_ANALYZE_PERTURB);
+            } else {
+                analyze_perturb::analyze_perturb(parsed_args);
             }
         }
         AppArgs::Test { .. } => {

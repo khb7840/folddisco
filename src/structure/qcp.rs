@@ -9,7 +9,6 @@
 
 use crate::structure::coordinate::Coordinate;
 
-
 #[derive(Debug)]
 pub struct QCPSuperimposer {
     pub reference_coords: Option<Vec<[f32; 3]>>,
@@ -37,7 +36,10 @@ impl QCPSuperimposer {
     }
 
     pub fn set_atoms(&mut self, fixed: &[Coordinate], moving: &[Coordinate]) {
-        assert!(fixed.len() == moving.len(), "Fixed and moving atom lists differ in size");
+        assert!(
+            fixed.len() == moving.len(),
+            "Fixed and moving atom lists differ in size"
+        );
 
         let fixed_coords: Vec<[f32; 3]> = fixed.iter().map(|c| c.to_array()).collect();
         let moving_coords: Vec<[f32; 3]> = moving.iter().map(|c| c.to_array()).collect();
@@ -56,10 +58,7 @@ impl QCPSuperimposer {
             reference_coords.len() == coords.len(),
             "Coordinates must have the same dimensions."
         );
-        assert!(
-            coords[0].len() == 3,
-            "Coordinates must be Nx3 arrays."
-        );
+        assert!(coords[0].len() == 3, "Coordinates must be Nx3 arrays.");
     }
 
     pub fn run(&mut self) {
@@ -69,22 +68,24 @@ impl QCPSuperimposer {
         let com_coords = mean(&coords);
         let com_ref = mean(&reference_coords);
 
-        let centered_coords: Vec<[f32; 3]> = coords.iter()
+        let centered_coords: Vec<[f32; 3]> = coords
+            .iter()
             .map(|&coord| {
                 [
                     coord[0] - com_coords[0],
                     coord[1] - com_coords[1],
-                    coord[2] - com_coords[2]
+                    coord[2] - com_coords[2],
                 ]
             })
             .collect();
 
-        let centered_ref: Vec<[f32; 3]> = reference_coords.iter()
+        let centered_ref: Vec<[f32; 3]> = reference_coords
+            .iter()
             .map(|&coord| {
                 [
                     coord[0] - com_ref[0],
                     coord[1] - com_ref[1],
-                    coord[2] - com_ref[2]
+                    coord[2] - com_ref[2],
                 ]
             })
             .collect();
@@ -93,40 +94,41 @@ impl QCPSuperimposer {
         let (_rms_from_qcp, rot, _) = qcp(&centered_coords, &centered_ref, self.natoms);
 
         self.rot = Some(rot);
-        
+
         // Correct translation calculation
         let rotated_com_coords = rotate(com_coords, rot);
         let tran = [
             com_ref[0] - rotated_com_coords[0],
             com_ref[1] - rotated_com_coords[1],
-            com_ref[2] - rotated_com_coords[2]
+            com_ref[2] - rotated_com_coords[2],
         ];
         self.tran = Some(tran);
 
         // Recalculate rmsd with rot, tran
         self.transformed_coords = Some(
-            coords.iter()
+            coords
+                .iter()
                 .map(|&coord| {
                     let rotated = rotate(coord, rot);
                     [
                         rotated[0] + tran[0],
                         rotated[1] + tran[1],
-                        rotated[2] + tran[2]
+                        rotated[2] + tran[2],
                     ]
                 })
-                .collect()
+                .collect(),
         );
-        
+
         // Calculate final RMSD with transformed coordinates and reference coordinates
         let transformed_coords = self.transformed_coords.clone().unwrap();
-        let diff: Vec<f32> = transformed_coords.iter()
+        let diff: Vec<f32> = transformed_coords
+            .iter()
             .zip(reference_coords.iter())
             .map(|(&c1, &c2)| {
                 (c1[0] - c2[0]).powi(2) + (c1[1] - c2[1]).powi(2) + (c1[2] - c2[2]).powi(2)
             })
             .collect();
-        self.rms = Some((diff.iter().sum::<f32>() / self.natoms as f32).sqrt());        
-        
+        self.rms = Some((diff.iter().sum::<f32>() / self.natoms as f32).sqrt());
     }
 
     pub fn get_transformed(&mut self) -> Vec<[f32; 3]> {
@@ -136,18 +138,19 @@ impl QCPSuperimposer {
         let tran = self.tran.unwrap();
 
         self.transformed_coords = Some(
-            coords.iter()
+            coords
+                .iter()
                 .map(|&coord| {
                     let rotated = rotate(coord, rot);
                     [
                         rotated[0] + tran[0],
                         rotated[1] + tran[1],
-                        rotated[2] + tran[2]
+                        rotated[2] + tran[2],
                     ]
                 })
-                .collect()
+                .collect(),
         );
-    self.transformed_coords.clone().unwrap()
+        self.transformed_coords.clone().unwrap()
     }
 
     pub fn get_rotran(&self) -> ([[f32; 3]; 3], [f32; 3]) {
@@ -159,7 +162,8 @@ impl QCPSuperimposer {
             let coords = self.coords.clone().unwrap();
             let reference_coords = self.reference_coords.clone().unwrap();
 
-            let diff: Vec<f32> = coords.iter()
+            let diff: Vec<f32> = coords
+                .iter()
                 .zip(reference_coords.iter())
                 .map(|(&c1, &c2)| {
                     (c1[0] - c2[0]).powi(2) + (c1[1] - c2[1]).powi(2) + (c1[2] - c2[2]).powi(2)
@@ -182,18 +186,26 @@ fn mean(coords: &[[f32; 3]]) -> [f32; 3] {
         [acc[0] + coord[0], acc[1] + coord[1], acc[2] + coord[2]]
     });
 
-    [sum[0] / coords.len() as f32, sum[1] / coords.len() as f32, sum[2] / coords.len() as f32]
+    [
+        sum[0] / coords.len() as f32,
+        sum[1] / coords.len() as f32,
+        sum[2] / coords.len() as f32,
+    ]
 }
 
 fn rotate(coord: [f32; 3], rot: [[f32; 3]; 3]) -> [f32; 3] {
     [
         coord[0] * rot[0][0] + coord[1] * rot[0][1] + coord[2] * rot[0][2],
         coord[0] * rot[1][0] + coord[1] * rot[1][1] + coord[2] * rot[1][2],
-        coord[0] * rot[2][0] + coord[1] * rot[2][1] + coord[2] * rot[2][2]
+        coord[0] * rot[2][0] + coord[1] * rot[2][1] + coord[2] * rot[2][2],
     ]
 }
 
-fn qcp(coords1: &[[f32; 3]], coords2: &[[f32; 3]], natoms: usize) -> (f32, [[f32; 3]; 3], [f32; 4]) {
+fn qcp(
+    coords1: &[[f32; 3]],
+    coords2: &[[f32; 3]],
+    natoms: usize,
+) -> (f32, [[f32; 3]; 3], [f32; 4]) {
     let g1 = trace(dot(coords2, &transpose(coords2)));
     let g2 = trace(dot(coords1, &transpose(coords1)));
     let a = dot(&transpose(coords2), coords1);
@@ -223,7 +235,11 @@ fn qcp(coords1: &[[f32; 3]], coords2: &[[f32; 3]], natoms: usize) -> (f32, [[f32
     let sxx2_syy2_szz2_syz2_szy2 = syy2 + szz2 - sxx2 + syz2 + szy2;
 
     let c2 = -2.0 * (sxx2 + syy2 + szz2 + sxy2 + syx2 + sxz2 + szx2 + syz2 + szy2);
-    let c1 = 8.0 * (sxx * syz * szy + syy * szx * sxz + szz * sxy * syx - sxx * syy * szz - syz * szx * sxy - szy * syx * sxz);
+    let c1 = 8.0
+        * (sxx * syz * szy + syy * szx * sxz + szz * sxy * syx
+            - sxx * syy * szz
+            - syz * szx * sxy
+            - szy * syx * sxz);
 
     let sxz_p_szx = sxz + szx;
     let syz_p_szy = syz + szy;
@@ -242,15 +258,15 @@ fn qcp(coords1: &[[f32; 3]], coords2: &[[f32; 3]], natoms: usize) -> (f32, [[f32
 
     let c0 = sxy2_sxz2_syx2_szx2 * sxy2_sxz2_syx2_szx2
         + (sxx2_syy2_szz2_syz2_szy2 + syz_szy_m_syy_szz2)
-        * (sxx2_syy2_szz2_syz2_szy2 - syz_szy_m_syy_szz2)
+            * (sxx2_syy2_szz2_syz2_szy2 - syz_szy_m_syy_szz2)
         + (neg_sxz_p_szx * (syz_m_szy) + (sxy_m_syx) * (sxx_m_syy - szz))
-        * (neg_sxz_m_szx * (syz_p_szy) + (sxy_m_syx) * (sxx_m_syy + szz))
+            * (neg_sxz_m_szx * (syz_p_szy) + (sxy_m_syx) * (sxx_m_syy + szz))
         + (neg_sxz_p_szx * (syz_p_szy) - (sxy_p_syx) * (sxx_p_syy - szz))
-        * (neg_sxz_m_szx * (syz_m_szy) - (sxy_p_syx) * sxx_p_syy_p_szz)
+            * (neg_sxz_m_szx * (syz_m_szy) - (sxy_p_syx) * sxx_p_syy_p_szz)
         + ((sxy_p_syx) * (syz_p_szy) + (sxz_p_szx) * (sxx_m_syy + szz))
-        * (neg_sxy_m_syx * (syz_m_szy) + (sxz_p_szx) * sxx_p_syy_p_szz)
+            * (neg_sxy_m_syx * (syz_m_szy) + (sxz_p_szx) * sxx_p_syy_p_szz)
         + ((sxy_p_syx) * (syz_m_szy) + (sxz_m_szx) * (sxx_m_syy - szz))
-        * (neg_sxy_m_syx * (syz_p_szy) + (sxz_m_szx) * (sxx_p_syy - szz));
+            * (neg_sxy_m_syx * (syz_p_szy) + (sxz_m_szx) * (sxx_p_syy - szz));
 
     let mut mx_eigenv = e0; // starting guess (x in eqs above)
     let eval_prec = 1e-11; // convergence criterion
@@ -380,11 +396,8 @@ fn qcp(coords1: &[[f32; 3]], coords2: &[[f32; 3]], natoms: usize) -> (f32, [[f32
     rot[2][1] = 2.0 * (yz - ax);
     rot[2][2] = a2 - x2 - y2 + z2;
 
-
     (rmsd, rot, [q1, q2, q3, q4])
 }
-
-
 
 fn transpose(matrix: &[[f32; 3]]) -> [[f32; 3]; 3] {
     let mut transposed = [[0.0; 3]; 3];
@@ -439,11 +452,14 @@ mod tests {
         let mut superimposer = QCPSuperimposer::new();
         superimposer.set_atoms(&source, &target1);
         // assert!(superimposer.get_rms() < 0.2);
-        let start  = std::time::Instant::now();
+        let start = std::time::Instant::now();
         println!("RMSD after superimposition: {}", superimposer.get_rms());
         let duration = start.elapsed();
         println!("Time taken for superimposition: {:?}", duration);
-        println!("Transformed coordinates: {:?}", superimposer.get_transformed());
+        println!(
+            "Transformed coordinates: {:?}",
+            superimposer.get_transformed()
+        );
         println!("Rotation matrix: {:?}", superimposer.get_rotran().0);
         println!("Translation vector: {:?}", superimposer.get_rotran().1);
         superimposer.set_atoms(&source, &target2);
@@ -452,7 +468,10 @@ mod tests {
         println!("RMSD after superimposition: {}", superimposer.get_rms());
         let duration = start.elapsed();
         println!("Time taken for superimposition: {:?}", duration);
-        println!("Transformed coordinates: {:?}", superimposer.get_transformed());
+        println!(
+            "Transformed coordinates: {:?}",
+            superimposer.get_transformed()
+        );
         println!("Rotation matrix: {:?}", superimposer.get_rotran().0);
         println!("Translation vector: {:?}", superimposer.get_rotran().1);
         assert!(superimposer.get_rms() < 0.2);

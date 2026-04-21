@@ -7,8 +7,8 @@
 
 // Arguments of CLI app are defined here
 
-pub mod workflows;
 pub mod config;
+pub mod workflows;
 
 pub enum AppArgs {
     Global {
@@ -42,7 +42,7 @@ pub enum AppArgs {
         ca_dist_threshold: f32,
         // filtering parameters
         // These are for filtering StructQueryResult only
-        total_match_count: usize, 
+        total_match_count: usize,
         covered_node_count: usize,
         covered_node_ratio: f32,
         max_matching_node_count: usize,
@@ -107,7 +107,7 @@ pub enum AppArgs {
         header_neutral: bool,
     },
     Analyze {
-        // Required 
+        // Required
         index_path: Option<String>,
         // Optional
         pdb_container: Option<String>,
@@ -120,6 +120,20 @@ pub enum AppArgs {
         max_pos: usize,
         // other general options
         threads: usize,
+        verbose: bool,
+        help: bool,
+    },
+    AnalyzePerturb {
+        query_dir: String,
+        output: String,
+        max_pairs: usize,
+        num_bin_dist: usize,
+        num_bin_angle: usize,
+        translation_min: f32,
+        translation_max: f32,
+        rotation_min: f32,
+        rotation_max: f32,
+        dataset: String,
         verbose: bool,
         help: bool,
     },

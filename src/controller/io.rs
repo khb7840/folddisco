@@ -3,22 +3,22 @@
 // Author: Hyunbin Kim (khb7840@gmail.com)
 // Copyright © 2024 Hyunbin Kim, All rights reserved
 
-use dashmap::DashMap;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write, Error};
-use memmap2::Mmap;
-use crate::prelude::{print_log_msg, log_msg, GeometricHash, HashType, FAIL, INFO};
+use crate::prelude::{log_msg, print_log_msg, GeometricHash, HashType, FAIL, INFO};
 use crate::structure::core::{CompactStructure, Structure};
 use crate::{CIFReader, PDBReader};
+use dashmap::DashMap;
+use memmap2::Mmap;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Error, Write};
 use std::mem::size_of;
 
-#[cfg(feature="foldcomp")]
+#[cfg(feature = "foldcomp")]
 use crate::structure::io::fcz::FoldcompDbReader;
 
-
 pub fn save_offset_map(
-    path: &str, offset_map: &DashMap<GeometricHash, (usize, usize)>
+    path: &str,
+    offset_map: &DashMap<GeometricHash, (usize, usize)>,
 ) -> Result<(), Error> {
     let file = OpenOptions::new()
         .read(true)
@@ -31,7 +31,9 @@ pub fn save_offset_map(
     let total_size = match hash_type.encoding_type() {
         32 => 20 * offset_map.len() as u64,
         64 => 24 * offset_map.len() as u64,
-        _ => { panic!("Invalid hash type"); }
+        _ => {
+            panic!("Invalid hash type");
+        }
     };
     file.set_len(total_size as u64)?;
     // Write as whole
@@ -41,9 +43,15 @@ pub fn save_offset_map(
         let key = entry.key();
         let value = entry.value();
         match key.hash_type().encoding_type() {
-            32 => { writer.write_all(&key.as_u32().to_le_bytes()).unwrap(); },
-            64 => { writer.write_all(&key.as_u64().to_le_bytes()).unwrap(); },
-            _ => { panic!("Invalid hash type"); }
+            32 => {
+                writer.write_all(&key.as_u32().to_le_bytes()).unwrap();
+            }
+            64 => {
+                writer.write_all(&key.as_u64().to_le_bytes()).unwrap();
+            }
+            _ => {
+                panic!("Invalid hash type");
+            }
         }
         writer.write_all(&value.0.to_le_bytes()).unwrap();
         writer.write_all(&value.1.to_le_bytes()).unwrap();
@@ -52,7 +60,8 @@ pub fn save_offset_map(
 }
 
 pub fn save_offset_vec(
-    path: &str, offset_map: &Vec<(GeometricHash, usize, usize)>
+    path: &str,
+    offset_map: &Vec<(GeometricHash, usize, usize)>,
 ) -> Result<(), Error> {
     let file = OpenOptions::new()
         .read(true)
@@ -65,7 +74,9 @@ pub fn save_offset_vec(
     let total_size = match hash_type.encoding_type() {
         32 => 20 * offset_map.len() as u64,
         64 => 24 * offset_map.len() as u64,
-        _ => { panic!("Invalid hash type"); }
+        _ => {
+            panic!("Invalid hash type");
+        }
     };
     file.set_len(total_size as u64)?;
     // Write as whole
@@ -73,9 +84,15 @@ pub fn save_offset_vec(
     // Iterate through vector
     offset_map.iter().for_each(|(key, offset, length)| {
         match key.hash_type().encoding_type() {
-            32 => { writer.write_all(&key.as_u32().to_le_bytes()).unwrap(); },
-            64 => { writer.write_all(&key.as_u64().to_le_bytes()).unwrap(); },
-            _ => { panic!("Invalid hash type"); }
+            32 => {
+                writer.write_all(&key.as_u32().to_le_bytes()).unwrap();
+            }
+            64 => {
+                writer.write_all(&key.as_u64().to_le_bytes()).unwrap();
+            }
+            _ => {
+                panic!("Invalid hash type");
+            }
         }
         writer.write_all(&offset.to_le_bytes()).unwrap();
         writer.write_all(&length.to_le_bytes()).unwrap();
@@ -84,7 +101,10 @@ pub fn save_offset_vec(
     Ok(())
 }
 
-pub fn read_offset_map_single(path: &str, hash_type: HashType) -> Result<DashMap<GeometricHash, (usize, usize)>, Error> {
+pub fn read_offset_map_single(
+    path: &str,
+    hash_type: HashType,
+) -> Result<DashMap<GeometricHash, (usize, usize)>, Error> {
     let file = File::open(path)?;
     let mmap = unsafe { Mmap::map(&file)? };
     let hash_encoding_type = hash_type.encoding_type();
@@ -92,23 +112,27 @@ pub fn read_offset_map_single(path: &str, hash_type: HashType) -> Result<DashMap
     let mut offset = 0;
     while offset < mmap.len() {
         let (key, w): (GeometricHash, usize) = match hash_encoding_type {
-            32 => {
-                (GeometricHash::from_u32(
+            32 => (
+                GeometricHash::from_u32(
                     u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap()),
-                    hash_type
-                ), 4_usize)
-            },
-            64 => {
-                (GeometricHash::from_u64(
+                    hash_type,
+                ),
+                4_usize,
+            ),
+            64 => (
+                GeometricHash::from_u64(
                     u64::from_le_bytes(mmap[offset..offset + 8].try_into().unwrap()),
-                    hash_type
-                ), 8_usize)
-            },
-            _ => { panic!("Invalid hash type"); }
+                    hash_type,
+                ),
+                8_usize,
+            ),
+            _ => {
+                panic!("Invalid hash type");
+            }
         };
         let value = (
             usize::from_le_bytes(mmap[offset + w..offset + w + 8].try_into().unwrap()),
-            usize::from_le_bytes(mmap[offset + w + 8..offset + w + 16].try_into().unwrap())
+            usize::from_le_bytes(mmap[offset + w + 8..offset + w + 16].try_into().unwrap()),
         );
         offset_map.insert(key, value);
         offset = offset + w + 16;
@@ -116,7 +140,10 @@ pub fn read_offset_map_single(path: &str, hash_type: HashType) -> Result<DashMap
     Ok(offset_map)
 }
 
-pub fn read_offset_map(path: &str, hash_type: HashType) -> Result<DashMap<GeometricHash, (usize, usize)>, Error> {
+pub fn read_offset_map(
+    path: &str,
+    hash_type: HashType,
+) -> Result<DashMap<GeometricHash, (usize, usize)>, Error> {
     let file = File::open(path)?;
     let mmap = unsafe { Mmap::map(&file)? };
     let hash_encoding_type = hash_type.encoding_type();
@@ -125,33 +152,38 @@ pub fn read_offset_map(path: &str, hash_type: HashType) -> Result<DashMap<Geomet
 
     // Set number of threads
     // rayon::ThreadPoolBuilder::new().num_threads(8).build_global().unwrap();
-    let offset_map: DashMap<_, _> = chunks.into_par_iter().filter_map(|chunk| {
-        let (key, w): (GeometricHash, usize) = match hash_encoding_type {
-            32 => {
-                (GeometricHash::from_u32(
-                    u32::from_le_bytes(chunk[0..4].try_into().unwrap()),
-                    hash_type
-                ), 4_usize)
-            },
-            64 => {
-                (GeometricHash::from_u64(
-                    u64::from_le_bytes(chunk[0..8].try_into().unwrap()),
-                    hash_type
-                ), 8_usize)
-            },
-            _ => { return None; }
-        };
-        let value = (
-            usize::from_le_bytes(chunk[w..w + 8].try_into().unwrap()),
-            usize::from_le_bytes(chunk[w + 8..w + 16].try_into().unwrap())
-        );
-        Some((key, value))
-    }).collect();
+    let offset_map: DashMap<_, _> = chunks
+        .into_par_iter()
+        .filter_map(|chunk| {
+            let (key, w): (GeometricHash, usize) = match hash_encoding_type {
+                32 => (
+                    GeometricHash::from_u32(
+                        u32::from_le_bytes(chunk[0..4].try_into().unwrap()),
+                        hash_type,
+                    ),
+                    4_usize,
+                ),
+                64 => (
+                    GeometricHash::from_u64(
+                        u64::from_le_bytes(chunk[0..8].try_into().unwrap()),
+                        hash_type,
+                    ),
+                    8_usize,
+                ),
+                _ => {
+                    return None;
+                }
+            };
+            let value = (
+                usize::from_le_bytes(chunk[w..w + 8].try_into().unwrap()),
+                usize::from_le_bytes(chunk[w + 8..w + 16].try_into().unwrap()),
+            );
+            Some((key, value))
+        })
+        .collect();
 
     Ok(offset_map)
 }
-
-
 
 pub fn write_usize_vector(path: &str, vec: &Vec<usize>) -> Result<(), Error> {
     let file = OpenOptions::new()
@@ -164,20 +196,17 @@ pub fn write_usize_vector(path: &str, vec: &Vec<usize>) -> Result<(), Error> {
     file.set_len(total_size as u64)?;
     // Write as whole
     let mut writer = BufWriter::new(file);
-    let vec_bytes = unsafe { 
-        std::slice::from_raw_parts(vec.as_ptr() as *const u8, 
-        total_size as usize) 
-    };
+    let vec_bytes =
+        unsafe { std::slice::from_raw_parts(vec.as_ptr() as *const u8, total_size as usize) };
     writer.write_all(vec_bytes)?;
     Ok(())
 }
 
-pub fn read_usize_vector(path: &str)-> Result<(Mmap, &'static [u64]), Error> {
+pub fn read_usize_vector(path: &str) -> Result<(Mmap, &'static [u64]), Error> {
     let file = File::open(path)?;
     let mmap = unsafe { Mmap::map(&file)? };
     let vec = unsafe {
-        std::slice::from_raw_parts(mmap.as_ptr() as *const u64,
-        mmap.len() / size_of::<u64>())
+        std::slice::from_raw_parts(mmap.as_ptr() as *const u64, mmap.len() / size_of::<u64>())
     };
     Ok((mmap, vec))
 }
@@ -201,7 +230,11 @@ pub fn get_values_with_offset_u8(vec: &[u8], offset: usize, length: usize) -> &[
     &vec[offset..offset + length]
 }
 
-pub fn write_usize_vector_in_bits(path: &str, vec: &Vec<usize>, num_bits: usize) -> Result<(), Error> {
+pub fn write_usize_vector_in_bits(
+    path: &str,
+    vec: &Vec<usize>,
+    num_bits: usize,
+) -> Result<(), Error> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -213,7 +246,9 @@ pub fn write_usize_vector_in_bits(path: &str, vec: &Vec<usize>, num_bits: usize)
         16 => (size_of::<u16>() * vec.len()) as u64,
         24 => (3 * vec.len()) as u64, // 3 bytes
         32 => (size_of::<u32>() * vec.len()) as u64,
-        _ => { panic!("Invalid number of bits"); }
+        _ => {
+            panic!("Invalid number of bits");
+        }
     };
     file.set_len(total_size as u64)?;
     // Write after converting usize to matched integer type
@@ -221,102 +256,104 @@ pub fn write_usize_vector_in_bits(path: &str, vec: &Vec<usize>, num_bits: usize)
     match num_bits {
         8 => {
             let vec_u8 = vec.iter().map(|&x| x as u8).collect::<Vec<u8>>();
-            let vec_bytes = unsafe { 
-                std::slice::from_raw_parts(vec_u8.as_ptr() as *const u8, 
-                total_size as usize) 
+            let vec_bytes = unsafe {
+                std::slice::from_raw_parts(vec_u8.as_ptr() as *const u8, total_size as usize)
             };
             writer.write_all(vec_bytes)?;
-        },
+        }
         16 => {
             let vec_u16 = vec.iter().map(|&x| x as u16).collect::<Vec<u16>>();
-            let vec_bytes = unsafe { 
-                std::slice::from_raw_parts(vec_u16.as_ptr() as *const u8, 
-                total_size as usize) 
+            let vec_bytes = unsafe {
+                std::slice::from_raw_parts(vec_u16.as_ptr() as *const u8, total_size as usize)
             };
             writer.write_all(vec_bytes)?;
-        },
+        }
         24 => {
             // Extract 3 bytes from usize as Vec<u8>
-            let vec_u8 = vec.iter().flat_map(|&x| {
-                // endianess is not considered. first 2bytes: id, last byte: grid index
-                let mut bytes = Vec::new();
-                bytes.push(((x >> 16) & 0xFF) as u8);
-                bytes.push(((x >> 8) & 0xFF) as u8);
-                bytes.push((x & 0xFF) as u8);
-                bytes
-            }).collect::<Vec<u8>>();
-            let vec_bytes = unsafe { 
-                std::slice::from_raw_parts(vec_u8.as_ptr() as *const u8, 
-                total_size as usize) 
+            let vec_u8 = vec
+                .iter()
+                .flat_map(|&x| {
+                    // endianess is not considered. first 2bytes: id, last byte: grid index
+                    let mut bytes = Vec::new();
+                    bytes.push(((x >> 16) & 0xFF) as u8);
+                    bytes.push(((x >> 8) & 0xFF) as u8);
+                    bytes.push((x & 0xFF) as u8);
+                    bytes
+                })
+                .collect::<Vec<u8>>();
+            let vec_bytes = unsafe {
+                std::slice::from_raw_parts(vec_u8.as_ptr() as *const u8, total_size as usize)
             };
             writer.write_all(vec_bytes)?;
-        },
+        }
         32 => {
             let vec_u32 = vec.iter().map(|&x| x as u32).collect::<Vec<u32>>();
-            let vec_bytes = unsafe { 
-                std::slice::from_raw_parts(vec_u32.as_ptr() as *const u8, 
-                total_size as usize) 
+            let vec_bytes = unsafe {
+                std::slice::from_raw_parts(vec_u32.as_ptr() as *const u8, total_size as usize)
             };
             writer.write_all(vec_bytes)?;
-        },
+        }
         64 => {
-            let vec_bytes = unsafe { 
-                std::slice::from_raw_parts(vec.as_ptr() as *const u8,
-                total_size as usize) 
+            let vec_bytes = unsafe {
+                std::slice::from_raw_parts(vec.as_ptr() as *const u8, total_size as usize)
             };
             writer.write_all(vec_bytes)?;
-        },
-        _ => { panic!("Invalid number of bits"); }
-    }    
+        }
+        _ => {
+            panic!("Invalid number of bits");
+        }
+    }
     Ok(())
 }
 
-pub fn read_u8_vector(path: &str)-> Result<(Mmap, &'static [u8]), Error> {
+pub fn read_u8_vector(path: &str) -> Result<(Mmap, &'static [u8]), Error> {
     let file = File::open(path)?;
     let mmap = unsafe { Mmap::map(&file)? };
     let vec = unsafe {
-        std::slice::from_raw_parts(mmap.as_ptr() as *const u8,
-        mmap.len() / size_of::<u8>())
+        std::slice::from_raw_parts(mmap.as_ptr() as *const u8, mmap.len() / size_of::<u8>())
     };
     Ok((mmap, vec))
 }
-pub fn read_u16_vector(path: &str)-> Result<(Mmap, &'static [u16]), Error> {
+pub fn read_u16_vector(path: &str) -> Result<(Mmap, &'static [u16]), Error> {
     let file = File::open(path)?;
     let mmap = unsafe { Mmap::map(&file)? };
     let vec = unsafe {
-        std::slice::from_raw_parts(mmap.as_ptr() as *const u16,
-        mmap.len() / size_of::<u16>())
+        std::slice::from_raw_parts(mmap.as_ptr() as *const u16, mmap.len() / size_of::<u16>())
     };
     Ok((mmap, vec))
 }
 
-pub fn read_u32_vector(path: &str)-> Result<(Mmap, &'static [u32]), Error> {
+pub fn read_u32_vector(path: &str) -> Result<(Mmap, &'static [u32]), Error> {
     let file = File::open(path)?;
     let mmap = unsafe { Mmap::map(&file)? };
     let vec = unsafe {
-        std::slice::from_raw_parts(mmap.as_ptr() as *const u32,
-        mmap.len() / size_of::<u32>())
+        std::slice::from_raw_parts(mmap.as_ptr() as *const u32, mmap.len() / size_of::<u32>())
     };
     Ok((mmap, vec))
 }
 
 pub fn read_compact_structure(path: &str) -> Result<(CompactStructure, bool), ()> {
-    #[cfg(not(feature="foldcomp"))]
+    #[cfg(not(feature = "foldcomp"))]
     let use_foldcomp = false;
-    #[cfg(feature="foldcomp")]
+    #[cfg(feature = "foldcomp")]
     let use_foldcomp = if path.contains(':') { true } else { false };
 
-    
-    #[cfg(not(feature="foldcomp"))]
-    let compact_structure = read_structure_from_path(path).expect(
-        &log_msg(FAIL, &format!("Failed to read structure from file: {}", &path))
-    ).to_compact();
-    
-    #[cfg(feature="foldcomp")]
+    #[cfg(not(feature = "foldcomp"))]
+    let compact_structure = read_structure_from_path(path)
+        .expect(&log_msg(
+            FAIL,
+            &format!("Failed to read structure from file: {}", &path),
+        ))
+        .to_compact();
+
+    #[cfg(feature = "foldcomp")]
     let compact_structure = if !use_foldcomp {
-        read_structure_from_path(path).expect(
-            &log_msg(FAIL, &format!("Failed to read structure from file: {}", &path))
-        ).to_compact()
+        read_structure_from_path(path)
+            .expect(&log_msg(
+                FAIL,
+                &format!("Failed to read structure from file: {}", &path),
+            ))
+            .to_compact()
     } else {
         let mut split = path.split(':');
         let db_path = split.next().unwrap();
@@ -333,51 +370,57 @@ pub fn read_compact_structure(path: &str) -> Result<(CompactStructure, bool), ()
     Ok((compact_structure, use_foldcomp))
 }
 
-
 pub fn read_structure_from_path(path: &str) -> Option<Structure> {
     if path.ends_with(".gz") {
         if path.ends_with(".pdb.gz") || path.ends_with(".ent.gz") {
-            let reader = PDBReader::from_file(path).expect(
-                &log_msg(FAIL, format!("Failed to read PDB file: {}", path).as_str())
-            );
-            let structure = reader.read_structure_from_gz().expect(
-                &log_msg(FAIL, format!("Failed to read structure from PDB file: {}", path).as_str())
-            );
+            let reader = PDBReader::from_file(path).expect(&log_msg(
+                FAIL,
+                format!("Failed to read PDB file: {}", path).as_str(),
+            ));
+            let structure = reader.read_structure_from_gz().expect(&log_msg(
+                FAIL,
+                format!("Failed to read structure from PDB file: {}", path).as_str(),
+            ));
             Some(structure)
         } else if path.ends_with(".cif.gz") {
-            let reader = CIFReader::from_file(path).expect(
-                &log_msg(FAIL, format!("Failed to read CIF file: {}", path).as_str())
-            );
-            let structure = reader.read_structure_from_gz().expect(
-                &log_msg(FAIL, format!("Failed to read structure from CIF file: {}", path).as_str())
-            );
+            let reader = CIFReader::from_file(path).expect(&log_msg(
+                FAIL,
+                format!("Failed to read CIF file: {}", path).as_str(),
+            ));
+            let structure = reader.read_structure_from_gz().expect(&log_msg(
+                FAIL,
+                format!("Failed to read structure from CIF file: {}", path).as_str(),
+            ));
             Some(structure)
         } else {
             None
         }
     } else {
         if path.ends_with(".pdb") || path.ends_with(".ent") {
-            let reader = PDBReader::from_file(path).expect(
-                &log_msg(FAIL, format!("Failed to read PDB file: {}", path).as_str())
-            );
-            let structure = reader.read_structure().expect(
-                &log_msg(FAIL, format!("Failed to read structure from PDB file: {}", path).as_str())
-            );
+            let reader = PDBReader::from_file(path).expect(&log_msg(
+                FAIL,
+                format!("Failed to read PDB file: {}", path).as_str(),
+            ));
+            let structure = reader.read_structure().expect(&log_msg(
+                FAIL,
+                format!("Failed to read structure from PDB file: {}", path).as_str(),
+            ));
             Some(structure)
         } else if path.ends_with(".cif") {
-            let reader = CIFReader::from_file(path).expect(
-                &log_msg(FAIL, format!("Failed to read CIF file: {}", path).as_str())
-            );
-            let structure = reader.read_structure().expect(
-                &log_msg(FAIL, format!("Failed to read structure from CIF file: {}", path).as_str())
-            );
+            let reader = CIFReader::from_file(path).expect(&log_msg(
+                FAIL,
+                format!("Failed to read CIF file: {}", path).as_str(),
+            ));
+            let structure = reader.read_structure().expect(&log_msg(
+                FAIL,
+                format!("Failed to read structure from CIF file: {}", path).as_str(),
+            ));
             Some(structure)
         } else {
             None
         }
     }
 }
-
 
 // Functions to load index files
 pub fn get_lookup_and_type(index_path: &str) -> (String, String) {
@@ -418,32 +461,28 @@ pub fn check_and_get_indices(index_path: Option<String>, verbose: bool) -> Vec<S
     index_paths
 }
 
-
 #[cfg(feature = "foldcomp")]
 pub fn get_foldcomp_db_path_with_prefix(prefix: &str) -> Option<String> {
-    // If prefix format is like "*_folddisco", use "*" as prefix. 
+    // If prefix format is like "*_folddisco", use "*" as prefix.
     // Candidate paths with the prefix: parsed_prefix, parsed_prefix_foldcomp
     // Check if db_path, db_path.index, db_path.lookup exists.
-    
+
     // Parse prefix - remove _folddisco if present
     let parsed_prefix = if prefix.ends_with("_folddisco") {
         prefix.trim_end_matches("_folddisco").to_string()
     } else {
         prefix.to_string()
     };
-    
+
     // Create candidate prefixes
-    let candidate_prefixes = vec![
-        format!("{}_foldcomp", parsed_prefix),
-        parsed_prefix.clone(),
-    ];
+    let candidate_prefixes = vec![format!("{}_foldcomp", parsed_prefix), parsed_prefix.clone()];
     // Check each candidate prefix for foldcomp database files
     for candidate in candidate_prefixes {
         if is_valid_foldcomp_db(&candidate) {
             return Some(candidate);
         }
     }
-    
+
     None
 }
 
@@ -467,7 +506,6 @@ pub fn default_index_path(input_path: &str) -> String {
         format!("{}_folddisco", input_path)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

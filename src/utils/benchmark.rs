@@ -15,11 +15,11 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn new(true_pos: f64, true_neg: f64, false_pos: f64, false_neg: f64) -> Self {
-        Self { 
-            true_pos, 
-            true_neg, 
-            false_pos, 
-            false_neg 
+        Self {
+            true_pos,
+            true_neg,
+            false_pos,
+            false_neg,
         }
     }
 
@@ -32,7 +32,8 @@ impl Metrics {
     }
 
     pub fn accuracy(&self) -> f64 {
-        (self.true_pos + self.true_neg) / (self.true_pos + self.true_neg + self.false_pos + self.false_neg)
+        (self.true_pos + self.true_neg)
+            / (self.true_pos + self.true_neg + self.false_pos + self.false_neg)
     }
 
     pub fn f1_score(&self) -> f64 {
@@ -42,11 +43,18 @@ impl Metrics {
     }
 }
 
-pub fn compare_target_answer_vec<T: Eq + PartialEq>(target: &Vec<T>, answer: &Vec<T>, all: &Vec<T>) -> Metrics {
+pub fn compare_target_answer_vec<T: Eq + PartialEq>(
+    target: &Vec<T>,
+    answer: &Vec<T>,
+    all: &Vec<T>,
+) -> Metrics {
     // True Positive: Elements in both target and answer
     let true_pos = target.iter().filter(|&x| answer.contains(x)).count() as f64;
     // True Negative: Elements in neither target nor answer
-    let true_neg = all.iter().filter(|&x| !target.contains(x) && !answer.contains(x)).count() as f64;
+    let true_neg = all
+        .iter()
+        .filter(|&x| !target.contains(x) && !answer.contains(x))
+        .count() as f64;
     // False Positive: Elements in target but not in answer
     let false_pos = target.iter().filter(|&x| !answer.contains(x)).count() as f64;
     // False Negative: Elements in answer but not in target
@@ -55,20 +63,36 @@ pub fn compare_target_answer_vec<T: Eq + PartialEq>(target: &Vec<T>, answer: &Ve
     Metrics::new(true_pos, true_neg, false_pos, false_neg)
 }
 
-pub fn compare_target_answer_neutral_vec<T: Eq + PartialEq>(target: &Vec<T>, answer: &Vec<T>, neutral: &Vec<T>, all: &Vec<T>) -> Metrics {
+pub fn compare_target_answer_neutral_vec<T: Eq + PartialEq>(
+    target: &Vec<T>,
+    answer: &Vec<T>,
+    neutral: &Vec<T>,
+    all: &Vec<T>,
+) -> Metrics {
     // True Positive: Elements in both target and answer
     let true_pos = target.iter().filter(|&x| answer.contains(x)).count() as f64;
     // True Negative: Elements in neither target nor answer
-    let true_neg = all.iter().filter(|&x| !target.contains(x) && !answer.contains(x) && !neutral.contains(x)).count() as f64;
+    let true_neg = all
+        .iter()
+        .filter(|&x| !target.contains(x) && !answer.contains(x) && !neutral.contains(x))
+        .count() as f64;
     // False Positive: Elements in target but not in answer
-    let false_pos = target.iter().filter(|&x| !answer.contains(x) && !neutral.contains(x)).count() as f64;
+    let false_pos = target
+        .iter()
+        .filter(|&x| !answer.contains(x) && !neutral.contains(x))
+        .count() as f64;
     // False Negative: Elements in answer but not in target
     let false_neg = answer.iter().filter(|&x| !target.contains(x)).count() as f64;
 
     Metrics::new(true_pos, true_neg, false_pos, false_neg)
 }
 
-pub fn measure_up_to_k_fp_vec<T: Eq + PartialEq>(target: &Vec<T>, answer: &Vec<T>, all: &Vec<T>, k: f64) -> Metrics {
+pub fn measure_up_to_k_fp_vec<T: Eq + PartialEq>(
+    target: &Vec<T>,
+    answer: &Vec<T>,
+    all: &Vec<T>,
+    k: f64,
+) -> Metrics {
     // Iter until k false positives are found
     let mut true_pos = 0.0;
     let mut false_pos = 0.0;
@@ -90,7 +114,13 @@ pub fn measure_up_to_k_fp_vec<T: Eq + PartialEq>(target: &Vec<T>, answer: &Vec<T
     Metrics::new(true_pos, true_neg, false_pos, false_neg)
 }
 
-pub fn measure_up_to_k_fp_with_neutral_vec<T: Eq + PartialEq>(target: &Vec<T>, answer: &Vec<T>, neutral: &Vec<T>, all: &Vec<T>, k: f64) -> Metrics {
+pub fn measure_up_to_k_fp_with_neutral_vec<T: Eq + PartialEq>(
+    target: &Vec<T>,
+    answer: &Vec<T>,
+    neutral: &Vec<T>,
+    all: &Vec<T>,
+    k: f64,
+) -> Metrics {
     // Iter until k false positives are found
     let mut true_pos = 0.0;
     let mut false_pos = 0.0;

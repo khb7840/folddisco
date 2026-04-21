@@ -1,4 +1,3 @@
-
 pub const CA_CB_DIST: f32 = 1.5336;
 
 #[derive(Debug, Clone, Copy)]
@@ -115,7 +114,13 @@ impl Coordinate {
     }
 
     #[inline(always)]
-    pub fn calc_angle(&self, atom2: &Coordinate, atom3: &Coordinate, atom4: &Coordinate, return_radian: bool) -> f32 {
+    pub fn calc_angle(
+        &self,
+        atom2: &Coordinate,
+        atom3: &Coordinate,
+        atom4: &Coordinate,
+        return_radian: bool,
+    ) -> f32 {
         let (a, b, c, d) = (self, atom2, atom3, atom4);
         // Form vectors
         let v1 = (b.x - a.x, b.y - a.y, b.z - a.z); // vector 1
@@ -186,7 +191,12 @@ pub fn approx_cb(ca: &Coordinate, n: &Coordinate, c: &Coordinate) -> Coordinate 
 }
 
 #[inline(always)]
-pub fn calc_cos2_torsion_angle(a: &Coordinate, b: &Coordinate, c: &Coordinate, d: &Coordinate) -> f32 {
+pub fn calc_cos2_torsion_angle(
+    a: &Coordinate,
+    b: &Coordinate,
+    c: &Coordinate,
+    d: &Coordinate,
+) -> f32 {
     let v1 = b.sub(a);
     let v2 = c.sub(b);
     let v3 = d.sub(c);
@@ -274,20 +284,50 @@ impl CoordinateVector {
         }
         torsion_angles
     }
-    
+
     pub fn min_coord(&self) -> Coordinate {
         let out = Coordinate {
-            x: self.x.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().clone(),
-            y: self.y.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().clone(),
-            z: self.z.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().clone(),
+            x: self
+                .x
+                .iter()
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap()
+                .clone(),
+            y: self
+                .y
+                .iter()
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap()
+                .clone(),
+            z: self
+                .z
+                .iter()
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap()
+                .clone(),
         };
         out
     }
     pub fn max_coord(&self) -> Coordinate {
         let out = Coordinate {
-            x: self.x.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().clone(),
-            y: self.y.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().clone(),
-            z: self.z.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().clone(),
+            x: self
+                .x
+                .iter()
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap()
+                .clone(),
+            y: self
+                .y
+                .iter()
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap()
+                .clone(),
+            z: self
+                .z
+                .iter()
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap()
+                .clone(),
         };
         out
     }
@@ -308,7 +348,7 @@ impl CarbonCoordinateVector {
             z: Vec::new(),
         }
     }
-    
+
     pub fn with_capacity(capacity: usize) -> Self {
         CarbonCoordinateVector {
             x: Vec::with_capacity(capacity),
@@ -316,7 +356,7 @@ impl CarbonCoordinateVector {
             z: Vec::with_capacity(capacity),
         }
     }
-    
+
     pub fn len(&self) -> usize {
         self.x.len()
     }
@@ -344,7 +384,7 @@ impl CarbonCoordinateVector {
             _ => None,
         }
     }
-    
+
     pub fn push(&mut self, coordinate: &Coordinate) {
         self.x.push(Some(coordinate.x));
         self.y.push(Some(coordinate.y));
@@ -415,9 +455,21 @@ impl CarbonCoordinateVector {
         torsion_angles
     }
     pub fn min_coord(&self) -> Option<Coordinate> {
-        let x = self.x.iter().filter_map(|x| *x).min_by(|a, b| a.partial_cmp(b).unwrap());
-        let y = self.y.iter().filter_map(|y| *y).min_by(|a, b| a.partial_cmp(b).unwrap());
-        let z = self.z.iter().filter_map(|z| *z).min_by(|a, b| a.partial_cmp(b).unwrap());
+        let x = self
+            .x
+            .iter()
+            .filter_map(|x| *x)
+            .min_by(|a, b| a.partial_cmp(b).unwrap());
+        let y = self
+            .y
+            .iter()
+            .filter_map(|y| *y)
+            .min_by(|a, b| a.partial_cmp(b).unwrap());
+        let z = self
+            .z
+            .iter()
+            .filter_map(|z| *z)
+            .min_by(|a, b| a.partial_cmp(b).unwrap());
         if x.is_none() || y.is_none() || z.is_none() {
             return None;
         } else {
@@ -429,9 +481,21 @@ impl CarbonCoordinateVector {
         }
     }
     pub fn max_coord(&self) -> Option<Coordinate> {
-        let x = self.x.iter().filter_map(|x| *x).max_by(|a, b| a.partial_cmp(b).unwrap());
-        let y = self.y.iter().filter_map(|y| *y).max_by(|a, b| a.partial_cmp(b).unwrap());
-        let z = self.z.iter().filter_map(|z| *z).max_by(|a, b| a.partial_cmp(b).unwrap());
+        let x = self
+            .x
+            .iter()
+            .filter_map(|x| *x)
+            .max_by(|a, b| a.partial_cmp(b).unwrap());
+        let y = self
+            .y
+            .iter()
+            .filter_map(|y| *y)
+            .max_by(|a, b| a.partial_cmp(b).unwrap());
+        let z = self
+            .z
+            .iter()
+            .filter_map(|z| *z)
+            .max_by(|a, b| a.partial_cmp(b).unwrap());
         if x.is_none() || y.is_none() || z.is_none() {
             return None;
         } else {
@@ -456,7 +520,6 @@ impl Iterator for CarbonCoordinateVector {
         }
     }
 }
-
 
 #[cfg(test)]
 mod coordinate_tests {

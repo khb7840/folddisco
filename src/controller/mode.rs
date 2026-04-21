@@ -1,4 +1,3 @@
-
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -21,7 +20,9 @@ impl IdType {
             "Pdb" | "PDB" | "pdb" => Self::Pdb,
             "Afdb" | "AFDB" | "afdb" => Self::Afdb,
             "Uniprot" | "UniProt" | "uniprot" => Self::UniProt,
-            "BasenameWithoutExt" | "basename_without_ext" | "basename_no_ext" | "filename" => Self::BasenameWithoutExt,
+            "BasenameWithoutExt" | "basename_without_ext" | "basename_no_ext" | "filename" => {
+                Self::BasenameWithoutExt
+            }
             "BasenameWithExt" | "basename_with_ext" | "basename" | "file" => Self::BasenameWithExt,
             "AbsPath" | "Abspath" | "abspath" | "absolute_path" | "path" => Self::AbsPath,
             "RelPath" | "Relpath" | "relpath" | "relative_path" | "default" => Self::RelPath,
@@ -91,7 +92,7 @@ pub fn parse_path_by_id_type(path: &str, id_type: &IdType) -> String {
             let afdb_id = afdb_regex.find(file_name);
             if afdb_id.is_none() {
                 return file_name.to_string();
-            } 
+            }
             file_name[afdb_id.unwrap().start()..afdb_id.unwrap().end()].to_string()
         }
         IdType::UniProt => {
@@ -101,7 +102,7 @@ pub fn parse_path_by_id_type(path: &str, id_type: &IdType) -> String {
             let afdb_id = afdb_regex.find(file_name);
             if afdb_id.is_none() {
                 return file_name.to_string();
-            } 
+            }
             let afdb_id = file_name[afdb_id.unwrap().start()..afdb_id.unwrap().end()].to_string();
             let afdb_id = afdb_id.split("-").collect::<Vec<_>>();
             afdb_id[1].to_string()
@@ -167,7 +168,7 @@ pub fn parse_path_by_id_type_with_string(path: &str, id_type: &IdType, string: &
             if afdb_id.is_none() {
                 // return file_name;
                 string.push_str(file_name);
-            } 
+            }
             let afdb_id = file_name[afdb_id.unwrap().start()..afdb_id.unwrap().end()].to_string();
             let afdb_id = afdb_id.split("-").collect::<Vec<_>>();
             // afdb_id[1]
@@ -201,7 +202,6 @@ pub fn parse_path_by_id_type_with_string(path: &str, id_type: &IdType, string: &
     }
 }
 
-
 pub fn parse_path_vec_by_id_type(path_vec: &Vec<String>, id_type: &IdType) -> Vec<String> {
     let mut parsed_path_vec = Vec::with_capacity(path_vec.len());
     for path in path_vec {
@@ -220,18 +220,18 @@ pub fn parse_path_set_by_id_type(path_set: &HashSet<String>, id_type: &IdType) -
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryMode {
-    PerMatch,      // Default mode: print per match with residue matching
-    PerStructure,  // Print per structure (aggregated results)
-    SkipMatch,     // No residue matching, print per structure
-    Web,           // Web mode with top N matches applied
+    PerMatch,                // Default mode: print per match with residue matching
+    PerStructure,            // Print per structure (aggregated results)
+    SkipMatch,               // No residue matching, print per structure
+    Web,                     // Web mode with top N matches applied
     ContradictoryPrintError, // Error: both per-structure and per-match specified
 }
 
 impl QueryMode {
     pub fn from_flags(
-        skip_match: bool, 
+        skip_match: bool,
         is_web: bool,
-        per_structure: bool, 
+        per_structure: bool,
         per_match: bool,
     ) -> Self {
         match (skip_match, is_web, per_structure, per_match) {
@@ -269,8 +269,6 @@ impl std::fmt::Display for QueryMode {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,9 +292,9 @@ mod tests {
         let uniprot_id = parse_path_by_id_type(afdb_path, &IdType::UniProt);
         let basename_ext_id = parse_path_by_id_type(afdb_path, &IdType::BasenameWithExt);
         let basename_no_ext_id = parse_path_by_id_type(afdb_path, &IdType::BasenameWithoutExt);
-        let abs_path = parse_path_by_id_type(afdb_path,&IdType::AbsPath);
+        let abs_path = parse_path_by_id_type(afdb_path, &IdType::AbsPath);
         let rel_path = parse_path_by_id_type(pdb_path, &IdType::RelPath);
-        
+
         assert_eq!(pdb_id, "1azw");
         assert_eq!(afdb_id, "AF-P17538-F1-model_v4");
         assert_eq!(uniprot_id, "P17538");

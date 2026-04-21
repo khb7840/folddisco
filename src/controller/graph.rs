@@ -9,11 +9,12 @@
 
 use std::collections::HashMap;
 
-use petgraph::graph::DiGraph;
 use crate::geometry::core::GeometricHash;
+use petgraph::graph::DiGraph;
 
-
-pub fn create_index_graph(ind_vec: &Vec<(usize, usize, GeometricHash)>) -> DiGraph<usize, GeometricHash> {
+pub fn create_index_graph(
+    ind_vec: &Vec<(usize, usize, GeometricHash)>,
+) -> DiGraph<usize, GeometricHash> {
     let mut graph = DiGraph::<usize, GeometricHash>::new();
     let mut node_indices = HashMap::new();
 
@@ -25,9 +26,9 @@ pub fn create_index_graph(ind_vec: &Vec<(usize, usize, GeometricHash)>) -> DiGra
     graph
 }
 
-
 pub fn connected_components_with_given_node_count(
-    graph: &DiGraph<usize, GeometricHash>, node_count: usize
+    graph: &DiGraph<usize, GeometricHash>,
+    node_count: usize,
 ) -> Vec<Vec<usize>> {
     // Current implementation.
     // Return both strong and weakly connected components with the same node count
@@ -37,24 +38,24 @@ pub fn connected_components_with_given_node_count(
     // Concat
     scc.append(&mut wcc);
     // Filter components with the node count greater than or equal to the given node count
-    scc.retain(|component| component.len() >= node_count); 
+    scc.retain(|component| component.len() >= node_count);
 
     // Uniqueness cheking. Sort all inner vectors and dedup
     scc.iter_mut().for_each(|component| component.sort());
     scc.sort();
     scc.dedup();
-    let output = scc.iter().map(
-        |component| component.iter().map(|&node| graph[node]
-    ).collect()).collect();
+    let output = scc
+        .iter()
+        .map(|component| component.iter().map(|&node| graph[node]).collect())
+        .collect();
     output
 }
 
-
 #[cfg(test)]
 mod tests {
-    use petgraph::Undirected;
-    use crate::measure_time;
     use super::*;
+    use crate::measure_time;
+    use petgraph::Undirected;
 
     #[test]
     fn test_graph() {
@@ -79,7 +80,7 @@ mod tests {
         graph.add_edge(g195, f102, 512052558);
         let scc = measure_time!(petgraph::algo::tarjan_scc(&graph));
         println!("{:?}", scc);
-        
+
         let undirected_graph = graph.clone().into_edge_type::<Undirected>();
         let weak_cc = measure_time!(petgraph::algo::kosaraju_scc(&undirected_graph));
         println!("{:?}", weak_cc);
