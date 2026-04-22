@@ -141,7 +141,10 @@ fn resolve_target_structure_path(
     config: &IndexConfig,
 ) -> String {
     let target_path = Path::new(target_id);
-    if target_path.is_absolute() || target_path.is_file() {
+    if target_path.is_file() {
+        return target_id.to_string();
+    }
+    if target_path.is_absolute() {
         return target_id.to_string();
     }
 
