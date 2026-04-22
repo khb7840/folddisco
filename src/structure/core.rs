@@ -3,7 +3,7 @@ use crate::structure::coordinate::{approx_cb, CarbonCoordinateVector, Coordinate
 use crate::structure::feature::{Torsion, TorsionType};
 use crate::utils::convert::map_aa_to_u8;
 
-use super::coordinate::{calc_angle_radian, calc_torsion_radian};
+use super::coordinate::{calc_torsion_radian, calc_angle_radian};
 
 /// Structure is the main data structure for storing the information of a protein structure.
 #[derive(Debug)]
@@ -49,6 +49,7 @@ impl Structure {
         //FIXME: Right now, only Psi is calculated
         Torsion::build(self, TorsionType::Psi)
     }
+
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +87,7 @@ impl CompactStructure {
         let mut cb_vec_x: Vec<f32> = Vec::with_capacity(origin.num_residues);
         let mut cb_vec_y: Vec<f32> = Vec::with_capacity(origin.num_residues);
         let mut cb_vec_z: Vec<f32> = Vec::with_capacity(origin.num_residues);
+        
 
         let mut chain_per_residue: Vec<u8> = Vec::with_capacity(origin.num_residues);
         let mut prev_res_serial: Option<u64> = None;
@@ -94,9 +96,10 @@ impl CompactStructure {
         let mut ca: Option<Coordinate> = None;
         let mut cb: Option<Coordinate> = None;
         let mut c: Option<Coordinate> = None;
-
+        
         let mut gly_n: Option<Coordinate> = None;
         let mut gly_c: Option<Coordinate> = None;
+        
 
         for idx in 0..origin.num_atoms {
             if prev_res_serial != Some(model.get_res_serial(idx)) || idx == origin.num_atoms - 1 {
@@ -121,6 +124,7 @@ impl CompactStructure {
                         cb_vec_x.push(cb.x);
                         cb_vec_y.push(cb.y);
                         cb_vec_z.push(cb.z);
+                        
                     }
                     (Some(n), Some(ca), None) => {
                         let resi = prev_res_serial.expect("expected residue serial number");
@@ -155,6 +159,7 @@ impl CompactStructure {
                         ca_vec_x.push(ca.x);
                         ca_vec_y.push(ca.y);
                         ca_vec_z.push(ca.z);
+
                     }
                     (None, None, None) => {}
                     (None, None, Some(_)) => {}
@@ -319,12 +324,7 @@ impl CompactStructure {
         }
     }
 
-    pub fn get_trrosetta_feature(
-        &self,
-        idx1: usize,
-        idx2: usize,
-        dist_cutoff: f32,
-    ) -> Option<(f32, f32, f32, f32, f32, f32)> {
+    pub fn get_trrosetta_feature(&self, idx1: usize, idx2: usize, dist_cutoff: f32) -> Option<(f32, f32, f32, f32, f32, f32)> {
         let ca1 = self.get_ca(idx1);
         let ca2 = self.get_ca(idx2);
         let cb1 = self.get_cb(idx1);
@@ -375,12 +375,7 @@ impl CompactStructure {
         }
     }
 
-    pub fn get_pdb_tr_feature(
-        &self,
-        idx1: usize,
-        idx2: usize,
-        dist_cutoff: f32,
-    ) -> Option<(f32, f32, f32, f32, f32)> {
+    pub fn get_pdb_tr_feature(&self, idx1: usize, idx2: usize, dist_cutoff: f32) -> Option<(f32, f32, f32, f32, f32)> {
         let ca1 = self.get_ca(idx1);
         let ca2 = self.get_ca(idx2);
         let cb1 = self.get_cb(idx1);
@@ -390,6 +385,7 @@ impl CompactStructure {
         if let (Some(ca1), Some(ca2), Some(cb1), Some(cb2), Some(n1), Some(n2)) =
             (ca1, ca2, cb1, cb2, n1, n2)
         {
+
             let ca_dist = ca1.calc_distance(&ca2);
             if ca_dist > dist_cutoff {
                 return None;
@@ -405,13 +401,8 @@ impl CompactStructure {
             None
         }
     }
-
-    pub fn get_hybrid_feature(
-        &self,
-        idx1: usize,
-        idx2: usize,
-        dist_cutoff: f32,
-    ) -> Option<(f32, f32, f32, f32, f32, f32, f32)> {
+    
+    pub fn get_hybrid_feature(&self, idx1: usize, idx2: usize, dist_cutoff: f32) -> Option<(f32, f32, f32, f32, f32, f32, f32)> {
         let ca1 = self.get_ca(idx1);
         let ca2 = self.get_ca(idx2);
         let cb1 = self.get_cb(idx1);
@@ -423,20 +414,10 @@ impl CompactStructure {
         let ca1_next = self.get_ca(idx1 + 1);
         let ca2_pre = self.get_ca(idx2 - 1);
         let ca2_next = self.get_ca(idx2 + 1);
-        if let (
-            Some(ca1),
-            Some(ca2),
-            Some(cb1),
-            Some(cb2),
-            Some(n1),
-            Some(n2),
-            Some(ca1_pre),
-            Some(ca1_next),
-            Some(ca2_pre),
-            Some(ca2_next),
-        ) = (
-            ca1, ca2, cb1, cb2, n1, n2, ca1_pre, ca1_next, ca2_pre, ca2_next,
-        ) {
+        if let (Some(ca1), Some(ca2), Some(cb1), Some(cb2), Some(n1), Some(n2), Some(ca1_pre), Some(ca1_next), Some(ca2_pre), Some(ca2_next) ) =
+            (ca1, ca2, cb1, cb2, n1, n2, ca1_pre, ca1_next, ca2_pre, ca2_next)
+        {
+
             let ca_dist = ca1.calc_distance(&ca2);
             if ca_dist > dist_cutoff {
                 return None;
@@ -448,13 +429,14 @@ impl CompactStructure {
             let theta2 = calc_torsion_radian(&cb1, &cb2, &ca2, &n2);
             let phi1 = calc_torsion_radian(&ca1_pre, &n1, &ca1, &ca1_next);
             let phi2 = calc_torsion_radian(&ca2_pre, &n2, &ca2, &ca2_next);
-
+            
             Some((ca_dist, cb_dist, ca_cb_angle, theta1, theta2, phi1, phi2))
             // Some(feature)
         } else {
             None
         }
     }
+    
 
     #[inline(always)]
     pub fn get_bfactor(&self, idx: usize) -> f32 {
@@ -493,6 +475,7 @@ impl CompactStructure {
             }
         }
     }
+    
 }
 
 #[cfg(test)]
@@ -523,7 +506,7 @@ mod structure_tests {
         println!("{:?}", compact.get_res_name(compact.num_residues - 1));
         assert_eq!(compact.num_residues, structure.num_residues);
     }
-
+    
     #[test]
     fn test_avg_bfactor() {
         let data = crate::structure::io::pdb::Reader::from_file("data/homeobox/1akha-.pdb")

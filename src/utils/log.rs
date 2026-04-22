@@ -9,12 +9,8 @@ pub const FAIL: &str = "\x1b[1;31m[FAIL]\x1b[0m";
 pub const WARN: &str = "\x1b[1;33m[WARN]\x1b[0m";
 pub const DONE: &str = "\x1b[1;34m[DONE]\x1b[0m";
 
-pub fn log_msg(prefix: &str, msg: &str) -> String {
-    format!("{} {}", prefix, msg)
-}
-pub fn print_log_msg(prefix: &str, msg: &str) {
-    eprintln!("{}", log_msg(prefix, msg));
-}
+pub fn log_msg(prefix: &str, msg: &str) -> String { format!("{} {}", prefix, msg) }
+pub fn print_log_msg(prefix: &str, msg: &str) { eprintln!("{}", log_msg(prefix, msg)); }
 
 // Macro for measuring time for a function
 // measure_time gets expression and optional verbose flag
@@ -46,7 +42,7 @@ macro_rules! measure_time {
         } else {
             $x
         }
-    }};
+    }}
 }
 
 #[cfg(test)]

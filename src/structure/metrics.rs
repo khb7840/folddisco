@@ -36,10 +36,10 @@
 use core::fmt;
 
 /// Pre-computed distances for efficient metric calculation
-///
+/// 
 /// This struct stores pre-calculated distances to avoid redundant computations
 /// when calculating multiple metrics on the same structure pair.
-///
+/// 
 /// Memory usage: ~4MB for 1000-residue protein
 /// Speedup: 2-3x faster when calculating all metrics together
 pub struct PrecomputedDistances {
@@ -52,11 +52,11 @@ pub struct PrecomputedDistances {
 
 impl PrecomputedDistances {
     /// Pre-calculate all distances between two structures
-    ///
+    /// 
     /// # Arguments
     /// * `reference_coords` - Reference structure coordinates
     /// * `coords` - Model structure coordinates
-    ///
+    /// 
     /// # Returns
     /// PrecomputedDistances struct containing all distance calculations
     pub fn new(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> Self {
@@ -77,16 +77,21 @@ impl PrecomputedDistances {
                 pairwise_dist.push(dist(*r, *c)); // This is after sqrt
             }
         }
-        // Pairwise distances can be retrieved with pairwise_dist[i * n + j]
+        // Pairwise distances can be retrieved with pairwise_dist[i * n + j] 
         // instead of distances[i][j]
-
-        Self { pairwise_dist, n }
+        
+        Self {
+            pairwise_dist,
+            n,
+        }
     }
 
     #[inline(always)]
     pub fn get_distance(&self, i: usize, j: usize) -> f32 {
         self.pairwise_dist[i * self.n + j]
     }
+
+    
 }
 
 /// Calculate squared Euclidean distance between two 3D points.
@@ -118,28 +123,29 @@ fn d0_scale(length: usize) -> f32 {
 }
 
 /// Fast TM-score using precomputed distances
-///
+/// 
 /// # Arguments
 /// * `distances` - Precomputed distance data
 /// * `d0` - Optional normalization parameter
-///
+/// 
 /// # Returns
 /// TM-score in range [0, 1]
 pub fn tm_score(distances: &PrecomputedDistances, d0: Option<f32>) -> f32 {
     if distances.n == 0 {
         return 0.0;
     }
-
+    
     let d0 = d0.unwrap_or_else(|| d0_scale(distances.n));
     let d0_sq = (d0 * d0) as f64;
-
+    
     let sum: f64 = (0..distances.n)
         .map(|i| {
             let d_sq = distances.get_distance(i, i) as f64;
             1.0 / (1.0 + d_sq / d0_sq)
         })
         .sum();
-
+    
+    
     (sum / distances.n as f64) as f32
 }
 
@@ -148,9 +154,9 @@ fn gdt_generic(distances: &PrecomputedDistances, cutoffs: &[f64]) -> f32 {
     if distances.n == 0 || cutoffs.is_empty() {
         return 0.0;
     }
-
+    
     let mut sum = 0.0_f64;
-
+    
     for &cutoff in cutoffs {
         let cutoff_sq = cutoff * cutoff;
         let count = (0..distances.n)
@@ -159,10 +165,10 @@ fn gdt_generic(distances: &PrecomputedDistances, cutoffs: &[f64]) -> f32 {
                 d_sq <= cutoff_sq
             })
             .count();
-
+        
         sum += (count as f64) / (distances.n as f64);
     }
-
+    
     (sum / cutoffs.len() as f64) as f32
 }
 
@@ -184,8 +190,9 @@ pub fn gdt_ha(distances: &PrecomputedDistances) -> f32 {
 //     gdt_generic(distances, &CUTOFFS)
 // }
 
+
 /// Calculate Chamfer Distance between two point sets
-///
+/// 
 /// Chamfer Distance is the mean of:
 /// - Average nearest neighbor distance from coords to reference_coords
 ///
@@ -209,12 +216,13 @@ pub fn chamfer_distance(distance: &PrecomputedDistances) -> f32 {
                 .unwrap()
         })
         .sum();
-
+    
     (sum_coords_to_ref / distance.n as f64) as f32
 }
 
+
 /// Calculate Hausdorff Distance between two point sets
-///
+/// 
 /// Hausdorff Distance is the maximum of:
 /// - Maximum nearest neighbor distance from coords to reference_coords
 ///
@@ -242,19 +250,20 @@ pub fn hausdorff_distance(distance: &PrecomputedDistances) -> f32 {
     max_coords_to_ref
 }
 
+
 /// Calculate RMSD (Root Mean Square Deviation) between aligned structures
-///
+/// 
 /// # Arguments
 /// * `distance` - Precomputed distance data
 ///
 /// # Returns
 /// RMSD value in Ångströms
-///
+/// 
 pub fn rmsd(distances: &PrecomputedDistances) -> f32 {
     if distances.n == 0 {
         return 0.0;
     }
-
+    
     // Use f64 for accumulation to maintain precision
     let sum_sq: f64 = (0..distances.n)
         .map(|i| (distances.get_distance(i, i) as f64).powi(2))
@@ -262,6 +271,7 @@ pub fn rmsd(distances: &PrecomputedDistances) -> f32 {
 
     ((sum_sq / distances.n as f64).sqrt()) as f32
 }
+
 
 /// Structure similarity metrics calculator
 #[derive(Debug, Clone, Default, PartialEq, Copy)]
@@ -274,18 +284,19 @@ pub struct StructureSimilarityMetrics {
 }
 
 impl StructureSimilarityMetrics {
+    
     /// Calculate all metrics efficiently using precomputed distances
-    ///
+    /// 
     /// This is 2-3x faster than calculate_all() because distances are computed only once.
     /// Recommended for batch processing or when calculating multiple metrics.
-    ///
+    /// 
     /// # Arguments
     /// * `reference_coords` - Reference structure coordinates
     /// * `coords` - Model structure coordinates (should be pre-aligned)
     ///
     /// # Returns
     /// StructureMetrics containing all calculated metrics
-    pub fn new() -> Self {
+    pub fn new() -> Self {      
         Self {
             tm_score: 0.0,
             gdt_ts: 0.0,
@@ -322,7 +333,7 @@ impl StructureSimilarityMetrics {
         self.chamfer_distance = self.calculate_chamfer_distance(precomputed);
         self.hausdorff_distance = self.calculate_hausdorff_distance(precomputed);
     }
-
+    
     /// Print metrics in a formatted way
     pub fn print_in_a_formatted_way(&self) {
         println!("Structure Similarity Metrics:");
@@ -340,7 +351,11 @@ impl fmt::Display for StructureSimilarityMetrics {
         write!(
             f,
             "{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
-            self.tm_score, self.gdt_ts, self.gdt_ha, self.chamfer_distance, self.hausdorff_distance
+            self.tm_score,
+            self.gdt_ts,
+            self.gdt_ha,
+            self.chamfer_distance,
+            self.hausdorff_distance
         )
     }
 }
@@ -368,10 +383,11 @@ mod tests {
         assert!((metrics.gdt_ha - 1.0).abs() < 1e-6);
         assert!(metrics.chamfer_distance.abs() < 1e-6);
         assert!(metrics.hausdorff_distance.abs() < 1e-6);
-
+        
         metrics.print_in_a_formatted_way();
     }
-
+    
+    
     #[test]
     fn test_with_real_coordinates() {
         // Read coordinates from PDB files
@@ -399,7 +415,7 @@ mod tests {
             query_zinc_structure.get_cb(reference_indices[3]).unwrap(),
         ];
         println!("Reference coords: {:?}", reference_coords);
-
+        
         // Get target coordinates: A257,A262,A275,A279
         let target_indices = vec![
             target_zinc_structure.get_index(&b'A', &257).unwrap(),
@@ -419,7 +435,7 @@ mod tests {
             target_zinc_structure.get_cb(target_indices[3]).unwrap(),
         ];
         println!("Target coords: {:?}", target_coords);
-
+        
         let mut kabsch = KabschSuperimposer::new();
         // let mut kabsch = LmsQcpSuperimposer::new();
 
@@ -427,15 +443,16 @@ mod tests {
         kabsch.run();
 
         let precomputed = PrecomputedDistances::new(
-            &kabsch.reference_coords.unwrap(),
-            &kabsch.transformed_coords.unwrap(),
+            &kabsch.reference_coords.unwrap(), &kabsch.transformed_coords.unwrap()
         );
         let mut metrics = StructureSimilarityMetrics::new();
         metrics.calculate_all(&precomputed);
 
         metrics.print_in_a_formatted_way();
+        
     }
 
+    
     #[test]
     fn test_with_long_coordinates() {
         // Read coordinates from PDB files
@@ -445,45 +462,39 @@ mod tests {
         let target_reader = PDBReader::from_file("data/zinc/AF-P36508-F1-model_v6.pdb").unwrap();
         let target_zinc_structure = target_reader.read_structure().unwrap().to_compact();
         // Get reference coordinates: F205-214,F223-232
-        let mut reference_indices = (207..213)
-            .map(|res_num| query_zinc_structure.get_index(&b'F', &res_num).unwrap())
-            .collect::<Vec<usize>>();
-        reference_indices.extend(
-            (225..230).map(|res_num| query_zinc_structure.get_index(&b'F', &res_num).unwrap()),
-        );
+        let mut reference_indices = (207..213).map(|res_num| {
+            query_zinc_structure.get_index(&b'F', &res_num).unwrap()
+        }).collect::<Vec<usize>>();
+        reference_indices.extend((225..230).map(|res_num| {
+            query_zinc_structure.get_index(&b'F', &res_num).unwrap()
+        }));
         println!("Reference indices: {:?}", reference_indices);
-        let reference_coords = reference_indices
-            .iter()
-            .flat_map(|&idx| {
-                vec![
-                    query_zinc_structure.get_n(idx).unwrap(),
-                    query_zinc_structure.get_ca(idx).unwrap(),
-                    query_zinc_structure.get_cb(idx).unwrap(),
-                ]
-            })
-            .collect::<Vec<_>>();
+        let reference_coords = reference_indices.iter().flat_map(|&idx| {
+            vec![
+                query_zinc_structure.get_n(idx).unwrap(),
+                query_zinc_structure.get_ca(idx).unwrap(),
+                query_zinc_structure.get_cb(idx).unwrap(),
+            ]
+        }).collect::<Vec<_>>();
         println!("Reference coords: {:?}", reference_coords);
-
+        
         // Get target coordinates: A255-260,A273-282
-        let mut target_indices = (256..262)
-            .map(|res_num| target_zinc_structure.get_index(&b'A', &res_num).unwrap())
-            .collect::<Vec<usize>>();
-        target_indices.extend(
-            (275..280).map(|res_num| target_zinc_structure.get_index(&b'A', &res_num).unwrap()),
-        );
+        let mut target_indices = (256..262).map(|res_num| {
+            target_zinc_structure.get_index(&b'A', &res_num).unwrap()
+        }).collect::<Vec<usize>>();
+        target_indices.extend((275..280).map(|res_num| {
+            target_zinc_structure.get_index(&b'A', &res_num).unwrap()
+        }));
         println!("Target indices: {:?}", target_indices);
-        let target_coords = target_indices
-            .iter()
-            .flat_map(|&idx| {
-                vec![
-                    target_zinc_structure.get_n(idx).unwrap(),
-                    target_zinc_structure.get_ca(idx).unwrap(),
-                    target_zinc_structure.get_cb(idx).unwrap(),
-                ]
-            })
-            .collect::<Vec<_>>();
+        let target_coords = target_indices.iter().flat_map(|&idx| {
+            vec![
+                target_zinc_structure.get_n(idx).unwrap(),
+                target_zinc_structure.get_ca(idx).unwrap(),
+                target_zinc_structure.get_cb(idx).unwrap(),
+            ]
+        }).collect::<Vec<_>>();
         println!("Target coords: {:?}", target_coords);
-
+        
         // let mut kabsch = KabschSuperimposer::new();
         let mut kabsch = LmsQcpSuperimposer::new();
 
@@ -491,15 +502,15 @@ mod tests {
         kabsch.run();
 
         let precomputed = PrecomputedDistances::new(
-            &kabsch.reference_coords.unwrap(),
-            &kabsch.transformed_coords.unwrap(),
+            &kabsch.reference_coords.unwrap(), &kabsch.transformed_coords.unwrap()
         );
         let mut metrics = StructureSimilarityMetrics::new();
         metrics.calculate_all(&precomputed);
 
         metrics.print_in_a_formatted_way();
+        
     }
-
+    
     #[test]
     fn test_with_outlier_coordinates() {
         // Read coordinates from PDB files
@@ -527,7 +538,7 @@ mod tests {
             query_zinc_structure.get_cb(reference_indices[3]).unwrap(),
         ];
         println!("Reference coords: {:?}", reference_coords);
-
+        
         // Get target coordinates: A257,A262,A275,A279
         let target_indices = vec![
             target_zinc_structure.get_index(&b'A', &257).unwrap(),
@@ -547,19 +558,20 @@ mod tests {
             target_zinc_structure.get_cb(target_indices[3]).unwrap(),
         ];
         println!("Target coords: {:?}", target_coords);
-
+        
         // let mut kabsch = KabschSuperimposer::new();
         let mut kabsch = LmsQcpSuperimposer::new();
         kabsch.set_atoms(&reference_coords, &target_coords);
         kabsch.run();
 
         let precomputed = PrecomputedDistances::new(
-            &kabsch.reference_coords.unwrap(),
-            &kabsch.transformed_coords.unwrap(),
+            &kabsch.reference_coords.unwrap(), &kabsch.transformed_coords.unwrap()
         );
         let mut metrics = StructureSimilarityMetrics::new();
         metrics.calculate_all(&precomputed);
 
         metrics.print_in_a_formatted_way();
+        
     }
+
 }

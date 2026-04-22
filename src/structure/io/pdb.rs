@@ -4,6 +4,7 @@ use std::path::Path;
 
 use flate2::read::GzDecoder;
 
+
 use super::super::core::*;
 use super::parser::*;
 use super::*;
@@ -87,7 +88,7 @@ impl Reader<File> {
         // Create a new Structure
         let mut structure = Structure::new();
         let mut record = (b' ', 0);
-
+        
         // Read binary as a string. Conver
         let reader = BufReader::new(&binary[..]);
         // Convert to string
@@ -118,6 +119,7 @@ impl Reader<File> {
         drop(binary);
         Ok(structure)
     }
+    
 }
 
 #[cfg(test)]
@@ -126,9 +128,10 @@ mod tests {
 
     use super::*;
     use std::fs::File;
-
+    
     use std::path::Path;
-
+    
+    
     #[test]
     fn test_read_pdb() {
         let path = Path::new("data/homeobox/1akha-.pdb");
@@ -163,12 +166,11 @@ mod tests {
         let x_bin = diff.x / bins.x;
         let y_bin = diff.y / bins.y;
         let z_bin = diff.z / bins.z;
-        println!(
-            "Min: {:?}, Max: {:?}, len: {}, dist: {:?}, x_bin: {}, y_bin: {}, z_bin: {}",
-            min, max, len, dist, x_bin, y_bin, z_bin
-        );
+        println!("Min: {:?}, Max: {:?}, len: {}, dist: {:?}, x_bin: {}, y_bin: {}, z_bin: {}", min, max, len, dist, x_bin, y_bin, z_bin);
     }
-
+    
+    
+    
     #[test]
     fn test_read_pdb_gz() {
         let path = Path::new("data/homeobox/inner/1akha-.pdb.gz");
@@ -178,7 +180,7 @@ mod tests {
         let compact = structure.to_compact();
         assert_eq!(compact.num_residues, 49);
     }
-
+    
     #[test]
     fn test_loading_works() {
         let dir = "data/io_test";

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+
 pub struct CombinationIterator {
     n: usize,
     i: usize,
@@ -8,7 +9,11 @@ pub struct CombinationIterator {
 
 impl CombinationIterator {
     pub fn new(n: usize) -> Self {
-        Self { n, i: 0, j: 0 }
+        Self {
+            n,
+            i: 0,
+            j: 0,
+        }
     }
     pub fn len(&self) -> usize {
         self.n * self.n
@@ -63,6 +68,7 @@ mod tests {
             println!("{} {}", i, j);
         });
     }
+
 }
 
 #[derive(Hash, PartialEq, Eq)]

@@ -5,6 +5,7 @@
 
 const ALLOWED_EXTENSIONS: [&str; 6] = [".pdb", ".ent", ".cif", ".pdb.gz", ".ent.gz", ".cif.gz"];
 
+
 pub fn load_path(dir: &str, recursive: bool) -> Vec<String> {
     // Load all pdbs in given path
     let mut pdb_paths = Vec::new();
@@ -14,7 +15,7 @@ pub fn load_path(dir: &str, recursive: bool) -> Vec<String> {
         let path = path.expect("Unable to read path");
         let path = path.path();
         let path = path.to_str().expect("Unable to convert path to string");
-        //
+        // 
         if recursive {
             if std::path::Path::new(path).is_dir() {
                 let mut sub_pdb_paths = load_path(path, recursive);

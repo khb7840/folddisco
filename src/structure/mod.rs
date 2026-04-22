@@ -3,7 +3,7 @@ pub mod coordinate;
 pub mod core;
 pub mod feature;
 pub mod io;
+pub mod qcp;
 pub mod kabsch;
 pub mod lms_qcp;
 pub mod metrics;
-pub mod qcp;

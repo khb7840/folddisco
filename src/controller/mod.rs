@@ -5,31 +5,31 @@
 // Author: Hyunbin Kim (khb7840@gmail.com)
 // Copyright © 2024 Hyunbin Kim, All rights reserved
 
-pub mod count_query;
 pub mod feature;
 pub mod filter;
 pub mod graph;
 pub mod io;
-pub mod mode;
 pub mod query;
 pub mod result;
 pub mod retrieve;
+pub mod count_query;
+pub mod mode;
 pub mod sort;
 pub mod summary;
 
-use feature::get_geometric_hash_as_u32_from_structure;
-use io::read_structure_from_path;
 use std::cell::UnsafeCell;
 use std::io::Write;
 use std::sync::Arc;
+use feature::get_geometric_hash_as_u32_from_structure;
+use io::read_structure_from_path;
 // External imports
 use rayon::prelude::*;
 
 use crate::index::indextable::FolddiscoIndex;
 // Internal imports
-use crate::geometry::core::HashType;
-use crate::utils::log::{log_msg, print_log_msg, FAIL, INFO, WARN};
 use crate::PDBReader;
+use crate::geometry::core::HashType;
+use crate::utils::log::{ print_log_msg, log_msg, FAIL, WARN, INFO };
 
 #[cfg(feature = "foldcomp")]
 use crate::structure::io::fcz::FoldcompDbReader;
@@ -101,14 +101,9 @@ impl Folddisco {
     }
 
     pub fn new(
-        path_vec: Vec<String>,
-        hash_type: HashType,
-        num_threads: usize,
-        num_bin_dist: usize,
-        num_bin_angle: usize,
-        output_path: String,
-        dist_cutoff: f32,
-        multiple_bins: Option<Vec<(usize, usize)>>,
+        path_vec: Vec<String>, hash_type: HashType, num_threads: usize,
+        num_bin_dist: usize, num_bin_angle: usize, output_path: String,
+        dist_cutoff: f32, multiple_bins: Option<Vec<(usize, usize)>>,
         mmap_on_disk: bool,
     ) -> Folddisco {
         let length = path_vec.len();
@@ -140,21 +135,16 @@ impl Folddisco {
 
     #[cfg(feature = "foldcomp")]
     pub fn new_with_foldcomp_db(
-        path_vec: Vec<String>,
-        hash_type: HashType,
-        num_threads: usize,
-        num_bin_dist: usize,
-        num_bin_angle: usize,
-        output_path: String,
-        dist_cutoff: f32,
-        foldcomp_db_path: &'static str,
+        path_vec: Vec<String>, hash_type: HashType, num_threads: usize,
+        num_bin_dist: usize, num_bin_angle: usize, output_path: String,
+        dist_cutoff: f32, foldcomp_db_path: &'static str,
         multiple_bins: Option<Vec<(usize, usize)>>,
         mmap_on_disk: bool,
     ) -> Folddisco {
         let length = path_vec.len();
         let total_hashes = 2usize.pow(hash_type.encoding_bits() as u32);
         let foldcomp_db_reader = FoldcompDbReader::new(&foldcomp_db_path);
-
+        
         Folddisco {
             path_vec: path_vec,
             numeric_id_vec: Vec::with_capacity(length),
@@ -199,17 +189,16 @@ impl Folddisco {
     pub fn set_max_residue(&mut self, max_residue: usize) {
         self.max_residue = max_residue;
     }
-
+    
     // Main methods
     pub fn fill_numeric_id_vec(&mut self) {
         string_vec_to_numeric_id_vec(&self.path_vec, &mut self.numeric_id_vec);
     }
 
-    pub fn collect_hash_vec(&mut self) {
-        // THISONE
+    pub fn collect_hash_vec(&mut self) { // THISONE
         // Mutex free version
         let shared_data = SharedData::new(self.path_vec.len());
-
+        
         // Set file threads
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(self.num_threads)
@@ -224,24 +213,25 @@ impl Folddisco {
                 .enumerate()
                 .map(|(pdb_pos, pdb_path)| {
                     #[cfg(not(feature = "foldcomp"))]
-                    let compact = read_structure_from_path(pdb_path)
-                        .expect(log_msg(FAIL, "Failed to read structure").as_str());
+                    let compact = read_structure_from_path(pdb_path).expect(
+                        log_msg(FAIL, "Failed to read structure").as_str()
+                    );
 
                     #[cfg(feature = "foldcomp")]
                     let compact = if self.is_foldcomp_enabled {
-                        self.foldcomp_db_reader
-                            .read_single_structure_by_id(self.numeric_db_key_vec[pdb_pos])
-                            .expect(log_msg(FAIL, "Failed to read structure").as_str())
+                        self.foldcomp_db_reader.read_single_structure_by_id(
+                            self.numeric_db_key_vec[pdb_pos]
+                        ).expect(
+                            log_msg(FAIL, "Failed to read structure").as_str()
+                        )
                     } else {
-                        read_structure_from_path(pdb_path)
-                            .expect(log_msg(FAIL, "Failed to read structure").as_str())
-                    };
+                        read_structure_from_path(pdb_path).expect(
+                            log_msg(FAIL, "Failed to read structure").as_str()
+                        )
+                    };  
 
                     if compact.num_residues > self.max_residue {
-                        print_log_msg(
-                            WARN,
-                            &format!("{} has too many residues. Skipping", pdb_path),
-                        );
+                        print_log_msg(WARN, &format!("{} has too many residues. Skipping", pdb_path));
                         // skip this file
                         // Drop intermediate variables
                         drop(compact);
@@ -262,12 +252,9 @@ impl Folddisco {
                     }
 
                     let mut hash_vec = get_geometric_hash_as_u32_from_structure(
-                        &compact,
-                        self.hash_type,
-                        self.num_bin_dist,
-                        self.num_bin_angle,
-                        self.dist_cutoff,
-                        &self.multiple_bins,
+                        &compact, self.hash_type,
+                        self.num_bin_dist, self.num_bin_angle,
+                        self.dist_cutoff, &self.multiple_bins,
                     );
                     // Drop intermediate variables
                     drop(compact);
@@ -276,16 +263,14 @@ impl Folddisco {
                     hash_vec.sort_unstable();
                     hash_vec.dedup();
                     hash_vec.iter().map(|x| (*x, pdb_pos)).collect()
-                })
-                .flatten()
-                .collect()
-        });
+                }).flatten().collect()
+            });
         self.hash_id_vec = collected;
         self.nres_vec = shared_data.get_nres_vec_clone();
         self.plddt_vec = shared_data.get_plddt_vec_clone();
         drop(pool);
     }
-
+    
     pub fn collect_and_count(&mut self) {
         let shared_data = SharedData::new(self.path_vec.len());
         // Set file threads
@@ -300,10 +285,7 @@ impl Folddisco {
         let total_chunks = chunked_paths.len();
         chunked_paths.enumerate().for_each(|(chunk_index, chunk)| {
             // Print percentage of completion
-            print_log_msg(
-                INFO,
-                &format!("Processing chunk {}/{}", chunk_index + 1, total_chunks),
-            );
+            print_log_msg(INFO, &format!("Processing chunk {}/{}", chunk_index + 1, total_chunks));
             let collected: Vec<(u32, usize)> = pool.install(|| {
                 chunk
                     .par_iter()
@@ -313,22 +295,23 @@ impl Folddisco {
                         // let pdb_pos = self.path_vec.iter().position(|x| x == pdb_path).unwrap();
 
                         #[cfg(not(feature = "foldcomp"))]
-                        let compact = read_structure_from_path(pdb_path)
-                            .expect(log_msg(FAIL, "Failed to read structure").as_str());
+                        let compact = read_structure_from_path(pdb_path).expect(
+                            log_msg(FAIL, "Failed to read structure").as_str()
+                        );
                         #[cfg(feature = "foldcomp")]
                         let compact = if self.is_foldcomp_enabled {
-                            self.foldcomp_db_reader
-                                .read_single_structure_by_id(self.numeric_db_key_vec[pdb_pos])
-                                .expect(log_msg(FAIL, "Failed to read structure").as_str())
+                            self.foldcomp_db_reader.read_single_structure_by_id(
+                                self.numeric_db_key_vec[pdb_pos]
+                            ).expect(
+                                log_msg(FAIL, "Failed to read structure").as_str()
+                            )
                         } else {
-                            read_structure_from_path(pdb_path)
-                                .expect(log_msg(FAIL, "Failed to read structure").as_str())
+                            read_structure_from_path(pdb_path).expect(
+                                log_msg(FAIL, "Failed to read structure").as_str()
+                            )
                         };
                         if compact.num_residues > self.max_residue {
-                            print_log_msg(
-                                WARN,
-                                &format!("{} has too many residues. Skipping", pdb_path),
-                            );
+                            print_log_msg(WARN, &format!("{} has too many residues. Skipping", pdb_path));
                             // skip this file
                             // Drop intermediate variables
                             drop(compact);
@@ -349,12 +332,9 @@ impl Folddisco {
                         }
 
                         let mut hash_vec = get_geometric_hash_as_u32_from_structure(
-                            &compact,
-                            self.hash_type,
-                            self.num_bin_dist,
-                            self.num_bin_angle,
-                            self.dist_cutoff,
-                            &self.multiple_bins,
+                            &compact, self.hash_type, 
+                            self.num_bin_dist, self.num_bin_angle,
+                            self.dist_cutoff, &self.multiple_bins,
                         );
                         // Drop intermediate variables
                         drop(compact);
@@ -363,12 +343,11 @@ impl Folddisco {
                         hash_vec.sort_unstable();
                         hash_vec.dedup();
                         hash_vec.iter().map(|x| (x.clone(), pdb_pos)).collect()
-                    })
-                    .flatten()
-                    .collect()
-            });
+
+                    }).flatten().collect()
+                });
             pool.install(|| {
-                (0..self.num_threads).into_par_iter().for_each(|tid| {
+                (0..self.num_threads).into_par_iter().for_each(| tid | {
                     // Thread only saves hashes with same modulos
                     let _ = &collected.iter().for_each(|(hash, pdb_pos)| {
                         if hash % self.num_threads as u32 == tid as u32 {
@@ -384,7 +363,7 @@ impl Folddisco {
         self.plddt_vec = shared_data.get_plddt_vec_clone();
         drop(pool);
     }
-
+    
     pub fn add_entries(&mut self) {
         // Set file threads
         let pool = rayon::ThreadPoolBuilder::new()
@@ -397,10 +376,7 @@ impl Folddisco {
         let chunked_paths = self.path_vec.chunks(chunk_size);
         let total_chunks = chunked_paths.len();
         chunked_paths.enumerate().for_each(|(chunk_index, chunk)| {
-            print_log_msg(
-                INFO,
-                &format!("Processing chunk {}/{}", chunk_index + 1, total_chunks),
-            );
+            print_log_msg(INFO, &format!("Processing chunk {}/{}", chunk_index + 1, total_chunks));
             let collected: Vec<(u32, usize)> = pool.install(|| {
                 chunk
                     .par_iter()
@@ -409,24 +385,25 @@ impl Folddisco {
                         let pdb_pos = chunk_index * chunk_size + local_pos;
 
                         #[cfg(not(feature = "foldcomp"))]
-                        let compact = read_structure_from_path(pdb_path)
-                            .expect(log_msg(FAIL, "Failed to read structure").as_str());
+                        let compact = read_structure_from_path(pdb_path).expect(
+                            log_msg(FAIL, "Failed to read structure").as_str()
+                        );
 
                         #[cfg(feature = "foldcomp")]
                         let compact = if self.is_foldcomp_enabled {
-                            self.foldcomp_db_reader
-                                .read_single_structure_by_id(self.numeric_db_key_vec[pdb_pos])
-                                .expect(log_msg(FAIL, "Failed to read structure").as_str())
+                            self.foldcomp_db_reader.read_single_structure_by_id(
+                                self.numeric_db_key_vec[pdb_pos]
+                            ).expect(
+                                log_msg(FAIL, "Failed to read structure").as_str()
+                            )
                         } else {
-                            read_structure_from_path(pdb_path)
-                                .expect(log_msg(FAIL, "Failed to read structure").as_str())
+                            read_structure_from_path(pdb_path).expect(
+                                log_msg(FAIL, "Failed to read structure").as_str()
+                            )
                         };
 
                         if compact.num_residues > self.max_residue {
-                            print_log_msg(
-                                WARN,
-                                &format!("{} has too many residues. Skipping", pdb_path),
-                            );
+                            print_log_msg(WARN, &format!("{} has too many residues. Skipping", pdb_path));
                             // skip this file
                             // Drop intermediate variables
                             drop(compact);
@@ -435,12 +412,8 @@ impl Folddisco {
                         let compact = compact.to_compact();
                         // Directly write num_residues and avg_plddt to the vectors
                         let mut hash_vec = get_geometric_hash_as_u32_from_structure(
-                            &compact,
-                            self.hash_type,
-                            self.num_bin_dist,
-                            self.num_bin_angle,
-                            self.dist_cutoff,
-                            &self.multiple_bins,
+                            &compact, self.hash_type, self.num_bin_dist, self.num_bin_angle,
+                            self.dist_cutoff, &self.multiple_bins,
                         );
                         // Drop intermediate variables
                         drop(compact);
@@ -448,21 +421,16 @@ impl Folddisco {
                         hash_vec.sort_unstable();
                         hash_vec.dedup();
                         hash_vec.iter().map(|x| (x.clone(), pdb_pos)).collect()
-                    })
-                    .flatten()
-                    .collect()
-            });
+
+                    }).flatten().collect()
+                });
             pool.install(|| {
-                (0..self.num_threads).into_par_iter().for_each(|tid| {
+                (0..self.num_threads).into_par_iter().for_each(| tid | {
                     // Thread only saves hashes with same modulos
                     let mut bit_containers = Vec::with_capacity(8);
                     let _ = &collected.iter().for_each(|(hash, pdb_pos)| {
                         if hash % self.num_threads as u32 == tid as u32 {
-                            self.fold_disco_index.add_single_entry(
-                                *hash,
-                                *pdb_pos,
-                                &mut bit_containers,
-                            );
+                            self.fold_disco_index.add_single_entry(*hash, *pdb_pos, &mut bit_containers);
                         }
                     });
                 });
@@ -471,7 +439,7 @@ impl Folddisco {
         });
         drop(pool);
     }
-
+    
     pub fn sort_hash_vec(&mut self) {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(self.num_threads)
@@ -482,15 +450,16 @@ impl Folddisco {
         });
         drop(pool);
     }
-
+    
     pub fn get_allocation_size(&self) -> usize {
         let mut allocation_size = 0usize;
         self.path_vec.iter().for_each(|pdb_path| {
-            let pdb_reader =
-                PDBReader::from_file(pdb_path).expect(log_msg(FAIL, "PDB file not found").as_str());
-            let compact = pdb_reader
-                .read_structure()
-                .expect(log_msg(FAIL, "Failed to read structure").as_str());
+            let pdb_reader = PDBReader::from_file(pdb_path).expect(
+            log_msg(FAIL, "PDB file not found").as_str()
+            );
+            let compact = pdb_reader.read_structure().expect(
+                log_msg(FAIL, "Failed to read structure").as_str()
+            );
             allocation_size += compact.num_residues * (compact.num_residues - 1);
         });
         allocation_size
@@ -545,12 +514,16 @@ impl SharedData {
     fn get_plddt_vec(&self) -> &UnsafeCell<Vec<f32>> {
         &self.plddt_vec
     }
-
+    
     fn get_nres_vec_clone(&self) -> Vec<usize> {
-        unsafe { (*self.nres_vec.get()).clone() }
+        unsafe {
+            (*self.nres_vec.get()).clone()
+        }
     }
-
+    
     fn get_plddt_vec_clone(&self) -> Vec<f32> {
-        unsafe { (*self.plddt_vec.get()).clone() }
+        unsafe {
+            (*self.plddt_vec.get()).clone()
+        }
     }
 }

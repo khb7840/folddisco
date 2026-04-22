@@ -3,14 +3,14 @@
 // Author: Hyunbin Kim (khb7840@gmail.com)
 // Copyright © 2024 Hyunbin Kim, All rights reserved
 
-use super::feature::get_single_feature;
-use super::io::read_compact_structure;
+use rustc_hash::FxHashMap as HashMap;
 use crate::geometry::core::{GeometricHash, HashType};
 use crate::index::indextable::FolddiscoIndex;
-use crate::utils::combination::CombinationIterator;
 use crate::utils::convert::{is_aa_group_char, map_one_letter_to_u8_vec};
+use crate::utils::combination::CombinationIterator;
 use crate::utils::log::{log_msg, FAIL};
-use rustc_hash::FxHashMap as HashMap;
+use super::feature::get_single_feature;
+use super::io::read_compact_structure;
 
 /// Calculate IDF (Inverse Document Frequency) for a given GeometricHash
 /// Uses index to determine hash count
@@ -40,9 +40,9 @@ pub fn parse_threshold_string(threshold_string: Option<String>) -> Vec<f32> {
     let threshold_string = threshold_string.replace(" ", "");
     let mut thresholds: Vec<f32> = Vec::new();
     for threshold in threshold_string.split(',') {
-        let threshold = threshold
-            .parse::<f32>()
-            .expect(&log_msg(FAIL, "Failed to parse threshold"));
+        let threshold = threshold.parse::<f32>().expect(
+            &log_msg(FAIL, "Failed to parse threshold")
+        );
         thresholds.push(threshold);
     }
     thresholds
@@ -52,14 +52,9 @@ pub fn parse_threshold_string(threshold_string: Option<String>) -> Vec<f32> {
 // If hash is already in the hash_collection, skip.
 fn insert_binned_hash(
     hash_collection: &mut HashMap<GeometricHash, ((usize, usize), bool, f32)>,
-    feature: &Vec<f32>,
-    indices: (usize, usize),
-    hash_type: HashType,
-    nbin_dist: usize,
-    nbin_angle: usize,
-    multiple_bin: &Option<Vec<(usize, usize)>>,
-    is_primary: bool,
-    idf: f32,
+    feature: &Vec<f32>, indices: (usize, usize), hash_type: HashType,
+    nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
+    is_primary: bool, idf: f32,
 ) {
     if let Some(multiple_bin) = multiple_bin {
         for (nbin_dist, nbin_angle) in multiple_bin.iter() {
@@ -89,17 +84,12 @@ fn insert_binned_hash(
 }
 
 fn apply_substitutions(
-    i_idx: usize,
-    j_idx: usize,
-    feature: &mut Vec<f32>,
-    aa_index: &[usize],
-    nbin_dist: usize,
-    nbin_angle: usize,
+    i_idx: usize, j_idx: usize, feature: &mut Vec<f32>, aa_index: &[usize],
+    nbin_dist: usize, nbin_angle: usize,
     multiple_bin: &Option<Vec<(usize, usize)>>,
     substitution_map: &HashMap<usize, Vec<u8>>,
     hash_collection: &mut HashMap<GeometricHash, ((usize, usize), bool, f32)>,
-    hash_type: HashType,
-    idf: f32,
+    hash_type: HashType, idf: f32,
 ) {
     let orig_aa_value1 = feature[aa_index[0]];
     let orig_aa_value2 = feature[aa_index[1]];
@@ -168,17 +158,13 @@ fn apply_substitutions(
 fn _add_shifted_hashes(
     feature: &Vec<f32>,
     hash_collection: &mut HashMap<GeometricHash, ((usize, usize), bool, f32)>,
-    i_idx: usize,
-    j_idx: usize,
-    hash_type: HashType,
-    idf: f32,
+    i_idx: usize, j_idx: usize, hash_type: HashType, idf: f32,
 ) {
     // Add shifted hashes for boundary coverage to reduce false negatives from discretization
     // Only supported for PDBTrRosetta hash type which has shifting implementation
     if hash_type == HashType::PDBTrRosetta {
-        let (unique_count, unique_hashes) =
-            GeometricHash::perfect_hash_with_shifts_dedup_inline(feature, hash_type);
-
+        let (unique_count, unique_hashes) = GeometricHash::perfect_hash_with_shifts_dedup_inline(feature, hash_type);
+        
         // Insert each unique shifted hash variant
         for k in 0..unique_count as usize {
             let hash_value = GeometricHash::from_u32(unique_hashes[k], hash_type);
@@ -191,17 +177,11 @@ fn _add_shifted_hashes(
 }
 
 fn expand_and_insert(
-    target_feature_indices: &[usize],
-    threshold_vector: &[f32],
-    feature_near: &mut Vec<f32>,
-    feature_far: &mut Vec<f32>,
+    target_feature_indices: &[usize], threshold_vector: &[f32],
+    feature_near: &mut Vec<f32>, feature_far: &mut Vec<f32>,
     hash_collection: &mut HashMap<GeometricHash, ((usize, usize), bool, f32)>,
-    i_idx: usize,
-    j_idx: usize,
-    hash_type: HashType,
-    nbin_dist: usize,
-    nbin_angle: usize,
-    multiple_bin: &Option<Vec<(usize, usize)>>,
+    i_idx: usize, j_idx: usize, hash_type: HashType,
+    nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
     idf: f32,
 ) {
     for &delta in threshold_vector {
@@ -211,26 +191,12 @@ fn expand_and_insert(
             feature_far[idx] += delta;
 
             insert_binned_hash(
-                hash_collection,
-                feature_near,
-                (i_idx, j_idx),
-                hash_type,
-                nbin_dist,
-                nbin_angle,
-                multiple_bin,
-                false,
-                idf,
+                hash_collection, feature_near, (i_idx, j_idx),
+                hash_type, nbin_dist, nbin_angle, multiple_bin, false, idf,
             );
             insert_binned_hash(
-                hash_collection,
-                feature_far,
-                (i_idx, j_idx),
-                hash_type,
-                nbin_dist,
-                nbin_angle,
-                multiple_bin,
-                false,
-                idf,
+                hash_collection, feature_far, (i_idx, j_idx),
+                hash_type, nbin_dist, nbin_angle, multiple_bin, false, idf,
             );
             // Restore the original value
             feature_near[idx] += delta;
@@ -240,29 +206,19 @@ fn expand_and_insert(
 }
 
 pub fn make_query_map(
-    path: &String,
-    query_residues: &Vec<(u8, u64)>,
-    hash_type: HashType,
-    nbin_dist: usize,
-    nbin_angle: usize,
-    multiple_bin: &Option<Vec<(usize, usize)>>,
-    dist_thresholds: &Vec<f32>,
-    angle_thresholds: &Vec<f32>,
-    amino_acid_substitutions: &Vec<Option<Vec<u8>>>,
-    distance_cutoff: f32,
-    serial_query: bool,
+    path: &String, query_residues: &Vec<(u8, u64)>, hash_type: HashType, 
+    nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
+    dist_thresholds: &Vec<f32>, angle_thresholds: &Vec<f32>,
+    amino_acid_substitutions: &Vec<Option<Vec<u8>>>, distance_cutoff: f32, serial_query: bool,
     index: &Option<&FolddiscoIndex>,
     total_structures: f32,
-) -> (
-    HashMap<GeometricHash, ((usize, usize), bool, f32)>,
-    Vec<usize>,
-    HashMap<(u8, u8), Vec<(f32, usize)>>,
-) {
-    let (compact, _) = read_compact_structure(path).expect("Failed to read compact structure");
+) -> (HashMap<GeometricHash, ((usize, usize), bool, f32)>, Vec<usize>, HashMap<(u8, u8), Vec<(f32, usize)>>) {
 
+    let (compact, _) = read_compact_structure(path).expect("Failed to read compact structure");
+    
     let mut hash_collection = HashMap::default();
     let mut observed_distance_map: HashMap<(u8, u8), Vec<(f32, usize)>> = HashMap::default();
-
+    
     // Convert residue indices to vector indices
     let mut indices = Vec::new();
     let mut query_residues = query_residues.clone();
@@ -279,20 +235,12 @@ pub fn make_query_map(
     }
 
     let mut substitution_map: HashMap<usize, Vec<u8>> = HashMap::default();
-
+    
     for (i, (chain, ri)) in query_residues.iter().enumerate() {
-        let index = if serial_query {
-            Some(*ri as usize)
-        } else {
-            compact.get_index(&chain, &ri)
-        };
+        let index = if serial_query { Some(*ri as usize) } else { compact.get_index(&chain, &ri) };
         if let Some(index) = index {
             // convert u8 array to string
-            let _residue: String = compact
-                .get_res_name(index)
-                .iter()
-                .map(|&c| c as char)
-                .collect();
+            let _residue: String = compact.get_res_name(index).iter().map(|&c| c as char).collect();
             indices.push(index);
             if let Some(substitution) = amino_acid_substitutions[i].clone() {
                 substitution_map.insert(index, substitution);
@@ -311,14 +259,9 @@ pub fn make_query_map(
             return;
         }
         let is_feature = get_single_feature(
-            indices[i],
-            indices[j],
-            &compact,
-            hash_type,
-            distance_cutoff,
-            &mut feature,
+            indices[i], indices[j], &compact, hash_type, distance_cutoff, &mut feature
         );
-
+        
         if is_feature {
             for k in 0..feature.len() {
                 feature_near[k] = feature[k].clone();
@@ -330,10 +273,7 @@ pub fn make_query_map(
                 // Check if the pair is already in the map
                 let aa_pair = (aa_dist_info.0, aa_dist_info.1);
                 if observed_distance_map.contains_key(&aa_pair) {
-                    observed_distance_map
-                        .get_mut(&aa_pair)
-                        .unwrap()
-                        .push((aa_dist_info.2, indices[i]));
+                    observed_distance_map.get_mut(&aa_pair).unwrap().push((aa_dist_info.2, indices[i]));
                 } else {
                     observed_distance_map.insert(aa_pair, vec![(aa_dist_info.2, indices[i])]);
                 }
@@ -346,21 +286,14 @@ pub fn make_query_map(
                 GeometricHash::perfect_hash(&feature, hash_type, nbin_dist, nbin_angle)
             };
             let idf = calculate_idf_for_hash(&observed_hash, index, total_structures);
-
+            
             insert_binned_hash(
-                &mut hash_collection,
-                &feature,
-                (indices[i], indices[j]),
-                hash_type,
-                nbin_dist,
-                nbin_angle,
-                multiple_bin,
-                true,
-                idf,
+                &mut hash_collection, &feature, (indices[i], indices[j]), 
+                hash_type, nbin_dist, nbin_angle, multiple_bin, true, idf
             );
 
             // Add shifted hashes for boundary coverage
-            // This is not enabled for now.
+            // This is not enabled for now. 
             // add_shifted_hashes(
             //     &feature, &mut hash_collection, indices[i], indices[j], hash_type, idf
             // );
@@ -368,17 +301,8 @@ pub fn make_query_map(
             // Apply substitutions
             if let Some(aa_indices) = hash_type.amino_acid_index() {
                 apply_substitutions(
-                    indices[i],
-                    indices[j],
-                    &mut feature_near,
-                    aa_indices.as_ref(),
-                    nbin_dist,
-                    nbin_angle,
-                    multiple_bin,
-                    &substitution_map,
-                    &mut hash_collection,
-                    hash_type,
-                    idf,
+                    indices[i], indices[j], &mut feature_near, aa_indices.as_ref(),
+                    nbin_dist, nbin_angle, multiple_bin, &substitution_map, &mut hash_collection, hash_type, idf
                 );
             }
             // apply_substitutions(
@@ -388,38 +312,15 @@ pub fn make_query_map(
 
             if let Some(dist_indices) = &dist_indices {
                 expand_and_insert(
-                    dist_indices,
-                    dist_thresholds,
-                    &mut feature_near,
-                    &mut feature_far,
-                    &mut hash_collection,
-                    indices[i],
-                    indices[j],
-                    hash_type,
-                    nbin_dist,
-                    nbin_angle,
-                    multiple_bin,
-                    idf,
+                    dist_indices, dist_thresholds, &mut feature_near, &mut feature_far,
+                    &mut hash_collection, indices[i], indices[j], hash_type, nbin_dist, nbin_angle, multiple_bin, idf
                 );
             }
             if let Some(angle_indices) = &angle_indices {
-                let angle_thresholds_in_radian = angle_thresholds
-                    .iter()
-                    .map(|&x| x.to_radians())
-                    .collect::<Vec<f32>>();
+                let angle_thresholds_in_radian = angle_thresholds.iter().map(|&x| x.to_radians()).collect::<Vec<f32>>();
                 expand_and_insert(
-                    angle_indices,
-                    &angle_thresholds_in_radian,
-                    &mut feature_near,
-                    &mut feature_far,
-                    &mut hash_collection,
-                    indices[i],
-                    indices[j],
-                    hash_type,
-                    nbin_dist,
-                    nbin_angle,
-                    multiple_bin,
-                    idf,
+                    angle_indices, &angle_thresholds_in_radian, &mut feature_near, &mut feature_far,
+                    &mut hash_collection, indices[i], indices[j], hash_type, nbin_dist, nbin_angle, multiple_bin, idf
                 );
             }
         }
@@ -427,10 +328,7 @@ pub fn make_query_map(
     (hash_collection, indices, observed_distance_map)
 }
 
-pub fn parse_query_string(
-    query_string: &str,
-    mut default_chain: u8,
-) -> (Vec<(u8, u64)>, Vec<Option<Vec<u8>>>) {
+pub fn parse_query_string(query_string: &str, mut default_chain: u8) -> (Vec<(u8, u64)>, Vec<Option<Vec<u8>>>) {
     let mut query_residues = Vec::new();
     let mut amino_acid_substitutions = Vec::new();
 
@@ -485,15 +383,19 @@ pub fn parse_query_string(
     (query_residues, amino_acid_substitutions)
 }
 
+
+
 // ADD TEST
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
     #[test]
     fn test_make_query_map() {
-        let path = String::from("query/1G2F.pdb");
-        let query_residues = vec![(b'F', 207), (b'F', 212), (b'F', 225)];
+        let path= String::from("query/1G2F.pdb");
+        let query_residues = vec![
+            (b'F', 207), (b'F', 212), (b'F', 225)
+        ];
         let amino_acid_substitutions = vec![None; query_residues.len()];
         // let path = String::from("data/serine_peptidases/1aq2.pdb");
         // let query_residues = vec![
@@ -501,31 +403,18 @@ mod tests {
         // ];
         let hash_type = HashType::PDBTrRosetta;
         let (hash_collection, _index_found, _observed_dist_map) = make_query_map(
-            &path,
-            &query_residues,
-            hash_type,
-            16,
-            4,
-            &None,
-            &vec![0.0],
-            &vec![0.0],
-            &amino_acid_substitutions,
-            20.0,
-            false,
-            &None,
-            1000.0,
+            &path, &query_residues, hash_type, 16, 4, &None,
+            &vec![0.0], &vec![0.0], &amino_acid_substitutions, 20.0, false,
+            &None, 1000.0
         );
-        let hash_key = hash_collection
-            .keys()
-            .cloned()
-            .collect::<Vec<GeometricHash>>();
+        let hash_key = hash_collection.keys().cloned().collect::<Vec<GeometricHash>>();
         println!("{}", hash_collection.len());
         println!("{:?}", _observed_dist_map);
         println!("{:?}", hash_key);
         // Print the count where value.1 is true
         let mut count = 0;
         hash_collection.iter().for_each(|item| {
-            if item.1 .1 {
+            if item.1.1 {
                 count += 1;
             }
         });
@@ -537,38 +426,20 @@ mod tests {
     fn test_parse_query_string() {
         let query_string = "A250,B232,C269";
         let query_residues = parse_query_string(query_string, b'A');
-        assert_eq!(
-            query_residues,
-            (
-                vec![(b'A', 250), (b'B', 232), (b'C', 269)],
-                vec![None, None, None]
-            )
-        );
+        assert_eq!(query_residues, (vec![(b'A', 250), (b'B', 232), (b'C', 269)], vec![None, None, None]));
     }
     #[test]
     fn test_parse_query_string_with_space() {
         let query_string = "A250, A232, A269";
         let query_residues = parse_query_string(query_string, b'A');
-        assert_eq!(
-            query_residues,
-            (
-                vec![(b'A', 250), (b'A', 232), (b'A', 269)],
-                vec![None, None, None]
-            )
-        );
+        assert_eq!(query_residues, (vec![(b'A', 250), (b'A', 232), (b'A', 269)], vec![None, None, None]));
     }
-
+    
     #[test]
     fn test_parse_query_string_with_space_and_no_chain() {
         let query_string = "250, 232, 269";
         let query_residues = parse_query_string(query_string, b'A');
-        assert_eq!(
-            query_residues,
-            (
-                vec![(b'A', 250), (b'A', 232), (b'A', 269)],
-                vec![None, None, None]
-            )
-        );
+        assert_eq!(query_residues, (vec![(b'A', 250), (b'A', 232), (b'A', 269)], vec![None, None, None]));
     }
 
     #[test]
@@ -576,69 +447,40 @@ mod tests {
         let query_string = "A250:R,B232:K,C269:QK";
         let query_residues = parse_query_string(query_string, b'A');
         // R = 1, K = 11, Q = 5
-        assert_eq!(
-            query_residues,
-            (
-                vec![(b'A', 250), (b'B', 232), (b'C', 269)],
-                vec![Some(vec![1]), Some(vec![11]), Some(vec![5, 11])]
-            )
-        );
+        assert_eq!(query_residues, (vec![(b'A', 250), (b'B', 232), (b'C', 269)], vec![Some(vec![1]), Some(vec![11]), Some(vec![5, 11])]));
         let query_string = "250:R,232:K,269:QK";
         let query_residues = parse_query_string(query_string, b'A');
         // R = 1, K = 11, Q = 5
-        assert_eq!(
-            query_residues,
-            (
-                vec![(b'A', 250), (b'A', 232), (b'A', 269)],
-                vec![Some(vec![1]), Some(vec![11]), Some(vec![5, 11])]
-            )
-        );
+        assert_eq!(query_residues, (vec![(b'A', 250), (b'A', 232), (b'A', 269)], vec![Some(vec![1]), Some(vec![11]), Some(vec![5, 11])]));
     }
     #[test]
     fn test_parse_query_string_with_range() {
         let query_string = "A250-252,B232-234,C269:Q";
         let query_residues = parse_query_string(query_string, b'A');
-        assert_eq!(
-            query_residues,
-            (
-                vec![
-                    (b'A', 250),
-                    (b'A', 251),
-                    (b'A', 252),
-                    (b'B', 232),
-                    (b'B', 233),
-                    (b'B', 234),
-                    (b'C', 269),
-                ],
-                vec![None, None, None, None, None, None, Some(vec![5])]
-            )
-        );
+        assert_eq!(query_residues, (vec![
+            (b'A', 250), (b'A', 251), (b'A', 252), 
+            (b'B', 232), (b'B', 233), (b'B', 234), 
+            (b'C', 269),
+        ], vec![None, None, None, None, None, None, Some(vec![5])]));
     }
-
+    
     #[test]
     fn test_add_shifted_hashes() {
         let mut hash_collection = HashMap::default();
         let feature = vec![1.0, 2.0, 10.5, 15.2, 0.8, 1.2, 2.1, 0.0, 0.0]; // PDBTrRosetta feature
         let hash_type = HashType::PDBTrRosetta;
         let idf = 5.0; // Example IDF value
-
+        
         // Test that shifted hashes are added for PDBTrRosetta
         _add_shifted_hashes(&feature, &mut hash_collection, 0, 1, hash_type, idf);
-
+        
         // Should have added multiple shifted hash variants
         assert!(hash_collection.len() > 0);
         println!("Added {} shifted hash variants", hash_collection.len());
-
+        
         // Test that no hashes are added for other hash types
         let mut hash_collection_other = HashMap::default();
-        _add_shifted_hashes(
-            &feature,
-            &mut hash_collection_other,
-            0,
-            1,
-            HashType::TrRosetta,
-            idf,
-        );
+        _add_shifted_hashes(&feature, &mut hash_collection_other, 0, 1, HashType::TrRosetta, idf);
         assert_eq!(hash_collection_other.len(), 0);
     }
 }

@@ -1,9 +1,9 @@
 //!
 
 use std::fmt;
-pub mod cif;
 pub mod parser;
 pub mod pdb;
+pub mod cif;
 
 #[cfg(feature = "foldcomp")]
 pub mod fcz;
@@ -31,7 +31,7 @@ impl StructureFileFormat {
             StructureFileFormat::Unknown => "Unknown".to_string(),
         }
     }
-
+    
     pub fn get_with_string(s: &str) -> StructureFileFormat {
         match s {
             "0" | "PDB" | "pdb" => StructureFileFormat::PDB,
@@ -44,6 +44,7 @@ impl StructureFileFormat {
         }
     }
 }
+
 
 impl fmt::Display for StructureFileFormat {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

@@ -1,5 +1,6 @@
 ///! TSV Formatter Utility
 ///! This module provides a generic TSV formatter.
+
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -10,13 +11,13 @@ pub const DEFAULT_FLOAT_PRECISION: usize = 4;
 pub enum Value {
     Int(i64),
     Uint(u64),
-    Float(f32, usize),           // value, precision
+    Float(f32, usize), // value, precision
     ScientificFloat(f64, usize), // value, precision. Print in scientific notation
     Str(String),
     Bool(bool),
     Float3DMatrix([[f32; 3]; 3], usize, &'static str), // matrix, precision, separator
-    Float3DVector([f32; 3], usize, &'static str),      // vector, precision, separator
-    FloatVector(Vec<f32>, usize, &'static str),        // vector, precision, separator
+    Float3DVector([f32; 3], usize, &'static str), // vector, precision, separator
+    FloatVector(Vec<f32>, usize, &'static str), // vector, precision, separator
 }
 
 impl From<i64> for Value {
@@ -155,13 +156,9 @@ impl<R> TsvFormatter<R> {
             Value::Bool(b) => write!(w, "{}", if *b { "1" } else { "0" }),
             Value::Float3DMatrix(m, precision, separator) => {
                 for (i, row) in m.iter().enumerate() {
-                    if i > 0 {
-                        write!(w, "{}", separator)?;
-                    }
+                    if i > 0 { write!(w, "{}", separator)?; }
                     for (j, val) in row.iter().enumerate() {
-                        if j > 0 {
-                            write!(w, "{}", separator)?;
-                        }
+                        if j > 0 { write!(w, "{}", separator)?; }
                         write!(w, "{:.1$}", val, precision)?;
                     }
                 }
@@ -169,18 +166,14 @@ impl<R> TsvFormatter<R> {
             }
             Value::Float3DVector(v, precision, separator) => {
                 for (i, val) in v.iter().enumerate() {
-                    if i > 0 {
-                        write!(w, "{}", separator)?;
-                    }
+                    if i > 0 { write!(w, "{}", separator)?; }
                     write!(w, "{:.1$}", val, precision)?;
                 }
                 Ok(())
             }
             Value::FloatVector(vec, precision, separator) => {
                 for (i, val) in vec.iter().enumerate() {
-                    if i > 0 {
-                        write!(w, "{}", separator)?;
-                    }
+                    if i > 0 { write!(w, "{}", separator)?; }
                     write!(w, "{:.1$}", val, precision)?;
                 }
                 Ok(())
@@ -210,13 +203,9 @@ mod tests {
         let columns = vec![
             Column::new("id", "Record ID", |r: &Record| Value::from(r.id)),
             Column::new("score", "Score", |r: &Record| Value::from(r.score)),
-            Column::new("score_sci", "Score Scientific", |r: &Record| {
-                Value::ScientificFloat(r.score_scientific, 4)
-            }),
+            Column::new("score_sci", "Score Scientific", |r: &Record| Value::ScientificFloat(r.score_scientific, 4)),
             Column::new("name", "Name", |r: &Record| Value::from(r.name.clone())),
-            Column::new("active", "Active Status", |r: &Record| {
-                Value::from(r.active)
-            }),
+            Column::new("active", "Active Status", |r: &Record| Value::from(r.active)),
         ];
         let formatter = TsvFormatter::new(columns);
         let record = Record {
@@ -233,7 +222,7 @@ mod tests {
         let expected = "id\tscore\tscore_sci\tname\tactive\n42\t3.1416\t3.1416e-8\tTest Name\t1\n";
         println!("Result:\n{}", result);
         assert_eq!(result, expected);
-
+        
         let record_vec = vec![
             Record {
                 id: 1,
@@ -253,13 +242,9 @@ mod tests {
 
         let columns_new = vec![
             Column::new("name", "Name", |r: &Record| Value::from(r.name.clone())),
-            Column::new("active", "Active Status", |r: &Record| {
-                Value::from(r.active)
-            }),
+            Column::new("active", "Active Status", |r: &Record| Value::from(r.active)),
             Column::new("score", "Score", |r: &Record| Value::from(r.score)),
-            Column::new("score_sci", "Score Scientific", |r: &Record| {
-                Value::ScientificFloat(r.score_scientific, 4)
-            }),
+            Column::new("score_sci", "Score Scientific", |r: &Record| Value::ScientificFloat(r.score_scientific, 4)),
         ];
         let formatter_new = TsvFormatter::new(columns_new);
         let mut output_new = Vec::new();
@@ -272,4 +257,4 @@ mod tests {
         let expected_new = "name\tactive\tscore\tscore_sci\nAlice\t0\t2.7183\t2.7183e-8\nBob\t1\t1.6180\t1.6180e-8\n";
         assert_eq!(result_new, expected_new);
     }
-}
+}   

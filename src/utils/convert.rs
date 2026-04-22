@@ -20,7 +20,7 @@ pub const BITMASK32_9BIT: u32 = 0x000001FF;
 pub const BITMASK64_4BIT: u64 = 0x000000000000000F;
 pub const BITMASK64_5BIT: u64 = 0x000000000000001F;
 
-// Discretizers
+// Discretizers 
 #[inline(always)]
 pub fn discretize_f32_value_into_u64(val: f32, min: f32, max: f32, num_bin: f32) -> u64 {
     let cont_f = (max - min) / (num_bin - 1.0_f32);
@@ -58,28 +58,28 @@ pub fn map_aa_to_u8(aa: &[u8; 3]) -> u8 {
         b"ARG" | b"DAR" | b"CIR" | b"AGM" => 1, // ARG, R, total 4
         b"ASN" | b"DSG" | b"MEN" | b"SNN" => 2, // ASN, N, total 4
         b"ASP" | b"0TD" | b"DAS" | b"IAS" | b"PHD" | b"BFD" | b"ASX" => 3, // ASP, D, total 7, ASX is included here
-        b"CYS" | b"CSO" | b"CSD" | b"CME" | b"OCS" | b"CAS" | b"CSX" | b"CSS" | b"YCM" | b"DCY"
-        | b"SMC" | b"SCH" | b"SCY" | b"CAF" | b"SNC" | b"SEC" => 4, // CYS, C, total 16, SEC is included here
+        b"CYS" | b"CSO" | b"CSD" | b"CME" | b"OCS" | b"CAS" | b"CSX" | b"CSS" | 
+        b"YCM" | b"DCY" | b"SMC" | b"SCH" | b"SCY" | b"CAF" | b"SNC" | b"SEC" => 4, // CYS, C, total 16, SEC is included here
         b"GLN" | b"DGN" | b"CRQ" | b"MEQ" => 5, // GLN, Q, total 4
         b"GLU" | b"PCA" | b"DGL" | b"CGU" | b"FGA" | b"B3E" | b"GLX" => 6, // GLU, E, total 7, GLX is included here
-        b"GLY" | b"CR2" | b"SAR" | b"GHP" | b"GL3" => 7,                   // GLY, G, total 5
-        b"HIS" | b"HIC" | b"DHI" | b"NEP" | b"CR8" | b"MHS" => 8,          // HIS, H, total 6
-        b"ILE" | b"DIL" => 9,                                              // ILE, I, total 2
-        b"LEU" | b"DLE" | b"NLE" | b"MLE" | b"MK8" => 10,                  // LEU, L, total 5
-        b"LYS" | b"KCX" | b"LLP" | b"MLY" | b"M3L" | b"ALY" | b"MLZ" | b"DLY" | b"KPI" | b"PYL" => {
-            11
-        } // LYS, K, total 10, PYL is included here
+        b"GLY" | b"CR2" | b"SAR" | b"GHP" | b"GL3" => 7, // GLY, G, total 5
+        b"HIS" | b"HIC" | b"DHI" | b"NEP" | b"CR8" | b"MHS" => 8, // HIS, H, total 6
+        b"ILE" | b"DIL" => 9, // ILE, I, total 2
+        b"LEU" | b"DLE" | b"NLE" | b"MLE" | b"MK8"=> 10, // LEU, L, total 5
+        b"LYS" | b"KCX" | b"LLP" | b"MLY" | b"M3L" | b"ALY" | b"MLZ" | b"DLY" | 
+        b"KPI" | b"PYL" => 11, // LYS, K, total 10, PYL is included here
         b"MET" | b"MSE" | b"FME" | b"NRQ" | b"CXM" | b"SME" | b"MHO" | b"MED" => 12, // MET, M, total 8
         b"PHE" | b"DPN" | b"PHI" | b"MEA" | b"PHL" => 13, // PHE, F, total 5
-        b"PRO" | b"HYP" | b"DPR" => 14,                   // PRO, P, total 3
+        b"PRO" | b"HYP" | b"DPR" => 14, // PRO, P, total 3
         b"SER" | b"CSH" | b"SEP" | b"DSN" | b"SAC" | b"GYS" | b"DHA" | b"OAS" => 15, // SER, S, total 8
         b"THR" | b"TPO" | b"CRO" | b"DTH" | b"BMT" | b"CRF" => 16, // THR, T, total 6
-        b"TRP" | b"DTR" | b"TRQ" | b"TOX" | b"0AF" => 17,          // TRP, W, total 5
+        b"TRP" | b"DTR" | b"TRQ" | b"TOX" | b"0AF" => 17, // TRP, W, total 5
         b"TYR" | b"PTR" | b"TYS" | b"TPQ" | b"DTY" | b"OMY" => 18,
         b"VAL" | b"DVA" | b"MVA" | b"FVA" => 19,
         _ => 255,
     }
 }
+
 
 #[inline(always)]
 pub fn map_aa_to_u8_group(aa: &[u8; 3]) -> u8 {
@@ -92,11 +92,11 @@ pub fn map_aa_to_u8_group(aa: &[u8; 3]) -> u8 {
     // 2. Hydrophobic (Nonpolar) Amino Acids
     //     V, L, I, M, F, W
     //     (Valine, Leucine, Isoleucine, Methionine, Phenylalanine, Tryptophan)
-    //     Typically buried in the protein core; important for stability.
+    //     Typically buried in the protein core; important for stability.    
     // 3. Polar (Hydrophilic) Amino Acids
     //     T, N, Q, Y
     //     (Threonine, Asparagine, Glutamine, Tyrosine)
-    //     Can participate in hydrogen bonding; often found on the protein surface.
+    //     Can participate in hydrogen bonding; often found on the protein surface.    
     // 4. Charged Amino Acids
     //     Basic: K, R, H (Lysine, Arginine, Histidine)
     //     Acidic: D, E (Aspartic Acid, Glutamic Acid)
@@ -107,28 +107,30 @@ pub fn map_aa_to_u8_group(aa: &[u8; 3]) -> u8 {
         b"ARG" | b"DAR" | b"CIR" | b"AGM" => 3, // ARG, R, total 4
         b"ASN" | b"DSG" | b"MEN" | b"SNN" => 2, // ASN, N, total 4
         b"ASP" | b"0TD" | b"DAS" | b"IAS" | b"PHD" | b"BFD" | b"ASX" => 3, // ASP, D, total 7, ASX is included here
-        b"CYS" | b"CSO" | b"CSD" | b"CME" | b"OCS" | b"CAS" | b"CSX" | b"CSS" | b"YCM" | b"DCY"
-        | b"SMC" | b"SCH" | b"SCY" | b"CAF" | b"SNC" | b"SEC" => 0, // CYS, C, total 16, SEC is included here
+        b"CYS" | b"CSO" | b"CSD" | b"CME" | b"OCS" | b"CAS" | b"CSX" | b"CSS" | 
+        b"YCM" | b"DCY" | b"SMC" | b"SCH" | b"SCY" | b"CAF" | b"SNC" | b"SEC" => 0, // CYS, C, total 16, SEC is included here
         b"GLN" | b"DGN" | b"CRQ" | b"MEQ" => 2, // GLN, Q, total 4
         b"GLU" | b"PCA" | b"DGL" | b"CGU" | b"FGA" | b"B3E" | b"GLX" => 3, // GLU, E, total 7, GLX is included here
-        b"GLY" | b"CR2" | b"SAR" | b"GHP" | b"GL3" => 0,                   // GLY, G, total 5
-        b"HIS" | b"HIC" | b"DHI" | b"NEP" | b"CR8" | b"MHS" => 3,          // HIS, H, total 6
-        b"ILE" | b"DIL" => 1,                                              // ILE, I, total 2
-        b"LEU" | b"DLE" | b"NLE" | b"MLE" | b"MK8" => 1,                   // LEU, L, total 5
-        b"LYS" | b"KCX" | b"LLP" | b"MLY" | b"M3L" | b"ALY" | b"MLZ" | b"DLY" | b"KPI" | b"PYL" => {
-            3
-        } // LYS, K, total 10, PYL is included here
+        b"GLY" | b"CR2" | b"SAR" | b"GHP" | b"GL3" => 0, // GLY, G, total 5
+        b"HIS" | b"HIC" | b"DHI" | b"NEP" | b"CR8" | b"MHS" => 3, // HIS, H, total 6
+        b"ILE" | b"DIL" => 1, // ILE, I, total 2
+        b"LEU" | b"DLE" | b"NLE" | b"MLE" | b"MK8"=> 1, // LEU, L, total 5
+        b"LYS" | b"KCX" | b"LLP" | b"MLY" | b"M3L" | b"ALY" | b"MLZ" | b"DLY" | 
+        b"KPI" | b"PYL" => 3, // LYS, K, total 10, PYL is included here
         b"MET" | b"MSE" | b"FME" | b"NRQ" | b"CXM" | b"SME" | b"MHO" | b"MED" => 1, // MET, M, total 8
         b"PHE" | b"DPN" | b"PHI" | b"MEA" | b"PHL" => 1, // PHE, F, total 5
-        b"PRO" | b"HYP" | b"DPR" => 0,                   // PRO, P, total 3
+        b"PRO" | b"HYP" | b"DPR" => 0, // PRO, P, total 3
         b"SER" | b"CSH" | b"SEP" | b"DSN" | b"SAC" | b"GYS" | b"DHA" | b"OAS" => 0, // SER, S, total 8
         b"THR" | b"TPO" | b"CRO" | b"DTH" | b"BMT" | b"CRF" => 2, // THR, T, total 6
-        b"TRP" | b"DTR" | b"TRQ" | b"TOX" | b"0AF" => 1,          // TRP, W, total 5
+        b"TRP" | b"DTR" | b"TRQ" | b"TOX" | b"0AF" => 1, // TRP, W, total 5
         b"TYR" | b"PTR" | b"TYS" | b"TPQ" | b"DTY" | b"OMY" => 2,
         b"VAL" | b"DVA" | b"MVA" | b"FVA" => 1,
         _ => 255,
     }
 }
+
+
+
 
 mod tests {
 
@@ -215,7 +217,7 @@ pub fn map_u32_to_aa_u32_pair(pair: u32) -> (u32, u32) {
 pub fn map_u32_to_aa_pair(pair: u32) -> (String, String) {
     let aa1 = (pair / 20) as u8;
     let aa2 = (pair % 20) as u8;
-    (map_u8_to_aa(aa1).to_string(), map_u8_to_aa(aa2).to_string())
+    (map_u8_to_aa(aa1).to_string() , map_u8_to_aa(aa2).to_string())
 }
 #[inline(always)]
 pub fn map_one_letter_to_u8_vec(aa: char) -> Vec<u8> {
@@ -243,23 +245,19 @@ pub fn map_one_letter_to_u8_vec(aa: char) -> Vec<u8> {
         // Handle the case of non-standard amino acids
         'B' => vec![2, 3], // Asn, Asp
         'Z' => vec![5, 6], // Gln, Glu
-        'X' => vec![
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-        ], // All
+        'X' => vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], // All
         'J' => vec![9, 10], // Ile, Leu
-        'U' => vec![4],    // Selenocysteine
-        'O' => vec![11],   // Pyrrolysine
+        'U' => vec![4], // Selenocysteine 
+        'O' => vec![11], // Pyrrolysine
         // Custom characters to represent groups of amino acids. Lower cases to avoid shell conflicts
         // Positively charged: p, Negatively charged: n, Polar or hydrophilic: h, Non-polar or hydrophobic: b, Aromatic: a
-        'p' => vec![1, 8, 11],                       // Arg, His, Lys
-        'n' => vec![3, 6],                           // Asp, Glu
-        'h' => vec![2, 5, 15, 16, 18],               // Asn, Gln, Ser, Thr, Tyr
+        'p' => vec![1, 8, 11], // Arg, His, Lys
+        'n' => vec![3, 6], // Asp, Glu
+        'h' => vec![2, 5, 15, 16, 18], // Asn, Gln, Ser, Thr, Tyr
         'b' => vec![0, 4, 7, 9, 10, 12, 13, 14, 19], // Ala, Cys, Gly, Ile, Leu, Met, Phe, Pro, Val
-        'a' => vec![8, 13, 17, 18],                  // His, Phe, Trp, Tyr
-        'x' => vec![
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-        ], // Both 'X' and 'x' are used for all
-        _ => vec![255],                              // Unknown
+        'a' => vec![8, 13, 17, 18], // His, Phe, Trp, Tyr
+        'x' => vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], // Both 'X' and 'x' are used for all
+        _ => vec![255], // Unknown
     }
 }
 
@@ -270,7 +268,7 @@ pub fn is_aa_group_char(c: char) -> bool {
     } else {
         match c {
             'p' | 'n' | 'h' | 'b' | 'a' => true,
-            _ => false,
+             _ => false,
         }
     }
 }

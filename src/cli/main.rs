@@ -6,10 +6,7 @@
 //! Main entry point for Folddisco CLI
 
 // use crate::*;
-use folddisco::cli::{
-    workflows::{benchmark, build_index, query_pdb},
-    *,
-};
+use folddisco::cli::{workflows::{build_index, benchmark, query_pdb}, *};
 
 const VERSION_STRING: &str = env!("FOLDDISCO_BUILD_VERSION");
 const HELP: &str = "\
@@ -35,9 +32,7 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
     {
         Some("index") => Ok(AppArgs::Index {
             pdb_container: args.opt_value_from_str(["-p", "--pdbs"])?,
-            hash_type: args
-                .value_from_str(["-y", "--type"])
-                .unwrap_or("default".into()),
+            hash_type: args.value_from_str(["-y", "--type"]).unwrap_or("default".into()),
             index_path: args.value_from_str(["-i", "--index"]).unwrap_or("".into()),
             num_threads: args.value_from_str(["-t", "--threads"]).unwrap_or(1),
             num_bin_dist: args.value_from_str(["-d", "--distance"]).unwrap_or(0),
@@ -58,9 +53,7 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             index_path: args.opt_value_from_str(["-i", "--index"])?,
             skip_match: args.contains("--skip-match"),
             // Filtering parameters
-            dist_threshold: args
-                .value_from_str(["-d", "--distance"])
-                .unwrap_or("0.5".into()),
+            dist_threshold: args.value_from_str(["-d", "--distance"]).unwrap_or("0.5".into()),
             angle_threshold: args.value_from_str(["-a", "--angle"]).unwrap_or("5".into()),
             ca_dist_threshold: args.value_from_str("--ca-distance").unwrap_or(1.0),
             total_match_count: args.value_from_str("--total-match").unwrap_or(0),
@@ -109,9 +102,7 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             neutral: args.opt_value_from_str(["-n", "--neutral"])?,
             index: args.opt_value_from_str(["-i", "--index"])?,
             input: args.opt_value_from_str("--input")?,
-            format: args
-                .value_from_str(["-f", "--format"])
-                .unwrap_or("tsv".into()),
+            format: args.value_from_str(["-f", "--format"]).unwrap_or("tsv".into()),
             fp: args.opt_value_from_str("--fp")?,
             threads: args.value_from_str(["-t", "--threads"]).unwrap_or(1),
             afdb_to_uniprot: args.contains("--afdb-to-uniprot"),
@@ -141,7 +132,7 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
         Some("version") => {
             println!("{}", VERSION_STRING);
             std::process::exit(0);
-        }
+        },
         Some(_) => Err("Invalid subcommand".into()),
         None => Ok(AppArgs::Global {
             help: args.contains(["-h", "--help"]),
