@@ -2,7 +2,11 @@
 // Author: Hyunbin Kim (khb7840@gmail.com)
 // Description: Core geometric hash enum and types
 
-use std::{fmt, hash::Hash, io::{BufRead, Write}};
+use std::{
+    fmt,
+    hash::Hash,
+    io::{BufRead, Write},
+};
 
 use crate::utils::traits::HashableSync;
 
@@ -22,7 +26,6 @@ pub enum HashType {
 }
 
 impl HashType {
-    
     pub fn get_with_index(index: usize) -> Self {
         match index {
             0 => HashType::PDBMotif,
@@ -38,7 +41,7 @@ impl HashType {
             _ => HashType::Other,
         }
     }
-    
+
     pub fn get_with_str(hash_type: &str) -> Self {
         match hash_type {
             "0" | "PDBMotif" | "pyscomotif" | "orig_pdb" => HashType::PDBMotif,
@@ -48,13 +51,15 @@ impl HashType {
             "4" | "PointPairFeature" | "ppf" => HashType::PointPairFeature,
             "5" | "TertiaryInteraction" | "tertiary" | "3di" => HashType::TertiaryInteraction,
             "6" | "Hybrid" | "hybrid" => HashType::Hybrid,
-            "7" | "FolddiscoAngle"| "angle" | "folddisco_angle" => HashType::FolddiscoAngle,
-            "8" | "FolddiscoDist" | "distance" | "dist" | "folddisco_dist" => HashType::FolddiscoDist,
+            "7" | "FolddiscoAngle" | "angle" | "folddisco_angle" => HashType::FolddiscoAngle,
+            "8" | "FolddiscoDist" | "distance" | "dist" | "folddisco_dist" => {
+                HashType::FolddiscoDist
+            }
             // append new hash type here
             _ => HashType::Other,
         }
     }
-    
+
     pub fn to_string(&self) -> String {
         match self {
             HashType::PDBMotif => "PDBMotif".to_string(),
@@ -91,7 +96,7 @@ impl HashType {
             HashType::Other => 32usize,
         }
     }
-    
+
     pub fn save_to_file(&self, path: &str) {
         let mut file = std::fs::File::create(path).unwrap();
         file.write_all(format!("{:?}", self).as_bytes()).unwrap();
@@ -119,12 +124,14 @@ impl HashType {
         }
         hash_type
     }
-    
+
     pub fn default_dist_bin(&self) -> usize {
         match self {
             HashType::PDBMotif => super::pdb_motif::NBIN_DIST as usize,
-            HashType::PDBMotifSinCos | HashType::TrRosetta | HashType::PointPairFeature |
-            HashType::TertiaryInteraction => crate::utils::convert::NBIN_DIST as usize,
+            HashType::PDBMotifSinCos
+            | HashType::TrRosetta
+            | HashType::PointPairFeature
+            | HashType::TertiaryInteraction => crate::utils::convert::NBIN_DIST as usize,
             HashType::PDBTrRosetta => super::pdb_tr::PDBTR_NBIN_DIST as usize,
             HashType::Hybrid => super::hybrid::HYBRID_NBIN_DIST as usize,
             HashType::FolddiscoAngle => super::folddisco_angle::NBIN_DIST as usize,
@@ -133,12 +140,14 @@ impl HashType {
             HashType::Other => 0,
         }
     }
-    
+
     pub fn default_angle_bin(&self) -> usize {
         match self {
             HashType::PDBMotif => super::pdb_motif::NBIN_ANGLE as usize,
-            HashType::PDBMotifSinCos | HashType::TrRosetta | HashType::PointPairFeature |
-            HashType::TertiaryInteraction => crate::utils::convert::NBIN_SIN_COS as usize,
+            HashType::PDBMotifSinCos
+            | HashType::TrRosetta
+            | HashType::PointPairFeature
+            | HashType::TertiaryInteraction => crate::utils::convert::NBIN_SIN_COS as usize,
             HashType::PDBTrRosetta => super::pdb_tr::PDBTR_NBIN_SIN_COS as usize,
             HashType::Hybrid => super::hybrid::HYBRID_NBIN_SIN_COS as usize,
             HashType::FolddiscoAngle => super::folddisco_angle::NBIN_ANGLE_360 as usize,
@@ -147,7 +156,6 @@ impl HashType {
             HashType::Other => 0,
         }
     }
-    
 }
 
 #[cfg(test)]
@@ -196,165 +204,168 @@ impl GeometricHash {
     pub fn perfect_hash_default_as_u32(feature: &Vec<f32>, hash_type: HashType) -> u32 {
         match hash_type {
             HashType::PDBMotif => super::pdb_motif::HashValue::perfect_hash_default(feature),
-            HashType::PDBMotifSinCos => super::pdb_motif_sincos::HashValue::perfect_hash_default(feature),
+            HashType::PDBMotifSinCos => {
+                super::pdb_motif_sincos::HashValue::perfect_hash_default(feature)
+            }
             HashType::TrRosetta => super::trrosetta::HashValue::perfect_hash_default(feature),
             HashType::PDBTrRosetta => super::pdb_tr::HashValue::perfect_hash_default(feature),
             HashType::PointPairFeature => super::ppf::HashValue::perfect_hash_default(feature),
-            HashType::TertiaryInteraction => super::tertiary_interaction::HashValue::perfect_hash_default(feature),
+            HashType::TertiaryInteraction => {
+                super::tertiary_interaction::HashValue::perfect_hash_default(feature)
+            }
             HashType::Hybrid => super::hybrid::HashValue::perfect_hash_default(feature),
-            HashType::FolddiscoAngle => super::folddisco_angle::HashValue::perfect_hash_default(feature),
-            HashType::FolddiscoDist => super::folddisco_dist::HashValue::perfect_hash_default(feature),
+            HashType::FolddiscoAngle => {
+                super::folddisco_angle::HashValue::perfect_hash_default(feature)
+            }
+            HashType::FolddiscoDist => {
+                super::folddisco_dist::HashValue::perfect_hash_default(feature)
+            }
             // append new hash type here
             _ => panic!("Invalid hash type"),
         }
     }
 
     pub fn perfect_hash_as_u32(
-        feature: &Vec<f32>, hash_type: HashType, nbin_dist: usize, nbin_angle: usize
+        feature: &Vec<f32>,
+        hash_type: HashType,
+        nbin_dist: usize,
+        nbin_angle: usize,
     ) -> u32 {
         match hash_type {
-            HashType::PDBMotif => super::pdb_motif::HashValue::perfect_hash(
-                feature, nbin_dist, nbin_angle
-            ),
-            HashType::PDBMotifSinCos => super::pdb_motif_sincos::HashValue::perfect_hash(
-                feature, nbin_dist, nbin_angle
-            ),
-            HashType::TrRosetta => super::trrosetta::HashValue::perfect_hash(
-                feature, nbin_dist, nbin_angle
-            ),
-            HashType::PDBTrRosetta => super::pdb_tr::HashValue::perfect_hash(
-                feature, nbin_dist, nbin_angle
-            ),
-            HashType::PointPairFeature => super::ppf::HashValue::perfect_hash(
-                feature, nbin_dist, nbin_angle
-            ),
-            HashType::TertiaryInteraction => super::tertiary_interaction::HashValue::perfect_hash(
-                feature, nbin_dist, nbin_angle
-            ),
-            HashType::Hybrid => super::hybrid::HashValue::perfect_hash(
-                feature, nbin_dist, nbin_angle
-            ),
-            HashType::FolddiscoAngle => super::folddisco_angle::HashValue::perfect_hash(
-                feature, nbin_dist, nbin_angle
-            ),
-            HashType::FolddiscoDist => super::folddisco_dist::HashValue::perfect_hash(
-                feature, nbin_dist, nbin_angle
-            ),
+            HashType::PDBMotif => {
+                super::pdb_motif::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
+            }
+            HashType::PDBMotifSinCos => {
+                super::pdb_motif_sincos::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
+            }
+            HashType::TrRosetta => {
+                super::trrosetta::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
+            }
+            HashType::PDBTrRosetta => {
+                super::pdb_tr::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
+            }
+            HashType::PointPairFeature => {
+                super::ppf::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
+            }
+            HashType::TertiaryInteraction => {
+                super::tertiary_interaction::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
+            }
+            HashType::Hybrid => {
+                super::hybrid::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
+            }
+            HashType::FolddiscoAngle => {
+                super::folddisco_angle::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
+            }
+            HashType::FolddiscoDist => {
+                super::folddisco_dist::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
+            }
             // append new hash type here
             _ => panic!("Invalid hash type"),
         }
     }
 
-    pub fn perfect_hash_with_shifts_dedup_inline(feature: &Vec<f32>, hash_type: HashType) -> (u8, [u32; 8]) {
+    pub fn perfect_hash_with_shifts_dedup_inline(
+        feature: &Vec<f32>,
+        hash_type: HashType,
+    ) -> (u8, [u32; 8]) {
         match hash_type {
-            HashType::PDBTrRosetta => super::pdb_tr::HashValue::perfect_hash_with_shifts_dedup_inline(feature),
+            HashType::PDBTrRosetta => {
+                super::pdb_tr::HashValue::perfect_hash_with_shifts_dedup_inline(feature)
+            }
             // Use exhaustive deduplication for now
             // HashType::PDBTrRosetta => super::pdb_tr::HashValue::perfect_hash_with_all_shifts_exhaustive(feature),
             _ => panic!("Hash type does not support shift deduplication"),
         }
     }
-    
+
     pub fn perfect_hash_default(feature: &Vec<f32>, hash_type: HashType) -> Self {
         match hash_type {
-            HashType::PDBMotif => GeometricHash::PDBMotif(
-                super::pdb_motif::HashValue(
-                    super::pdb_motif::HashValue::perfect_hash_default(feature)
-                )
-            ),
-            HashType::PDBMotifSinCos => GeometricHash::PDBMotifSinCos(
-                super::pdb_motif_sincos::HashValue(
-                    super::pdb_motif_sincos::HashValue::perfect_hash_default(feature)
-                )
-            ),
-            HashType::TrRosetta => GeometricHash::TrRosetta(
-                super::trrosetta::HashValue(
-                    super::trrosetta::HashValue::perfect_hash_default(feature)
-                )
-            ),
-            HashType::PDBTrRosetta => GeometricHash::PDBTrRosetta(
-                super::pdb_tr::HashValue(
-                    super::pdb_tr::HashValue::perfect_hash_default(feature)
-                )
-            ),
-            HashType::PointPairFeature => GeometricHash::PointPairFeature(
-                super::ppf::HashValue(
-                    super::ppf::HashValue::perfect_hash_default(feature)
-                )
-            ),
-            HashType::TertiaryInteraction => GeometricHash::TertiaryInteraction(
-                super::tertiary_interaction::HashValue(
-                    super::tertiary_interaction::HashValue::perfect_hash_default(feature)
-                )
-            ),
-            HashType::Hybrid => GeometricHash::Hybrid(
-                super::hybrid::HashValue(
-                    super::hybrid::HashValue::perfect_hash_default(feature)
-                )
-            ),
-            HashType::FolddiscoAngle => GeometricHash::FolddiscoAngle(
-                super::folddisco_angle::HashValue(
-                    super::folddisco_angle::HashValue::perfect_hash_default(feature)
-                )
-            ),
-            HashType::FolddiscoDist => GeometricHash::FolddiscoDist(
-                super::folddisco_dist::HashValue(
-                    super::folddisco_dist::HashValue::perfect_hash_default(feature)
-                )
-            ),
+            HashType::PDBMotif => GeometricHash::PDBMotif(super::pdb_motif::HashValue(
+                super::pdb_motif::HashValue::perfect_hash_default(feature),
+            )),
+            HashType::PDBMotifSinCos => {
+                GeometricHash::PDBMotifSinCos(super::pdb_motif_sincos::HashValue(
+                    super::pdb_motif_sincos::HashValue::perfect_hash_default(feature),
+                ))
+            }
+            HashType::TrRosetta => GeometricHash::TrRosetta(super::trrosetta::HashValue(
+                super::trrosetta::HashValue::perfect_hash_default(feature),
+            )),
+            HashType::PDBTrRosetta => GeometricHash::PDBTrRosetta(super::pdb_tr::HashValue(
+                super::pdb_tr::HashValue::perfect_hash_default(feature),
+            )),
+            HashType::PointPairFeature => GeometricHash::PointPairFeature(super::ppf::HashValue(
+                super::ppf::HashValue::perfect_hash_default(feature),
+            )),
+            HashType::TertiaryInteraction => {
+                GeometricHash::TertiaryInteraction(super::tertiary_interaction::HashValue(
+                    super::tertiary_interaction::HashValue::perfect_hash_default(feature),
+                ))
+            }
+            HashType::Hybrid => GeometricHash::Hybrid(super::hybrid::HashValue(
+                super::hybrid::HashValue::perfect_hash_default(feature),
+            )),
+            HashType::FolddiscoAngle => {
+                GeometricHash::FolddiscoAngle(super::folddisco_angle::HashValue(
+                    super::folddisco_angle::HashValue::perfect_hash_default(feature),
+                ))
+            }
+            HashType::FolddiscoDist => {
+                GeometricHash::FolddiscoDist(super::folddisco_dist::HashValue(
+                    super::folddisco_dist::HashValue::perfect_hash_default(feature),
+                ))
+            }
             // append new hash type here
             _ => panic!("Invalid hash type"),
         }
     }
 
     pub fn perfect_hash(
-        feature: &Vec<f32>, hash_type: HashType, nbin_dist: usize, nbin_angle: usize
+        feature: &Vec<f32>,
+        hash_type: HashType,
+        nbin_dist: usize,
+        nbin_angle: usize,
     ) -> Self {
         match hash_type {
-            HashType::PDBMotif => GeometricHash::PDBMotif(
-                super::pdb_motif::HashValue(
-                    super::pdb_motif::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
-                )
-            ),
-            HashType::PDBMotifSinCos => GeometricHash::PDBMotifSinCos(
-                super::pdb_motif_sincos::HashValue(
-                    super::pdb_motif_sincos::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
-                )
-            ),
-            HashType::TrRosetta => GeometricHash::TrRosetta(
-                super::trrosetta::HashValue(
-                    super::trrosetta::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
-                )
-            ),
-            HashType::PDBTrRosetta => GeometricHash::PDBTrRosetta(
-                super::pdb_tr::HashValue(
-                    super::pdb_tr::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
-                )
-            ),
-            HashType::PointPairFeature => GeometricHash::PointPairFeature(
-                super::ppf::HashValue(
-                    super::ppf::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
-                )
-            ),
-            HashType::TertiaryInteraction => GeometricHash::TertiaryInteraction(
-                super::tertiary_interaction::HashValue(
-                    super::tertiary_interaction::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
-                )
-            ),
-            HashType::Hybrid => GeometricHash::Hybrid(
-                super::hybrid::HashValue(
-                    super::hybrid::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
-                )
-            ),
-            HashType::FolddiscoAngle => GeometricHash::FolddiscoAngle(
-                super::folddisco_angle::HashValue(
-                    super::folddisco_angle::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
-                )
-            ),
-            HashType::FolddiscoDist => GeometricHash::FolddiscoDist(
-                super::folddisco_dist::HashValue(
-                    super::folddisco_dist::HashValue::perfect_hash(feature, nbin_dist, nbin_angle)
-                )
-            ),
+            HashType::PDBMotif => GeometricHash::PDBMotif(super::pdb_motif::HashValue(
+                super::pdb_motif::HashValue::perfect_hash(feature, nbin_dist, nbin_angle),
+            )),
+            HashType::PDBMotifSinCos => {
+                GeometricHash::PDBMotifSinCos(super::pdb_motif_sincos::HashValue(
+                    super::pdb_motif_sincos::HashValue::perfect_hash(
+                        feature, nbin_dist, nbin_angle,
+                    ),
+                ))
+            }
+            HashType::TrRosetta => GeometricHash::TrRosetta(super::trrosetta::HashValue(
+                super::trrosetta::HashValue::perfect_hash(feature, nbin_dist, nbin_angle),
+            )),
+            HashType::PDBTrRosetta => GeometricHash::PDBTrRosetta(super::pdb_tr::HashValue(
+                super::pdb_tr::HashValue::perfect_hash(feature, nbin_dist, nbin_angle),
+            )),
+            HashType::PointPairFeature => GeometricHash::PointPairFeature(super::ppf::HashValue(
+                super::ppf::HashValue::perfect_hash(feature, nbin_dist, nbin_angle),
+            )),
+            HashType::TertiaryInteraction => {
+                GeometricHash::TertiaryInteraction(super::tertiary_interaction::HashValue(
+                    super::tertiary_interaction::HashValue::perfect_hash(
+                        feature, nbin_dist, nbin_angle,
+                    ),
+                ))
+            }
+            HashType::Hybrid => GeometricHash::Hybrid(super::hybrid::HashValue(
+                super::hybrid::HashValue::perfect_hash(feature, nbin_dist, nbin_angle),
+            )),
+            HashType::FolddiscoAngle => {
+                GeometricHash::FolddiscoAngle(super::folddisco_angle::HashValue(
+                    super::folddisco_angle::HashValue::perfect_hash(feature, nbin_dist, nbin_angle),
+                ))
+            }
+            HashType::FolddiscoDist => {
+                GeometricHash::FolddiscoDist(super::folddisco_dist::HashValue(
+                    super::folddisco_dist::HashValue::perfect_hash(feature, nbin_dist, nbin_angle),
+                ))
+            }
             // append new hash type here
             _ => panic!("Invalid hash type"),
         }
@@ -367,19 +378,19 @@ impl GeometricHash {
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::PDBMotifSinCos(hash) => {
                 let reversed = hash.reverse_hash_default();
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::TrRosetta(hash) => {
                 let reversed = hash.reverse_hash_default();
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::PDBTrRosetta(hash) => {
                 let reversed = hash.reverse_hash_default();
                 for i in 0..reversed.len() {
@@ -391,36 +402,34 @@ impl GeometricHash {
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::TertiaryInteraction(hash) => {
                 let reversed = hash.reverse_hash_default();
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::Hybrid(hash) => {
                 let reversed = hash.reverse_hash_default();
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::FolddiscoAngle(hash) => {
                 let reversed = hash.reverse_hash_default();
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::FolddiscoDist(hash) => {
                 let reversed = hash.reverse_hash_default();
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
-            // append new hash type here
-            // _ => panic!("Invalid hash type"),
+            } // append new hash type here
+              // _ => panic!("Invalid hash type"),
         }
     }
-
 
     pub fn reverse_hash(&self, nbin_dist: usize, nbin_angle: usize, output: &mut Vec<f32>) {
         match self {
@@ -429,60 +438,58 @@ impl GeometricHash {
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::PDBMotifSinCos(hash) => {
                 let reversed = hash.reverse_hash(nbin_dist, nbin_angle);
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::TrRosetta(hash) => {
                 let reversed = hash.reverse_hash(nbin_dist, nbin_angle);
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::PDBTrRosetta(hash) => {
                 let reversed = hash.reverse_hash(nbin_dist, nbin_angle);
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::PointPairFeature(hash) => {
                 let reversed = hash.reverse_hash(nbin_dist, nbin_angle);
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::TertiaryInteraction(hash) => {
                 let reversed = hash.reverse_hash(nbin_dist, nbin_angle);
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::Hybrid(hash) => {
                 let reversed = hash.reverse_hash(nbin_dist, nbin_angle);
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::FolddiscoAngle(hash) => {
                 let reversed = hash.reverse_hash(nbin_dist, nbin_angle);
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
+            }
             GeometricHash::FolddiscoDist(hash) => {
                 let reversed = hash.reverse_hash(nbin_dist, nbin_angle);
                 for i in 0..reversed.len() {
                     output[i] = reversed[i];
                 }
-            },
-            // append new hash type here
-            // _ => panic!("Invalid hash type"),
+            } // append new hash type here
+              // _ => panic!("Invalid hash type"),
         }
     }
-
 
     pub fn hash_type(&self) -> HashType {
         match self {
@@ -500,75 +507,74 @@ impl GeometricHash {
         }
     }
 
-
     pub fn from_u32(hashvalue: u32, hash_type: HashType) -> Self {
         match hash_type {
-            HashType::PDBMotif => GeometricHash::PDBMotif(
-                super::pdb_motif::HashValue::from_u32(hashvalue)
-            ),
+            HashType::PDBMotif => {
+                GeometricHash::PDBMotif(super::pdb_motif::HashValue::from_u32(hashvalue))
+            }
             HashType::PDBMotifSinCos => GeometricHash::PDBMotifSinCos(
-                super::pdb_motif_sincos::HashValue::from_u32(hashvalue)
+                super::pdb_motif_sincos::HashValue::from_u32(hashvalue),
             ),
-            HashType::TrRosetta => GeometricHash::TrRosetta(
-                super::trrosetta::HashValue::from_u32(hashvalue)
-            ),
-            HashType::PDBTrRosetta => GeometricHash::PDBTrRosetta(
-                super::pdb_tr::HashValue::from_u32(hashvalue)
-            ),
-            HashType::PointPairFeature => GeometricHash::PointPairFeature(
-                super::ppf::HashValue::from_u32(hashvalue)
-            ),
+            HashType::TrRosetta => {
+                GeometricHash::TrRosetta(super::trrosetta::HashValue::from_u32(hashvalue))
+            }
+            HashType::PDBTrRosetta => {
+                GeometricHash::PDBTrRosetta(super::pdb_tr::HashValue::from_u32(hashvalue))
+            }
+            HashType::PointPairFeature => {
+                GeometricHash::PointPairFeature(super::ppf::HashValue::from_u32(hashvalue))
+            }
             HashType::TertiaryInteraction => GeometricHash::TertiaryInteraction(
-                super::tertiary_interaction::HashValue::from_u32(hashvalue)
+                super::tertiary_interaction::HashValue::from_u32(hashvalue),
             ),
-            HashType::Hybrid => GeometricHash::Hybrid(
-                super::hybrid::HashValue::from_u32(hashvalue)
-            ),
+            HashType::Hybrid => {
+                GeometricHash::Hybrid(super::hybrid::HashValue::from_u32(hashvalue))
+            }
             HashType::FolddiscoAngle => GeometricHash::FolddiscoAngle(
-                super::folddisco_angle::HashValue::from_u32(hashvalue)
+                super::folddisco_angle::HashValue::from_u32(hashvalue),
             ),
-            HashType::FolddiscoDist => GeometricHash::FolddiscoDist(
-                super::folddisco_dist::HashValue::from_u32(hashvalue)
-            ),
+            HashType::FolddiscoDist => {
+                GeometricHash::FolddiscoDist(super::folddisco_dist::HashValue::from_u32(hashvalue))
+            }
             // append new hash type here if it is encoded as u32
             _ => panic!("Invalid hash type"),
         }
     }
-    
+
     pub fn from_u64(hashvalue: u64, hash_type: HashType) -> Self {
         match hash_type {
-            HashType::PDBMotif => GeometricHash::PDBMotif(
-                super::pdb_motif::HashValue::from_u64(hashvalue)
-            ),
+            HashType::PDBMotif => {
+                GeometricHash::PDBMotif(super::pdb_motif::HashValue::from_u64(hashvalue))
+            }
             HashType::PDBMotifSinCos => GeometricHash::PDBMotifSinCos(
-                super::pdb_motif_sincos::HashValue::from_u64(hashvalue)
+                super::pdb_motif_sincos::HashValue::from_u64(hashvalue),
             ),
-            HashType::TrRosetta => GeometricHash::TrRosetta(
-                super::trrosetta::HashValue::from_u64(hashvalue)
-            ),
-            HashType::PDBTrRosetta => GeometricHash::PDBTrRosetta(
-                super::pdb_tr::HashValue::from_u64(hashvalue)
-            ),
-            HashType::PointPairFeature => GeometricHash::PointPairFeature(
-                super::ppf::HashValue::from_u64(hashvalue)
-            ),
+            HashType::TrRosetta => {
+                GeometricHash::TrRosetta(super::trrosetta::HashValue::from_u64(hashvalue))
+            }
+            HashType::PDBTrRosetta => {
+                GeometricHash::PDBTrRosetta(super::pdb_tr::HashValue::from_u64(hashvalue))
+            }
+            HashType::PointPairFeature => {
+                GeometricHash::PointPairFeature(super::ppf::HashValue::from_u64(hashvalue))
+            }
             HashType::TertiaryInteraction => GeometricHash::TertiaryInteraction(
-                super::tertiary_interaction::HashValue::from_u64(hashvalue)
+                super::tertiary_interaction::HashValue::from_u64(hashvalue),
             ),
-            HashType::Hybrid => GeometricHash::Hybrid(
-                super::hybrid::HashValue::from_u64(hashvalue)
-            ),
+            HashType::Hybrid => {
+                GeometricHash::Hybrid(super::hybrid::HashValue::from_u64(hashvalue))
+            }
             HashType::FolddiscoAngle => GeometricHash::FolddiscoAngle(
-                super::folddisco_angle::HashValue::from_u64(hashvalue)
+                super::folddisco_angle::HashValue::from_u64(hashvalue),
             ),
-            HashType::FolddiscoDist => GeometricHash::FolddiscoDist(
-                super::folddisco_dist::HashValue::from_u64(hashvalue)
-            ),
+            HashType::FolddiscoDist => {
+                GeometricHash::FolddiscoDist(super::folddisco_dist::HashValue::from_u64(hashvalue))
+            }
             // append new hash type here
             _ => panic!("Invalid hash type"),
         }
     }
-    
+
     pub fn as_u32(&self) -> u32 {
         match self {
             GeometricHash::PDBMotif(hash) => hash.as_u32(),
@@ -597,7 +603,7 @@ impl GeometricHash {
             // append new hash type here
         }
     }
-    
+
     pub fn is_symmetric(&self) -> bool {
         match self {
             GeometricHash::PDBMotif(hash) => hash.is_symmetric(),
@@ -612,7 +618,7 @@ impl GeometricHash {
             // append new hash type here
         }
     }
-    
+
     pub fn downcast_pdb_motif(&self) -> super::pdb_motif::HashValue {
         match self {
             GeometricHash::PDBMotif(hash) => hash.clone(),
@@ -668,7 +674,6 @@ impl GeometricHash {
         }
     }
     // append the downcast method for new hash type here
-
 }
 
 impl fmt::Debug for GeometricHash {
@@ -676,33 +681,32 @@ impl fmt::Debug for GeometricHash {
         match self {
             GeometricHash::PDBMotif(hash) => {
                 write!(f, "PDBMotif({:?})", hash)
-            },
+            }
             GeometricHash::PDBMotifSinCos(hash) => {
                 write!(f, "PDBMotifSinCos({:?})", hash)
-            },
+            }
             GeometricHash::TrRosetta(hash) => {
                 write!(f, "TrRosetta({:?})", hash)
-            },
+            }
             GeometricHash::PDBTrRosetta(hash) => {
                 write!(f, "PDBTrRosetta({:?})", hash)
-            },
+            }
             GeometricHash::PointPairFeature(hash) => {
                 write!(f, "PointPairFeature({:?})", hash)
-            },
+            }
             GeometricHash::TertiaryInteraction(hash) => {
                 write!(f, "TertiaryInteraction({:?})", hash)
-            },
+            }
             GeometricHash::Hybrid(hash) => {
                 write!(f, "Hybrid({:?})", hash)
-            },
+            }
             GeometricHash::FolddiscoAngle(hash) => {
                 write!(f, "FolddiscoAngle({:?})", hash)
-            },
+            }
             GeometricHash::FolddiscoDist(hash) => {
                 write!(f, "FolddiscoDist({:?})", hash)
-            },  
-            // append new hash type here
-            // _ => panic!("Invalid hash type"),
+            } // append new hash type here
+              // _ => panic!("Invalid hash type"),
         }
     }
 }
@@ -712,33 +716,32 @@ impl fmt::Display for GeometricHash {
         match self {
             GeometricHash::PDBMotif(hash) => {
                 write!(f, "PDBMotif\t{:?}", hash)
-            },
+            }
             GeometricHash::PDBMotifSinCos(hash) => {
                 write!(f, "PDBMotifSinCos\t{:?}", hash)
-            },
+            }
             GeometricHash::TrRosetta(hash) => {
                 write!(f, "TrRosetta\t{:?}", hash)
-            },
+            }
             GeometricHash::PDBTrRosetta(hash) => {
                 write!(f, "PDBTrRosetta\t{:?}", hash)
-            },
+            }
             GeometricHash::PointPairFeature(hash) => {
                 write!(f, "PointPairFeature\t{:?}", hash)
-            },
+            }
             GeometricHash::TertiaryInteraction(hash) => {
                 write!(f, "TertiaryInteraction\t{:?}", hash)
-            },
+            }
             GeometricHash::Hybrid(hash) => {
                 write!(f, "Hybrid\t{:?}", hash)
-            },
+            }
             GeometricHash::FolddiscoAngle(hash) => {
                 write!(f, "FolddiscoAngle\t{:?}", hash)
-            },
+            }
             GeometricHash::FolddiscoDist(hash) => {
                 write!(f, "FolddiscoDist\t{:?}", hash)
-            },
-            // append new hash type here
-            // _ => panic!("Invalid hash type"),
+            } // append new hash type here
+              // _ => panic!("Invalid hash type"),
         }
     }
 }

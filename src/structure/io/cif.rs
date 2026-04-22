@@ -11,9 +11,8 @@ use crate::structure::atom::Atom;
 use super::super::core::*;
 use super::*;
 
-use pdbtbx_cif::lex_item::{DataBlock, Item, DataItem, Loop, Value};
-use pdbtbx_cif::error::{PDBError, ErrorLevel, Context};
-
+use pdbtbx_cif::error::{Context, ErrorLevel, PDBError};
+use pdbtbx_cif::lex_item::{DataBlock, DataItem, Item, Loop, Value};
 
 /// A PDB reader
 #[derive(Debug)]
@@ -55,7 +54,7 @@ impl Reader<File> {
         } else {
             return Err("Error reading file");
         }
-        
+
         Ok(structure)
     }
 
@@ -71,7 +70,7 @@ impl Reader<File> {
 
         // Create a new Structure
         let mut structure = Structure::new();
-        
+
         // Read binary as a string. Conver
         let mut reader = BufReader::new(&binary[..]);
         let mut contents = String::new();
@@ -86,14 +85,11 @@ impl Reader<File> {
         } else {
             return Err("Error reading file");
         }
-        
 
         drop(binary);
         Ok(structure)
     }
-    
 }
-
 
 fn parse_mmcif_block_into_structure(input: &DataBlock, structure: &mut Structure) {
     let mut errors: Vec<PDBError> = Vec::new();
@@ -123,7 +119,6 @@ fn parse_mmcif_block_into_structure(input: &DataBlock, structure: &mut Structure
     }
 }
 
-
 /// Flatten a Result of a Result with the same error type (#70142 is still unstable)
 fn flatten_result<T, E>(value: Result<Result<T, E>, E>) -> Result<T, E> {
     match value {
@@ -135,7 +130,9 @@ fn flatten_result<T, E>(value: Result<Result<T, E>, E>) -> Result<T, E> {
 
 /// Parse a loop containing atomic data
 fn parse_atoms(
-    input: &Loop, structure: &mut Structure, record: &mut (u8, u64)
+    input: &Loop,
+    structure: &mut Structure,
+    record: &mut (u8, u64),
 ) -> Option<Vec<PDBError>> {
     #[derive(Eq, PartialEq)]
     /// The mode of a column
@@ -249,12 +246,13 @@ fn parse_atoms(
 
         // Parse remaining fields in the order they appear in the line
 
-        let name = parse_column!(get_four_char_array, ATOM_NAME).expect("Atom name should be provided");
+        let name =
+            parse_column!(get_four_char_array, ATOM_NAME).expect("Atom name should be provided");
         let id: u64 = parse_column!(get_isize, ATOM_ID).expect("Atom ID should be provided") as u64;
-        let residue_name: [u8; 3] = parse_column!(get_three_char_array, ATOM_COMP_ID).expect("Residue name should be provided");
+        let residue_name: [u8; 3] = parse_column!(get_three_char_array, ATOM_COMP_ID)
+            .expect("Residue name should be provided");
         let residue_number: u64 = parse_column!(get_isize, ATOM_AUTH_SEQ_ID).unwrap_or_else(|| {
-            parse_column!(get_isize, ATOM_SEQ_ID)
-                .expect("Residue number should be provided")
+            parse_column!(get_isize, ATOM_SEQ_ID).expect("Residue number should be provided")
         }) as u64;
         let chain_name = parse_column!(get_one_char, ATOM_AUTH_ASYM_ID).unwrap_or_else(|| {
             parse_column!(get_one_char, ATOM_ASYM_ID).expect("Chain name should be provided")
@@ -263,7 +261,7 @@ fn parse_atoms(
         let pos_y = parse_column!(get_f32, ATOM_Y).expect("Atom Y position should be provided");
         let pos_z = parse_column!(get_f32, ATOM_Z).expect("Atom Z position should be provided");
         let b_factor = parse_column!(get_f32, ATOM_B).unwrap_or(1.0);
-        // Current version does not support Occupancy, Charge and Anisotropic temperature factors 
+        // Current version does not support Occupancy, Charge and Anisotropic temperature factors
 
         // NOT handling HETATM with this version
         // let atom_type = parse_column!(get_text, ATOM_GROUP).unwrap_or_else(|| "ATOM".to_string());
@@ -276,10 +274,17 @@ fn parse_atoms(
         // };
 
         let atom = Atom::new(
-            pos_x, pos_y, pos_z, name, id,
-            chain_name, residue_name, residue_number, b_factor
+            pos_x,
+            pos_y,
+            pos_z,
+            name,
+            id,
+            chain_name,
+            residue_name,
+            residue_number,
+            b_factor,
         );
-        
+
         structure.update(atom, record);
     }
 
@@ -297,19 +302,27 @@ fn get_four_char_array(
     _column: Option<&str>,
 ) -> Result<Option<[u8; 4]>, PDBError> {
     match value {
-        Value::Text(t) => {
-            match t.as_bytes().len() {
-                1 => Ok(Some([b' ', t.as_bytes()[0], b' ', b' '])),
-                2 => Ok(Some([b' ', t.as_bytes()[0], t.as_bytes()[1], b' '])),
-                3 => Ok(Some([b' ', t.as_bytes()[0], t.as_bytes()[1], t.as_bytes()[2]])),
-                4 => Ok(Some([t.as_bytes()[0], t.as_bytes()[1], t.as_bytes()[2], t.as_bytes()[3]])),
-                _ => Err(PDBError::new(
-                    ErrorLevel::InvalidatingError,
-                    "Invalid atom name",
-                    "Invalid atom name",
-                    _context.clone(),
-                )),
-            }
+        Value::Text(t) => match t.as_bytes().len() {
+            1 => Ok(Some([b' ', t.as_bytes()[0], b' ', b' '])),
+            2 => Ok(Some([b' ', t.as_bytes()[0], t.as_bytes()[1], b' '])),
+            3 => Ok(Some([
+                b' ',
+                t.as_bytes()[0],
+                t.as_bytes()[1],
+                t.as_bytes()[2],
+            ])),
+            4 => Ok(Some([
+                t.as_bytes()[0],
+                t.as_bytes()[1],
+                t.as_bytes()[2],
+                t.as_bytes()[3],
+            ])),
+            _ => Err(PDBError::new(
+                ErrorLevel::InvalidatingError,
+                "Invalid atom name",
+                "Invalid atom name",
+                _context.clone(),
+            )),
         },
         _ => Ok(None),
     }
@@ -331,12 +344,12 @@ fn get_three_char_array(
                 //     "Invalid residue name",
                 //     "Invalid residue name",
                 //     _context.clone(),
-                // )), 
+                // )),
                 // 2025-06-24 16:29:00 For now, not allowing residue names longer than 3 characters
                 // If more than 3 characters, we will return empty residue name
                 _ => Ok(Some([b' ', b' ', b' '])), // Default to empty residue name
             }
-        },
+        }
         _ => Ok(None),
     }
 }
@@ -347,16 +360,14 @@ fn get_one_char(
     _column: Option<&str>,
 ) -> Result<Option<u8>, PDBError> {
     match value {
-        Value::Text(t) => {
-            match t.as_bytes().len() {
-                1 => Ok(Some(t.as_bytes()[0])),
-                _ => Err(PDBError::new(
-                    ErrorLevel::InvalidatingError,
-                    "Invalid chain name",
-                    "Currently only one character chain names are supported",
-                    _context.clone(),
-                )),
-            }
+        Value::Text(t) => match t.as_bytes().len() {
+            1 => Ok(Some(t.as_bytes()[0])),
+            _ => Err(PDBError::new(
+                ErrorLevel::InvalidatingError,
+                "Invalid chain name",
+                "Currently only one character chain names are supported",
+                _context.clone(),
+            )),
         },
         _ => Ok(None),
     }
@@ -483,7 +494,7 @@ mod tests {
         let compact = structure.to_compact();
         println!("{:?}", compact);
     }
-    
+
     #[test]
     fn test_read_cif_from_afdb() {
         let path = Path::new("data/io_test/cif/AF-A0A4S3KKF6-F1-model_v4.cif");
@@ -497,7 +508,7 @@ mod tests {
         let _ = structure.to_compact();
         // println!("{:?}", compact);
     }
-    
+
     #[test]
     fn test_read_cif_from_afdb_gz() {
         let path = Path::new("data/io_test/cif/AF-A0A4S3KKF6-F1-model_v4.cif.gz");
