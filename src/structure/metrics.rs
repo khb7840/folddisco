@@ -110,6 +110,9 @@ fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
     dist_sq_as_f64(a, b).sqrt() as f32
 }
 
+/// Distance tolerance (Å) for the Distance Matrix Score (DMS).
+pub const D_TOL: f32 = 2.0;
+
 /// TM-score normalization function for final evaluation
 /// d0(L) = 1.24 * (L - 15)^(1/3) - 1.8 for L > 19
 /// d0(L) = 0.5 for L <= 21
@@ -272,6 +275,111 @@ pub fn rmsd(distances: &PrecomputedDistances) -> f32 {
     ((sum_sq / distances.n as f64).sqrt()) as f32
 }
 
+/// Distance Matrix Score (DMS) on Cα coordinates.
+///
+/// Returns 1.0 for N < 2, treating underspecified motifs as a neutral/perfect
+/// agreement case because no pairwise distance disagreement can be measured.
+pub fn distance_matrix_score(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> f32 {
+    let n = reference_coords.len().min(coords.len());
+    if n < 2 {
+        return 1.0;
+    }
+    let total_pairs = n * (n - 1) / 2;
+    let mut sum = 0.0_f32;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let d_ref = dist(reference_coords[i], reference_coords[j]);
+            let d_model = dist(coords[i], coords[j]);
+            let diff = (d_ref - d_model).abs();
+            sum += (1.0 - diff / D_TOL).max(0.0);
+        }
+    }
+    sum / total_pairs as f32
+}
+
+#[inline]
+fn pseudo_bond_angle(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
+    let v1 = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let v2 = [c[0] - b[0], c[1] - b[1], c[2] - b[2]];
+    let dot = v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
+    let len1 = (v1[0] * v1[0] + v1[1] * v1[1] + v1[2] * v1[2]).sqrt();
+    let len2 = (v2[0] * v2[0] + v2[1] * v2[1] + v2[2] * v2[2]).sqrt();
+    if len1 < 1e-6 || len2 < 1e-6 {
+        return 0.0;
+    }
+    (dot / (len1 * len2)).clamp(-1.0, 1.0).acos()
+}
+
+/// Pseudo-Bond Angle Score (PAS) on Cα coordinates.
+///
+/// Returns 1.0 for N < 3, treating underspecified motifs as a neutral/perfect
+/// agreement case because no pseudo-bond angle disagreement can be measured.
+pub fn pseudo_bond_angle_score(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> f32 {
+    let n = reference_coords.len().min(coords.len());
+    if n < 3 {
+        return 1.0;
+    }
+    let count = n - 2;
+    let sum: f32 = (0..count)
+        .map(|k| {
+            let theta_ref = pseudo_bond_angle(reference_coords[k], reference_coords[k + 1], reference_coords[k + 2]);
+            let theta_model = pseudo_bond_angle(coords[k], coords[k + 1], coords[k + 2]);
+            let delta = theta_ref - theta_model;
+            (1.0 + delta.cos()) / 2.0
+        })
+        .sum();
+    sum / count as f32
+}
+
+#[inline]
+fn cb_direction(ca: [f32; 3], cb: [f32; 3]) -> Option<[f32; 3]> {
+    let dx = cb[0] - ca[0];
+    let dy = cb[1] - ca[1];
+    let dz = cb[2] - ca[2];
+    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    if len < 1e-6 {
+        None
+    } else {
+        Some([dx / len, dy / len, dz / len])
+    }
+}
+
+/// Side-chain Orientation Score (SOS) using Cα/Cβ vectors.
+///
+/// Returns 1.0 when no valid residues exist for orientation comparison.
+pub fn side_chain_orientation_score(
+    reference_ca: &[[f32; 3]],
+    coords_ca: &[[f32; 3]],
+    reference_cb: &[[f32; 3]],
+    coords_cb: &[[f32; 3]],
+) -> f32 {
+    let n = reference_ca
+        .len()
+        .min(coords_ca.len())
+        .min(reference_cb.len())
+        .min(coords_cb.len());
+    if n == 0 {
+        return 1.0;
+    }
+    let mut sum = 0.0_f32;
+    let mut count = 0usize;
+    for i in 0..n {
+        if let (Some(d_ref), Some(d_model)) = (
+            cb_direction(reference_ca[i], reference_cb[i]),
+            cb_direction(coords_ca[i], coords_cb[i]),
+        ) {
+            let cos_sim = d_ref[0] * d_model[0] + d_ref[1] * d_model[1] + d_ref[2] * d_model[2];
+            sum += (1.0 + cos_sim.clamp(-1.0, 1.0)) / 2.0;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        1.0
+    } else {
+        sum / count as f32
+    }
+}
+
 
 /// Structure similarity metrics calculator
 #[derive(Debug, Clone, Default, PartialEq, Copy)]
@@ -279,6 +387,9 @@ pub struct StructureSimilarityMetrics {
     pub tm_score: f32,
     pub gdt_ts: f32,
     pub gdt_ha: f32,
+    pub dms: f32,
+    pub pas: f32,
+    pub sos: f32,
     pub chamfer_distance: f32,
     pub hausdorff_distance: f32,
 }
@@ -301,6 +412,9 @@ impl StructureSimilarityMetrics {
             tm_score: 0.0,
             gdt_ts: 0.0,
             gdt_ha: 0.0,
+            dms: 0.0,
+            pas: 0.0,
+            sos: 0.0,
             chamfer_distance: 0.0,
             hausdorff_distance: 0.0,
         }
@@ -326,12 +440,63 @@ impl StructureSimilarityMetrics {
         hausdorff_distance(precomputed)
     }
 
+    pub fn calculate_dms(&self, reference_ca: &[[f32; 3]], coords_ca: &[[f32; 3]]) -> f32 {
+        distance_matrix_score(reference_ca, coords_ca)
+    }
+
+    pub fn calculate_pas(&self, reference_ca: &[[f32; 3]], coords_ca: &[[f32; 3]]) -> f32 {
+        pseudo_bond_angle_score(reference_ca, coords_ca)
+    }
+
+    pub fn calculate_sos(
+        &self,
+        reference_ca: &[[f32; 3]],
+        coords_ca: &[[f32; 3]],
+        reference_cb: &[[f32; 3]],
+        coords_cb: &[[f32; 3]],
+    ) -> f32 {
+        side_chain_orientation_score(reference_ca, coords_ca, reference_cb, coords_cb)
+    }
+
     pub fn calculate_all(&mut self, precomputed: &PrecomputedDistances) {
         self.tm_score = self.calculate_tm_score(precomputed);
         self.gdt_ts = self.calculate_gdt_ts(precomputed);
         self.gdt_ha = self.calculate_gdt_ha(precomputed);
         self.chamfer_distance = self.calculate_chamfer_distance(precomputed);
         self.hausdorff_distance = self.calculate_hausdorff_distance(precomputed);
+    }
+
+    /// Calculate DMS/PAS/SOS from interleaved [CA, CB, CA, CB, ...] coordinates.
+    pub fn calculate_dms_pas_sos_from_interleaved_ca_cb(
+        &mut self,
+        reference_coords: &[[f32; 3]],
+        coords: &[[f32; 3]],
+    ) {
+        if reference_coords.is_empty()
+            || reference_coords.len() != coords.len()
+            || reference_coords.len() % 2 != 0
+        {
+            self.dms = 0.0;
+            self.pas = 0.0;
+            self.sos = 0.0;
+            return;
+        }
+
+        let mut reference_ca = Vec::with_capacity(reference_coords.len() / 2);
+        let mut reference_cb = Vec::with_capacity(reference_coords.len() / 2);
+        let mut coords_ca = Vec::with_capacity(coords.len() / 2);
+        let mut coords_cb = Vec::with_capacity(coords.len() / 2);
+
+        for i in (0..reference_coords.len()).step_by(2) {
+            reference_ca.push(reference_coords[i]);
+            reference_cb.push(reference_coords[i + 1]);
+            coords_ca.push(coords[i]);
+            coords_cb.push(coords[i + 1]);
+        }
+
+        self.dms = self.calculate_dms(&reference_ca, &coords_ca);
+        self.pas = self.calculate_pas(&reference_ca, &coords_ca);
+        self.sos = self.calculate_sos(&reference_ca, &coords_ca, &reference_cb, &coords_cb);
     }
     
     /// Print metrics in a formatted way
@@ -340,6 +505,9 @@ impl StructureSimilarityMetrics {
         println!("  TM-score:           {:.4}", self.tm_score);
         println!("  GDT-TS:             {:.4}", self.gdt_ts);
         println!("  GDT-HA:             {:.4}", self.gdt_ha);
+        println!("  DMS:                {:.4}", self.dms);
+        println!("  PAS:                {:.4}", self.pas);
+        println!("  SOS:                {:.4}", self.sos);
         println!("  Chamfer Distance:   {:.4} Å", self.chamfer_distance);
         println!("  Hausdorff Distance: {:.4} Å", self.hausdorff_distance);
     }
@@ -350,10 +518,13 @@ impl fmt::Display for StructureSimilarityMetrics {
         // Print all metrics in a tab-separated format with 4 decimal places
         write!(
             f,
-            "{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
+            "{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
             self.tm_score,
             self.gdt_ts,
             self.gdt_ha,
+            self.dms,
+            self.pas,
+            self.sos,
             self.chamfer_distance,
             self.hausdorff_distance
         )
@@ -365,6 +536,221 @@ mod tests {
     use crate::structure::{kabsch::KabschSuperimposer, lms_qcp::LmsQcpSuperimposer};
 
     use super::*;
+
+    #[inline]
+    fn rotate_x(v: [f32; 3], angle: f32) -> [f32; 3] {
+        let (s, c) = angle.sin_cos();
+        [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]]
+    }
+
+    #[inline]
+    fn rotate_z(v: [f32; 3], angle: f32) -> [f32; 3] {
+        let (s, c) = angle.sin_cos();
+        [c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]]
+    }
+
+    fn mock_per_residue_rt_false_positive(
+        reference_interleaved: &[[f32; 3]],
+        base_angle: f32,
+        base_shift: f32,
+        cb_extra_angle: f32,
+    ) -> Vec<[f32; 3]> {
+        let mut transformed = Vec::with_capacity(reference_interleaved.len());
+        for i in (0..reference_interleaved.len()).step_by(2) {
+            let residue_idx = (i / 2) as f32 + 1.0;
+            let ca = reference_interleaved[i];
+            let cb = reference_interleaved[i + 1];
+            let translation = [
+                base_shift * residue_idx * 0.31,
+                -base_shift * residue_idx * 0.17,
+                base_shift * residue_idx * 0.11,
+            ];
+
+            let ca_shifted = [
+                ca[0] + translation[0],
+                ca[1] + translation[1],
+                ca[2] + translation[2],
+            ];
+
+            let mut ca_cb = [cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2]];
+            let angle = base_angle * residue_idx;
+            ca_cb = rotate_z(ca_cb, angle);
+            ca_cb = rotate_x(ca_cb, angle * 0.5 + cb_extra_angle);
+
+            let cb_shifted = [
+                ca_shifted[0] + ca_cb[0],
+                ca_shifted[1] + ca_cb[1],
+                ca_shifted[2] + ca_cb[2],
+            ];
+
+            transformed.push(ca_shifted);
+            transformed.push(cb_shifted);
+        }
+        transformed
+    }
+
+    fn dms_pas_sos_average(
+        reference_interleaved: &[[f32; 3]],
+        model_interleaved: &[[f32; 3]],
+    ) -> (f32, f32, f32, f32) {
+        let mut metrics = StructureSimilarityMetrics::new();
+        metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(reference_interleaved, model_interleaved);
+        let avg = (metrics.dms + metrics.pas + metrics.sos) / 3.0;
+        (metrics.dms, metrics.pas, metrics.sos, avg)
+    }
+
+    #[test]
+    fn test_real_motif_and_mocked_false_positive_validity() {
+        use crate::prelude::PDBReader;
+
+        let query_reader = PDBReader::from_file("query/1G2F.pdb").unwrap();
+        let query_structure = query_reader.read_structure().unwrap().to_compact();
+        let reference_indices = vec![
+            query_structure.get_index(&b'F', &207).unwrap(),
+            query_structure.get_index(&b'F', &212).unwrap(),
+            query_structure.get_index(&b'F', &225).unwrap(),
+            query_structure.get_index(&b'F', &229).unwrap(),
+        ];
+
+        let reference_interleaved = vec![
+            query_structure.get_ca(reference_indices[0]).unwrap().to_array(),
+            query_structure.get_cb(reference_indices[0]).unwrap().to_array(),
+            query_structure.get_ca(reference_indices[1]).unwrap().to_array(),
+            query_structure.get_cb(reference_indices[1]).unwrap().to_array(),
+            query_structure.get_ca(reference_indices[2]).unwrap().to_array(),
+            query_structure.get_cb(reference_indices[2]).unwrap().to_array(),
+            query_structure.get_ca(reference_indices[3]).unwrap().to_array(),
+            query_structure.get_cb(reference_indices[3]).unwrap().to_array(),
+        ];
+
+        // Composition-matched motif labels (same multiset)
+        let aa_exact = [b'F', b'F', b'F', b'F'];
+        let aa_composition_matched_different = [b'F', b'F', b'F', b'F'];
+        assert_eq!(aa_exact, aa_composition_matched_different);
+
+        let exact = reference_interleaved.clone();
+        // Mild per-residue perturbation: small local rotation + sub-Å residue shifts.
+        let slight_deviation = mock_per_residue_rt_false_positive(&reference_interleaved, 0.06, 0.12, 0.0);
+        // Strong perturbation while preserving composition labels:
+        // large local rotations and larger per-residue shifts.
+        let composition_matched_different = mock_per_residue_rt_false_positive(&reference_interleaved, 0.9, 1.2, 0.75);
+
+        let (_, _, _, exact_avg) = dms_pas_sos_average(&reference_interleaved, &exact);
+        let (_, _, _, slight_avg) = dms_pas_sos_average(&reference_interleaved, &slight_deviation);
+        let (_, _, _, different_avg) =
+            dms_pas_sos_average(&reference_interleaved, &composition_matched_different);
+
+        assert!((exact_avg - 1.0).abs() < 1e-6);
+        assert!(exact_avg > slight_avg);
+        assert!(slight_avg > different_avg);
+    }
+
+    #[test]
+    fn test_dms_pas_sos_identical() {
+        let ca = vec![
+            [0.0_f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [3.0, 1.0, 1.0],
+        ];
+        let cb = vec![
+            [0.0_f32, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [3.0, 2.0, 1.0],
+        ];
+
+        assert!((distance_matrix_score(&ca, &ca) - 1.0).abs() < 1e-6);
+        assert!((pseudo_bond_angle_score(&ca, &ca) - 1.0).abs() < 1e-6);
+        assert!((side_chain_orientation_score(&ca, &ca, &cb, &cb) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dms_pas_sos_ranges() {
+        let ca_ref = vec![
+            [0.0_f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ];
+        let ca_model = vec![
+            [0.0_f32, 0.0, 0.0],
+            [0.5, 1.0, 0.0],
+            [1.5, -1.0, 0.0],
+            [3.5, 0.0, 0.5],
+        ];
+        let cb_ref = vec![
+            [0.0_f32, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [3.0, 1.0, 0.0],
+        ];
+        let cb_model = vec![
+            [0.0_f32, -1.0, 0.0],
+            [0.5, 2.0, 0.0],
+            [1.5, -2.0, 0.0],
+            [3.5, -1.0, 0.5],
+        ];
+
+        let dms = distance_matrix_score(&ca_ref, &ca_model);
+        let pas = pseudo_bond_angle_score(&ca_ref, &ca_model);
+        let sos = side_chain_orientation_score(&ca_ref, &ca_model, &cb_ref, &cb_model);
+
+        assert!((0.0..=1.0).contains(&dms));
+        assert!((0.0..=1.0).contains(&pas));
+        assert!((0.0..=1.0).contains(&sos));
+    }
+
+    #[test]
+    fn test_dms_pas_sos_interleaved_input() {
+        let interleaved_ref = vec![
+            [0.0_f32, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [2.0, 2.0, 0.0],
+        ];
+        let interleaved_model = interleaved_ref.clone();
+
+        let mut metrics = StructureSimilarityMetrics::new();
+        metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(&interleaved_ref, &interleaved_model);
+
+        assert!((metrics.dms - 1.0).abs() < 1e-6);
+        assert!((metrics.pas - 1.0).abs() < 1e-6);
+        assert!((metrics.sos - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dms_pas_sos_interleaved_invalid_input() {
+        let mut metrics = StructureSimilarityMetrics::new();
+        metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(&[[0.0, 0.0, 0.0]], &[[0.0, 0.0, 0.0]]);
+
+        assert_eq!(metrics.dms, 0.0);
+        assert_eq!(metrics.pas, 0.0);
+        assert_eq!(metrics.sos, 0.0);
+    }
+
+    #[test]
+    fn test_dms_pas_sos_interleaved_odd_length_input() {
+        let mut metrics = StructureSimilarityMetrics::new();
+        metrics.calculate_dms_pas_sos_from_interleaved_ca_cb(
+            &[
+                [0.0_f32, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+            &[
+                [0.0_f32, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+        );
+
+        assert_eq!(metrics.dms, 0.0);
+        assert_eq!(metrics.pas, 0.0);
+        assert_eq!(metrics.sos, 0.0);
+    }
 
     #[test]
     fn test_metrics_calculate_all_with_identical() {

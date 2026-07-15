@@ -26,6 +26,12 @@ pub enum SortKey {
     GdtTs,
     /// GDT-HA (Global Distance Test - High Accuracy)
     GdtHa,
+    /// Distance Matrix Score (DMS)
+    Dms,
+    /// Pseudo-Bond Angle Score (PAS)
+    Pas,
+    /// Side-chain Orientation Score (SOS)
+    Sos,
     /// Chamfer distance
     ChamferDistance,
     /// Hausdorff distance
@@ -44,6 +50,9 @@ impl SortKey {
     /// - `gdt_ts`, `gdtts`, `gdt` -> GdtTs
     /// - `gdt_ha`, `gdtha` -> GdtHa
     /// - `gdt_strict`, `gdtstrict` -> GdtStrict
+    /// - `dms` -> Dms
+    /// - `pas` -> Pas
+    /// - `sos` -> Sos
     /// - `chamfer`, `chamfer_distance` -> ChamferDistance
     /// - `hausdorff`, `hausdorff_distance` -> HausdorffDistance
     pub fn from_str(s: &str) -> Result<Self, String> {
@@ -55,6 +64,9 @@ impl SortKey {
             "tm_score" | "tm-score" | "tmscore" | "tm" => Ok(Self::TmScore),
             "gdt_ts" | "gdt-ts" | "gdtts" | "gdt" => Ok(Self::GdtTs),
             "gdt_ha" | "gdt-ha" | "gdtha" => Ok(Self::GdtHa),
+            "dms" => Ok(Self::Dms),
+            "pas" => Ok(Self::Pas),
+            "sos" => Ok(Self::Sos),
             "chamfer" | "chamfer-distance" | "chamfer_distance" => Ok(Self::ChamferDistance),
             "hausdorff" | "hausdorff-distance" | "hausdorff_distance" => Ok(Self::HausdorffDistance),
             _ => Err(format!(
@@ -67,7 +79,7 @@ impl SortKey {
 
     /// Get all valid key names for help text
     pub fn valid_keys() -> &'static str {
-        "node_count, idf, evalue, rmsd, tm_score, tm_score_strict, gdt_ts, gdt_ha, gdt_strict, chamfer_distance, hausdorff_distance"
+        "node_count, idf, evalue, rmsd, tm_score, gdt_ts, gdt_ha, dms, pas, sos, chamfer_distance, hausdorff_distance"
     }
 
     /// Get the default sort order for this key
@@ -77,7 +89,7 @@ impl SortKey {
     pub fn default_order(&self) -> SortOrder {
         match self {
             // Descending order for NodeCount, IDF, TM-score, GDT scores
-            Self::NodeCount | Self::Idf | Self::TmScore | Self::GdtTs | Self::GdtHa => SortOrder::Desc,
+            Self::NodeCount | Self::Idf | Self::TmScore | Self::GdtTs | Self::GdtHa | Self::Dms | Self::Pas | Self::Sos => SortOrder::Desc,
             // Ascending order for distance metrics: RMSD, Chamfer, Hausdorff, E-value
             Self::Evalue | Self::Rmsd | Self::ChamferDistance | Self::HausdorffDistance => SortOrder::Asc,
         }
@@ -93,6 +105,9 @@ impl SortKey {
             Self::TmScore => result.metrics.tm_score as f64,
             Self::GdtTs => result.metrics.gdt_ts as f64,
             Self::GdtHa => result.metrics.gdt_ha as f64,
+            Self::Dms => result.metrics.dms as f64,
+            Self::Pas => result.metrics.pas as f64,
+            Self::Sos => result.metrics.sos as f64,
             Self::ChamferDistance => result.metrics.chamfer_distance as f64,
             Self::HausdorffDistance => result.metrics.hausdorff_distance as f64,
         }
@@ -575,6 +590,9 @@ mod tests {
                 tm_score: 0.9,
                 gdt_ts: 0.8,
                 gdt_ha: 0.4,
+                dms: 0.7,
+                pas: 0.6,
+                sos: 0.5,
                 chamfer_distance: 1.2,
                 hausdorff_distance: 2.5,
             },
@@ -595,6 +613,9 @@ mod tests {
                 tm_score: 0.75,
                 gdt_ts: 0.9,
                 gdt_ha: 0.3,
+                dms: 0.6,
+                pas: 0.4,
+                sos: 0.7,
                 chamfer_distance: 2.9,
                 hausdorff_distance: 3.0,
             },
@@ -615,6 +636,9 @@ mod tests {
                 tm_score: 0.96,
                 gdt_ts: 0.3,
                 gdt_ha: 0.1,
+                dms: 0.2,
+                pas: 0.3,
+                sos: 0.2,
                 chamfer_distance: 1.2,
                 hausdorff_distance: 8.0,
             },
