@@ -104,10 +104,11 @@ impl CompactStructure {
         for idx in 0..origin.num_atoms {
             if prev_res_serial != Some(model.get_res_serial(idx)) || idx == origin.num_atoms - 1 {
                 // Save previous 'CA' and 'CB'
-                match (n, ca, cb) {
-                    (Some(n), Some(ca), Some(cb)) => {
+                match (n, ca, c) {
+                    (Some(n), Some(ca), Some(c)) => {
                         let resi = prev_res_serial.expect("expected residue serial number");
                         let resn = prev_res_name.expect("expected residue name");
+                        let cb = approx_cb(&ca, &n, &c);
                         n_vec.push(&n);
                         ca_vec.push(&ca);
                         cb_vec.push(&cb);
@@ -171,6 +172,7 @@ impl CompactStructure {
                 // Reset 'CA' and 'CB'
                 ca = None;
                 cb = None;
+                c = None;
                 n = None;
                 prev_res_serial = Some(model.get_res_serial(idx));
                 prev_res_name = model.res_name.get(idx);
