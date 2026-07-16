@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(loaded_1, vec![("a.pdb".to_string(), 0, 10, 50.0, 100)]);
         assert!(std::path::Path::new(&cache_path).is_file());
 
-        sleep(Duration::from_millis(5));
+        sleep(Duration::from_secs(2));
         let path_vec_2 = vec!["b.pdb".to_string()];
         let numeric_id_vec_2 = vec![1];
         let nres_vec_2 = Some(vec![20]);
