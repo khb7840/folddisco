@@ -4,15 +4,98 @@
 // id\tpath\tinteger\tfloat
 // id\tpath\tn_res\tplddt
 
-use std::io::Write;
+use std::io::{BufReader, Error, ErrorKind, Read, Write};
 use std::fs::File;
 use std::io::BufWriter;
+use std::path::Path;
 
 use memmap2::Mmap;
 use rayon::iter::ParallelIterator;
 use rayon::str::ParallelString;
 
 use crate::utils::log::{log_msg, FAIL};
+
+const LOOKUP_CACHE_MAGIC: &[u8; 8] = b"FDLKP001";
+
+fn lookup_cache_path(path: &str) -> String {
+    format!("{}.cache", path)
+}
+
+fn is_cache_fresh(lookup_path: &str, cache_path: &str) -> bool {
+    let lookup_meta = std::fs::metadata(lookup_path);
+    let cache_meta = std::fs::metadata(cache_path);
+    if lookup_meta.is_err() || cache_meta.is_err() {
+        return false;
+    }
+    let lookup_modified = lookup_meta.unwrap().modified();
+    let cache_modified = cache_meta.unwrap().modified();
+    if lookup_modified.is_err() || cache_modified.is_err() {
+        return false;
+    }
+    cache_modified.unwrap() >= lookup_modified.unwrap()
+}
+
+fn read_u32<R: Read>(reader: &mut R) -> Result<u32, Error> {
+    let mut bytes = [0u8; 4];
+    reader.read_exact(&mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_u64<R: Read>(reader: &mut R) -> Result<u64, Error> {
+    let mut bytes = [0u8; 8];
+    reader.read_exact(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_f32<R: Read>(reader: &mut R) -> Result<f32, Error> {
+    let mut bytes = [0u8; 4];
+    reader.read_exact(&mut bytes)?;
+    Ok(f32::from_le_bytes(bytes))
+}
+
+fn save_lookup_cache(path: &str, lookup: &[(String, usize, usize, f32, usize)]) -> Result<(), Error> {
+    let mut writer = BufWriter::new(File::create(path)?);
+    writer.write_all(LOOKUP_CACHE_MAGIC)?;
+    writer.write_all(&(lookup.len() as u64).to_le_bytes())?;
+
+    for (name, id, nres, plddt, db_key) in lookup {
+        let name_bytes = name.as_bytes();
+        writer.write_all(&(name_bytes.len() as u32).to_le_bytes())?;
+        writer.write_all(name_bytes)?;
+        writer.write_all(&(*id as u64).to_le_bytes())?;
+        writer.write_all(&(*nres as u64).to_le_bytes())?;
+        writer.write_all(&plddt.to_le_bytes())?;
+        writer.write_all(&(*db_key as u64).to_le_bytes())?;
+    }
+    writer.flush()
+}
+
+fn load_lookup_from_cache(path: &str) -> Result<Vec<(String, usize, usize, f32, usize)>, Error> {
+    let mut reader = BufReader::new(File::open(path)?);
+
+    let mut magic = [0u8; 8];
+    reader.read_exact(&mut magic)?;
+    if &magic != LOOKUP_CACHE_MAGIC {
+        return Err(Error::new(ErrorKind::InvalidData, "Invalid lookup cache header"));
+    }
+    let entry_count = read_u64(&mut reader)? as usize;
+    let mut lookup = Vec::with_capacity(entry_count);
+
+    for _ in 0..entry_count {
+        let name_len = read_u32(&mut reader)? as usize;
+        let mut name_bytes = vec![0u8; name_len];
+        reader.read_exact(&mut name_bytes)?;
+        let name = String::from_utf8(name_bytes)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8 in lookup cache"))?;
+        let id = read_u64(&mut reader)? as usize;
+        let nres = read_u64(&mut reader)? as usize;
+        let plddt = read_f32(&mut reader)?;
+        let db_key = read_u64(&mut reader)? as usize;
+        lookup.push((name, id, nres, plddt, db_key));
+    }
+
+    Ok(lookup)
+}
 
 pub fn save_lookup_to_file(
     path: &str, path_vec: &Vec<String>, numeric_id_vec: &Vec<usize>, 
@@ -75,6 +158,13 @@ pub fn save_lookup_to_file(
 //     (path_vec, numeric_id_vec, integer_vec, float_vec)
 // }
 pub fn load_lookup_from_file(path: &str) -> Vec<(String, usize, usize, f32, usize)> {
+    let cache_path = lookup_cache_path(path);
+    if is_cache_fresh(path, &cache_path) {
+        if let Ok(cached_lookup) = load_lookup_from_cache(&cache_path) {
+            return cached_lookup;
+        }
+    }
+
     let file = std::fs::File::open(path).expect(&log_msg(FAIL, "Unable to open the lookup file"));
     let mmap = unsafe { Mmap::map(&file).expect(&log_msg(FAIL, "Unable to mmap the lookup file")) };
     let content = unsafe { std::str::from_utf8_unchecked(&mmap) };
@@ -87,6 +177,8 @@ pub fn load_lookup_from_file(path: &str) -> Vec<(String, usize, usize, f32, usiz
         let db_key = split.next().unwrap_or(&id.to_string()).parse::<usize>().unwrap();
         (name, id, nres, plddt, db_key)
     }).collect::<Vec<_>>();
+
+    let _ = save_lookup_cache(&cache_path, &loaded_lookup);
     loaded_lookup
 }
 
@@ -94,6 +186,9 @@ pub fn load_lookup_from_file(path: &str) -> Vec<(String, usize, usize, f32, usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::thread::sleep;
+    use std::time::Duration;
 
     #[test]
     fn test_save_and_load_lookup() {
@@ -118,5 +213,56 @@ mod tests {
 
         // Clean up the test file
         // std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_lookup_cache_is_created_and_refreshed() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = format!(
+            "{}/folddisco_lookup_cache_{}.lookup",
+            std::env::temp_dir().to_string_lossy(),
+            unique
+        );
+        let cache_path = lookup_cache_path(&path);
+
+        let path_vec_1 = vec!["a.pdb".to_string()];
+        let numeric_id_vec_1 = vec![0];
+        let nres_vec_1 = Some(vec![10]);
+        let plddt_vec_1 = Some(vec![50.0]);
+        let db_key_vec_1 = Some(vec![100]);
+        save_lookup_to_file(
+            &path,
+            &path_vec_1,
+            &numeric_id_vec_1,
+            nres_vec_1.as_ref(),
+            plddt_vec_1.as_ref(),
+            db_key_vec_1.as_ref(),
+        );
+        let loaded_1 = load_lookup_from_file(&path);
+        assert_eq!(loaded_1, vec![("a.pdb".to_string(), 0, 10, 50.0, 100)]);
+        assert!(Path::new(&cache_path).is_file());
+
+        sleep(Duration::from_millis(5));
+        let path_vec_2 = vec!["b.pdb".to_string()];
+        let numeric_id_vec_2 = vec![1];
+        let nres_vec_2 = Some(vec![20]);
+        let plddt_vec_2 = Some(vec![80.0]);
+        let db_key_vec_2 = Some(vec![200]);
+        save_lookup_to_file(
+            &path,
+            &path_vec_2,
+            &numeric_id_vec_2,
+            nres_vec_2.as_ref(),
+            plddt_vec_2.as_ref(),
+            db_key_vec_2.as_ref(),
+        );
+        let loaded_2 = load_lookup_from_file(&path);
+        assert_eq!(loaded_2, vec![("b.pdb".to_string(), 1, 20, 80.0, 200)]);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cache_path);
     }
 }
