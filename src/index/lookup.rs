@@ -7,7 +7,6 @@
 use std::io::{BufReader, Error, ErrorKind, Read, Write};
 use std::fs::File;
 use std::io::BufWriter;
-use std::path::Path;
 
 use memmap2::Mmap;
 use rayon::iter::ParallelIterator;
@@ -243,7 +242,7 @@ mod tests {
         );
         let loaded_1 = load_lookup_from_file(&path);
         assert_eq!(loaded_1, vec![("a.pdb".to_string(), 0, 10, 50.0, 100)]);
-        assert!(Path::new(&cache_path).is_file());
+        assert!(std::path::Path::new(&cache_path).is_file());
 
         sleep(Duration::from_millis(5));
         let path_vec_2 = vec!["b.pdb".to_string()];
