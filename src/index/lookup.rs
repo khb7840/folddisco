@@ -21,17 +21,12 @@ fn lookup_cache_path(path: &str) -> String {
 }
 
 fn is_cache_fresh(lookup_path: &str, cache_path: &str) -> bool {
-    let lookup_meta = std::fs::metadata(lookup_path);
-    let cache_meta = std::fs::metadata(cache_path);
-    if lookup_meta.is_err() || cache_meta.is_err() {
-        return false;
+    let lookup_modified = std::fs::metadata(lookup_path).and_then(|meta| meta.modified());
+    let cache_modified = std::fs::metadata(cache_path).and_then(|meta| meta.modified());
+    match (lookup_modified, cache_modified) {
+        (Ok(lookup_time), Ok(cache_time)) => cache_time >= lookup_time,
+        _ => false,
     }
-    let lookup_modified = lookup_meta.unwrap().modified();
-    let cache_modified = cache_meta.unwrap().modified();
-    if lookup_modified.is_err() || cache_modified.is_err() {
-        return false;
-    }
-    cache_modified.unwrap() >= lookup_modified.unwrap()
 }
 
 fn read_u32<R: Read>(reader: &mut R) -> Result<u32, Error> {
@@ -159,8 +154,15 @@ pub fn save_lookup_to_file(
 pub fn load_lookup_from_file(path: &str) -> Vec<(String, usize, usize, f32, usize)> {
     let cache_path = lookup_cache_path(path);
     if is_cache_fresh(path, &cache_path) {
-        if let Ok(cached_lookup) = load_lookup_from_cache(&cache_path) {
-            return cached_lookup;
+        match load_lookup_from_cache(&cache_path) {
+            Ok(cached_lookup) => return cached_lookup,
+            Err(err) => eprintln!(
+                "{}",
+                log_msg(
+                    FAIL,
+                    &format!("Lookup cache load failed (fallback to text parsing): {}", err)
+                )
+            ),
         }
     }
 
@@ -177,7 +179,15 @@ pub fn load_lookup_from_file(path: &str) -> Vec<(String, usize, usize, f32, usiz
         (name, id, nres, plddt, db_key)
     }).collect::<Vec<_>>();
 
-    let _ = save_lookup_cache(&cache_path, &loaded_lookup);
+    if let Err(err) = save_lookup_cache(&cache_path, &loaded_lookup) {
+        eprintln!(
+            "{}",
+            log_msg(
+                FAIL,
+                &format!("Failed to write lookup cache {}: {}", cache_path, err)
+            )
+        );
+    }
     loaded_lookup
 }
 
