@@ -134,16 +134,18 @@ pub fn count_query<'a>(
 
                 let idf = (lookup.len() as f32 / hash_count as f32).log2();
 
-                // Skip expanded (non-primary) hashes that are rarer in the database than
-                // their originating primary hash. A higher IDF means fewer database hits
-                // (rarer). If an expanded hash's actual IDF exceeds the original hash's IDF,
-                // it ventures into territory the index doesn't support well and any match is
-                // likely a false positive.
+                // Skip expanded (non-primary) hashes that are *unreasonably* rarer in the
+                // database than their originating primary hash. A higher IDF means fewer
+                // database hits (rarer). We only discard an expanded hash when its actual IDF
+                // exceeds the primary IDF by more than log2(32) = 5.0, i.e. the expanded hash
+                // is at least 32× rarer than the primary. A mere 1–2 IDF difference is expected
+                // from discretisation boundary effects and should not cause a skip.
                 // `original_idf` == 0.0 means the primary hash was absent from the index (or
                 // no index was provided), so we cannot make a meaningful comparison; skip.
+                const EXPANDED_HASH_IDF_MAX_EXCESS: f32 = 5.0; // log2(32) — 32× rarer threshold
                 if let Some(&(_, is_primary, original_idf)) = query_map.get(query) {
-                    if !is_primary && original_idf > 0.0 && idf > original_idf {
-                        continue;  // actual IDF (rarer) > primary IDF → skip
+                    if !is_primary && original_idf > 0.0 && idf > original_idf + EXPANDED_HASH_IDF_MAX_EXCESS {
+                        continue;  // expanded hash is >32× rarer than primary → skip
                     }
                 }
 
