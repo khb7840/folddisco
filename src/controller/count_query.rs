@@ -85,6 +85,7 @@ pub fn count_query<'a>(
     lookup: &'a Vec<(String, usize, usize, f32, usize)>, 
     sampling_ratio: Option<f32>, sampling_count: Option<usize>,
     freq_filter: Option<f32>, length_penalty_power: Option<f32>,
+    max_idf: Option<f32>,
 ) -> Vec<(usize, StructureResult<'a>)> {
     let queries_to_iter = sample_query(queries, index, sampling_ratio, sampling_count);
     let num_ids = lookup.len();
@@ -123,11 +124,21 @@ pub fn count_query<'a>(
                 
                 if let Some(freq_filter) = freq_filter {
                     if hash_count as f32 / lookup.len() as f32 > freq_filter {
-                        continue;  // Skip queries that do not pass the frequency filter
+                        continue;  // Skip queries that are too common
                     }
                 }
 
-                let idf = (lookup.len() as f32 / hash_count as f32).log2();
+                let idf = if hash_count > 0 {
+                    (lookup.len() as f32 / hash_count as f32).log2()
+                } else {
+                    continue;  // Hash not found in index; skip
+                };
+
+                if let Some(max_idf) = max_idf {
+                    if idf > max_idf {
+                        continue;  // Skip hashes with unusually high IDF (too rare, likely from expansion)
+                    }
+                }
 
                 for &value in single_queried_values.iter() {
                     if value >= lookup.len() {
