@@ -79,7 +79,6 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             sampling_count: args.opt_value_from_str("--sampling-count")?,
             sampling_ratio: args.opt_value_from_str("--sampling-ratio")?,
             freq_filter: args.opt_value_from_str("--freq-filter")?,
-            max_idf_filter: args.opt_value_from_str("--max-idf")?,
             length_penalty: args.opt_value_from_str("--length-penalty")?,
             // Sorting strategy (comma-separated keys)
             sort_by: args.value_from_str("--sort-by").unwrap_or("".into()),

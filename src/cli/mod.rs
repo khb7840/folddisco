@@ -68,7 +68,6 @@ pub enum AppArgs {
         sampling_count: Option<usize>,
         sampling_ratio: Option<f32>,
         freq_filter: Option<f32>,
-        max_idf_filter: Option<f32>,
         length_penalty: Option<f32>,
         // sorting strategy
         sort_by: String,

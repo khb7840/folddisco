@@ -60,7 +60,6 @@ search parameters:
  --sampling-count <INT>           Number of sampled hashes to search [all]
  --sampling-ratio <FLOAT>         Sampling ratio for hashes used in searching. For long queries, smaller ratio is recommended [1.0]
  --freq-filter <FLOAT>            Skip queries with hash frequency higher than given ratio [no limit]
- --max-idf <FLOAT>                Skip hashes with IDF higher than given value. Filters out unusually rare hashes from expanded search to reduce false positives [no limit]
  --length-penalty <FLOAT>         Length penalty for searching. Zero means no penalty and higher value gives more penalty to longer structures [0.5]
  --skip-match                     Skip matching residues
  --serial-index                   Handle residue indices serially
@@ -174,7 +173,6 @@ pub fn query_pdb(env: AppArgs) {
             sampling_count,
             sampling_ratio,
             freq_filter,
-            max_idf_filter,
             length_penalty,
             sort_by,
             format_output,
@@ -393,7 +391,6 @@ pub fn query_pdb(env: AppArgs) {
                 let query_count_map = measure_time!(count_query(
                     &pdb_query, &pdb_query_map, &index, &lookup,
                     sampling_ratio, sampling_count, freq_filter, length_penalty,
-                    max_idf_filter
                 ), verbose);
                 let mut query_count_vec: Vec<(usize, StructureResult)> = query_count_map.into_par_iter().filter(|(_k, v)| {
                     structure_filter.filter_before_matching(v)
@@ -572,7 +569,6 @@ mod tests {
             sampling_count: None,
             sampling_ratio: None,
             freq_filter: None,
-            max_idf_filter: None,
             length_penalty: None,
             sort_by: String::from("node_count,rmsd"),
             format_output: None,
@@ -627,7 +623,6 @@ mod tests {
                 sampling_count: None,
                 sampling_ratio: None,
                 freq_filter: None,
-                max_idf_filter: None,
                 length_penalty: None,
                 sort_by: String::from("node_count,rmsd"),
                 format_output: None,
@@ -682,7 +677,6 @@ mod tests {
             sampling_count: None,
             sampling_ratio: None,
             freq_filter: None,
-            max_idf_filter: None,
             length_penalty: None,
             sort_by: String::from("node_count,rmsd"),
             format_output: None,
