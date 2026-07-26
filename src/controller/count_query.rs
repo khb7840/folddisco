@@ -121,6 +121,11 @@ pub fn count_query<'a>(
                 
                 let single_queried_values = index.get_entries(query.as_u32());
                 let hash_count = single_queried_values.len();
+
+                // Skip hashes not present in the index
+                if hash_count == 0 {
+                    continue;
+                }
                 
                 if let Some(freq_filter) = freq_filter {
                     if hash_count as f32 / lookup.len() as f32 > freq_filter {
@@ -128,11 +133,7 @@ pub fn count_query<'a>(
                     }
                 }
 
-                let idf = if hash_count > 0 {
-                    (lookup.len() as f32 / hash_count as f32).log2()
-                } else {
-                    continue;  // Hash not found in index; skip
-                };
+                let idf = (lookup.len() as f32 / hash_count as f32).log2();
 
                 if let Some(max_idf) = max_idf {
                     if idf > max_idf {
