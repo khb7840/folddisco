@@ -9,21 +9,25 @@ use crate::utils::convert::*;
 
 // 5 bit for AA, 4 bit for distance, 3 bit for sin & cos
 
+// Widest bin counts the bit layout above can hold
+pub const MAX_NBIN_DIST: f32 = 16.0;
+pub const MAX_NBIN_SIN_COS: f32 = 8.0;
+
 #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Copy, Hash)]
 pub struct HashValue(pub u32);
 
 impl HashValue {
     #[inline]
     pub fn perfect_hash(ppf: &Vec<f32>, nbin_dist: usize, nbin_sincos: usize) -> u32 {
-        let nbin_dist = if nbin_dist > 16 { 
-            16.0
+        let nbin_dist = if nbin_dist > MAX_NBIN_DIST as usize {
+            MAX_NBIN_DIST
         } else if nbin_dist == 0 {
             NBIN_DIST
         } else {
             nbin_dist as f32
         };
-        let nbin_sincos = if nbin_sincos > 8 {
-            8.0
+        let nbin_sincos = if nbin_sincos > MAX_NBIN_SIN_COS as usize {
+            MAX_NBIN_SIN_COS
         } else if nbin_sincos == 0 {
             NBIN_SIN_COS
         } else {

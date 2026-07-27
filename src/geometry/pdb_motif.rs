@@ -16,6 +16,9 @@ pub const NBIN_DIST: f32 = 18.0;
 pub const MIN_ANGLE: f32 = 0.0;
 pub const MAX_ANGLE: f32 = 180.0;
 pub const NBIN_ANGLE: f32 = 9.0;
+// Widest bin counts the bit layout below can hold
+pub const MAX_NBIN_DIST: f32 = 32.0;
+pub const MAX_NBIN_ANGLE: f32 = 32.0;
 // Bitmasks
 pub const BITMASK32_5BIT: u32 = 0x0000001F;
 
@@ -25,15 +28,15 @@ pub struct HashValue(pub u32);
 impl HashValue {
     #[inline]
     pub fn perfect_hash(feature: &Vec<f32>, nbin_dist: usize, nbin_angle: usize) -> u32 {
-        let nbin_dist = if nbin_dist > 32 { 
-            32.0
+        let nbin_dist = if nbin_dist > MAX_NBIN_DIST as usize {
+            MAX_NBIN_DIST
         } else if nbin_dist == 0 {
             NBIN_DIST
         } else { 
             nbin_dist as f32 
         };
-        let nbin_angle = if nbin_angle > 32 { 
-            32.0
+        let nbin_angle = if nbin_angle > MAX_NBIN_ANGLE as usize {
+            MAX_NBIN_ANGLE
         } else if nbin_angle == 0 {
             NBIN_ANGLE
         } else { 

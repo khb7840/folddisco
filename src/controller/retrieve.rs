@@ -8,7 +8,7 @@ use petgraph::Graph;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::structure::lms_qcp::LmsQcpSuperimposer;
-use crate::structure::metrics::{PrecomputedDistances, StructureSimilarityMetrics};
+use crate::structure::metrics::{deformation_stats_indexed, PrecomputedDistances, StructureSimilarityMetrics};
 use crate::utils::convert::{map_aa_to_u8, map_u8_to_aa}; 
 use crate::prelude::*; 
 use crate::structure::{coordinate::Coordinate, core::CompactStructure, kabsch::KabschSuperimposer}; 
@@ -49,6 +49,16 @@ pub fn res_vec_as_string(res_vec: &Vec<((u8, u8), (u64, u64))>) -> String {
     output
 }
 
+/// Tolerance on the C-alpha distance of a candidate pair.
+///
+/// The absolute part is a flat allowance; the ratio part grows with the distance of
+/// the query pair, which is what an elastic (non-rigid) deformation does: two
+/// residues 16 A apart drift much further than two 5 A apart.
+#[inline]
+fn ca_distance_tolerance(query_dist: f32, cutoff: f32, ratio: f32) -> f32 {
+    cutoff + ratio * query_dist.abs()
+}
+
 pub fn retrieve_with_prefilter(
     compact: &CompactStructure,
     hash_set: &HashSet<GeometricHash>,
@@ -58,6 +68,7 @@ pub fn retrieve_with_prefilter(
     multiple_bin: &Option<Vec<(usize, usize)>>,
     dist_cutoff: f32,
     ca_distance_cutoff: f32,
+    ca_distance_ratio: f32,
     query_aa_dist_map: &HashMap<(u8, u8), Vec<(f32, usize)>>,
 ) -> (
     Vec<(usize, usize, GeometricHash)>,
@@ -103,7 +114,7 @@ pub fn retrieve_with_prefilter(
         
         // Check distances and buffer candidates
         for (dist, qi) in dists {
-            if (curr_dist - dist).abs() < ca_distance_cutoff {
+            if (curr_dist - dist).abs() < ca_distance_tolerance(*dist, ca_distance_cutoff, ca_distance_ratio) {
                 temp_candidates.push((*qi, (i, j)));
                 is_valid_dist_for_query = true;
             }
@@ -171,10 +182,11 @@ pub fn retrieval_wrapper_for_foldcompdb(
     query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
     query_structure: &CompactStructure, all_query_indices: &Vec<usize>,
     aa_dist_map: &HashMap<(u8, u8), Vec<(f32, usize)>>,
-    ca_distance_cutoff: f32, partial_fit: bool,
+    ca_distance_cutoff: f32, ca_distance_ratio: f32, partial_fit: bool,
     foldcomp_db_reader: &FoldcompDbReader,
-) -> (Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>, 
-      Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>, usize, f32) {
+) -> (Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
+      Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
+      usize, f32, f32) {
     let compact = foldcomp_db_reader.read_single_structure_by_id(db_key).expect("Error reading structure from foldcomp db");
     let compact = compact.to_compact();
 
@@ -195,9 +207,9 @@ pub fn retrieval_wrapper_for_foldcompdb(
     // let aa_filter = CombinationVecIterator::new_from_btreesets(&index_set1, &index_set2);
     let (indices_found , candidate_pairs) = retrieve_with_prefilter(
         &compact, &query_set, aa_filter, _nbin_dist, _nbin_angle, multiple_bin,
-        dist_cutoff, ca_distance_cutoff, aa_dist_map
+        dist_cutoff, ca_distance_cutoff, ca_distance_ratio, aa_dist_map
     );
-    
+
     let candidate_pair_map: HashMap<usize, Vec<(usize, usize)>> = candidate_pairs.into_iter().fold(
         HashMap::default(), |mut map, (qi, pair)| {
             map.entry(qi).or_insert_with(Vec::new).push(pair);
@@ -337,20 +349,10 @@ pub fn retrieval_wrapper_for_foldcompdb(
         Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>) = output.into_iter().map(|(a, b, c, d, e, f, g, h, i, j, k, l, m, n)| {
         ((a, b, c, d, e, f, g), (h, i, j, k, l, m, n))
     }).unzip();
-    // In result, find the maximum matching node count and minimum RMSD with max match
-    let mut max_matching_node_count = 0;
-    let mut min_rmsd_with_max_match = 0.0;
-    result.iter().for_each(|(res_vec, rmsd, _, _, _, _, _)| {
-        // Count number of Some in res_vec
-        let count = res_vec.iter().filter(|&x| x.is_some()).count();
-        if count > max_matching_node_count {
-            max_matching_node_count = count;
-            min_rmsd_with_max_match = *rmsd;
-        } else if count == max_matching_node_count && *rmsd < min_rmsd_with_max_match {
-            min_rmsd_with_max_match = *rmsd;
-        }
-    });
-    (result_from_hash, result, max_matching_node_count, min_rmsd_with_max_match)
+    // In result, find the maximum matching node count and the best RMSD / dRMSD there
+    let (max_matching_node_count, min_rmsd_with_max_match, min_drmsd_with_max_match) =
+        summarize_best_match(&result);
+    (result_from_hash, result, max_matching_node_count, min_rmsd_with_max_match, min_drmsd_with_max_match)
 }
 
 
@@ -368,9 +370,10 @@ pub fn retrieval_wrapper(
     query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
     query_structure: &CompactStructure, all_query_indices: &Vec<usize>,
     aa_dist_map: &HashMap<(u8, u8), Vec<(f32, usize)>>,
-    ca_distance_cutoff: f32, partial_fit: bool,
-) -> (Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>, 
-      Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>, usize, f32) {
+    ca_distance_cutoff: f32, ca_distance_ratio: f32, partial_fit: bool,
+) -> (Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
+      Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
+      usize, f32, f32) {
     // Load structure to retrieve motif
     let compact = read_structure_from_path(&path).expect("Error reading structure from path");
     let compact = compact.to_compact();
@@ -392,7 +395,7 @@ pub fn retrieval_wrapper(
 
     let (indices_found , candidate_pairs) = retrieve_with_prefilter(
         &compact, &query_set, aa_filter, _nbin_dist, _nbin_angle,
-        multiple_bin, dist_cutoff, ca_distance_cutoff, aa_dist_map
+        multiple_bin, dist_cutoff, ca_distance_cutoff, ca_distance_ratio, aa_dist_map
     );
 
     let candidate_pair_map: HashMap<usize, Vec<(usize, usize)>> = candidate_pairs.into_iter().fold(
@@ -535,20 +538,38 @@ pub fn retrieval_wrapper(
         Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>) = output.into_iter().map(|(a, b, c, d, e, f, g, h, i, j, k, l, m, n)| {
         ((a, b, c, d, e, f, g), (h, i, j, k, l, m, n))
     }).unzip();
-    // In result, find the maximum matching node count and minimum RMSD with max match
+    // In result, find the maximum matching node count and the best RMSD / dRMSD there
+    let (max_matching_node_count, min_rmsd_with_max_match, min_drmsd_with_max_match) =
+        summarize_best_match(&result);
+    (result_from_hash, result, max_matching_node_count, min_rmsd_with_max_match, min_drmsd_with_max_match)
+}
+
+/// Best match of a structure: the largest number of matched query residues, plus
+/// the lowest rigid RMSD and lowest superposition-free dRMSD among the matches that
+/// reach that count.
+fn summarize_best_match(
+    result: &[(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)]
+) -> (usize, f32, f32) {
     let mut max_matching_node_count = 0;
-    let mut min_rmsd_with_max_match = 0.0;
-    result.iter().for_each(|(res_vec, rmsd, _, _, _, _, _)| {
+    let mut min_rmsd = 0.0f32;
+    let mut min_drmsd = 0.0f32;
+    for (res_vec, rmsd, _, _, _, metrics, _) in result.iter() {
         // Count number of Some in res_vec
         let count = res_vec.iter().filter(|&x| x.is_some()).count();
         if count > max_matching_node_count {
             max_matching_node_count = count;
-            min_rmsd_with_max_match = *rmsd;
-        } else if count == max_matching_node_count && *rmsd < min_rmsd_with_max_match {
-            min_rmsd_with_max_match = *rmsd;
+            min_rmsd = *rmsd;
+            min_drmsd = metrics.drmsd;
+        } else if count == max_matching_node_count {
+            if *rmsd < min_rmsd {
+                min_rmsd = *rmsd;
+            }
+            if metrics.drmsd < min_drmsd {
+                min_drmsd = metrics.drmsd;
+            }
         }
-    });
-    (result_from_hash, result, max_matching_node_count, min_rmsd_with_max_match)
+    }
+    (max_matching_node_count, min_rmsd, min_drmsd)
 }
 
 fn get_hash_symmetry_map(query_set: &HashSet<GeometricHash>) -> HashMap<GeometricHash, bool> {
@@ -769,46 +790,52 @@ pub fn rmsd_with_calpha_and_rottran(
     let target_calpha: Vec<Coordinate> = index2.iter().map(
         |&i| compact2.ca_vector.get_coord(i).unwrap()
     ).collect();
-    
+
+    // Superposition-free deformation of the match, read straight off the original
+    // coordinates so a hinge motion between two rigid halves shows up as a low dRMSD
+    // even where the superposition RMSD is large. Indexed through closures to avoid
+    // copying both coordinate sets into another layout.
+    let deformation = || deformation_stats_indexed(
+        coord_vec1.len().min(coord_vec2.len()),
+        |i, j| coord_vec1[i].calc_distance(&coord_vec1[j]),
+        |i, j| coord_vec2[i].calc_distance(&coord_vec2[j]),
+    );
+
+    let metrics_from = |reference: &Option<Vec<[f32; 3]>>, transformed: &Option<Vec<[f32; 3]>>| {
+        let mut metrics = match (reference, transformed) {
+            (Some(ref_coords), Some(trans_coords)) => {
+                let precomputed_distances = PrecomputedDistances::new(
+                    &ref_coords, &trans_coords
+                );
+                let mut metrics = StructureSimilarityMetrics::new();
+                metrics.calculate_all(&precomputed_distances);
+                metrics
+            },
+            _ => StructureSimilarityMetrics::new(),
+        };
+        let (drmsd, max_dist_deviation) = deformation();
+        metrics.drmsd = drmsd;
+        metrics.max_dist_deviation = max_dist_deviation;
+        metrics
+    };
+
     match lms {
         true => {
             if index1.len() <= 3 {
                 let mut superposer = KabschSuperimposer::new();
                 superposer.set_atoms(&coord_vec1, &coord_vec2);
                 superposer.run();
-
-                // Calculate target metrics
-                let target_metrics = match (&superposer.reference_coords, &superposer.transformed_coords) {
-                    (Some(ref_coords), Some(trans_coords)) => {
-                        let precomputed_distances = PrecomputedDistances::new(
-                            &ref_coords, &trans_coords
-                        );
-                        let mut metrics = StructureSimilarityMetrics::new();
-                        metrics.calculate_all(&precomputed_distances);
-                        metrics
-                    },
-                    _ => StructureSimilarityMetrics::new(),
-                };
-
+                let target_metrics = metrics_from(
+                    &superposer.reference_coords, &superposer.transformed_coords
+                );
                 (superposer.get_rms(), superposer.rot.unwrap(), superposer.tran.unwrap(), target_calpha, target_metrics)
             } else {
                 let mut superposer = LmsQcpSuperimposer::new();
                 superposer.set_atoms(&coord_vec1, &coord_vec2);
                 superposer.run();
-                
-                // Calculate target metrics
-                let target_metrics = match (&superposer.reference_coords, &superposer.transformed_coords) {
-                    (Some(ref_coords), Some(trans_coords)) => {
-                        let precomputed_distances = PrecomputedDistances::new(
-                            &ref_coords, &trans_coords
-                        );
-                        let mut metrics = StructureSimilarityMetrics::new();
-                        metrics.calculate_all(&precomputed_distances);
-                        metrics
-                    },
-                    _ => StructureSimilarityMetrics::new(),
-                };
-                
+                let target_metrics = metrics_from(
+                    &superposer.reference_coords, &superposer.transformed_coords
+                );
                 (superposer.get_rms_inliers(), superposer.rot.unwrap(), superposer.tran.unwrap(), target_calpha, target_metrics)
             }
         }
@@ -816,18 +843,9 @@ pub fn rmsd_with_calpha_and_rottran(
             let mut superposer = KabschSuperimposer::new();
             superposer.set_atoms(&coord_vec1, &coord_vec2);
             superposer.run();
-            // Calculate target metrics
-            let target_metrics = match (&superposer.reference_coords, &superposer.transformed_coords) {
-                (Some(ref_coords), Some(trans_coords)) => {
-                    let precomputed_distances = PrecomputedDistances::new(
-                        &ref_coords, &trans_coords
-                    );
-                    let mut metrics = StructureSimilarityMetrics::new();
-                    metrics.calculate_all(&precomputed_distances);
-                    metrics
-                },
-                _ => StructureSimilarityMetrics::new(),
-            };
+            let target_metrics = metrics_from(
+                &superposer.reference_coords, &superposer.transformed_coords
+            );
             (superposer.get_rms(), superposer.rot.unwrap(), superposer.tran.unwrap(), target_calpha, target_metrics)
         }
     }
@@ -839,6 +857,8 @@ mod tests {
 
     use super::*;
 
+    use crate::controller::expand::ToleranceConfig;
+
     #[test]
     fn test_retrieval_wrapper() {
         let path = String::from("data/serine_peptidases/4cha.pdb");
@@ -847,12 +867,11 @@ mod tests {
         let hash_type = HashType::PDBTrRosetta;
         let nbin_dist = 16;
         let nbin_angle = 4;
-        let dist_thresholds: Vec<f32> = vec![0.5,1.0];
-        let angle_thresholds: Vec<f32> = vec![5.0,10.0];
+        let tolerance = ToleranceConfig::new(vec![0.5, 1.0], vec![5.0, 10.0], 0.0, 1);
         let dist_cutoff = 20.0;
         let (query_map, query_indices, aa_dist_map ) = make_query_map(
             &path, &query_residues, hash_type, nbin_dist, nbin_angle, &None,
-            &dist_thresholds, &angle_thresholds, &aa_substitutions, dist_cutoff, false,
+            &tolerance, &aa_substitutions, dist_cutoff, false,
             &None, 1000.0
         );
         let queries: Vec<GeometricHash> = query_map.keys().cloned().collect();
@@ -861,9 +880,46 @@ mod tests {
         let new_path = String::from("data/serine_peptidases/4cha.pdb");
         let output = measure_time!(retrieval_wrapper(
             &new_path, query_residues.len(), &queries, hash_type, nbin_dist, nbin_angle, &None,
-            dist_cutoff, &query_map, &compact, &query_indices, &aa_dist_map, 1.5, false,
+            dist_cutoff, &query_map, &compact, &query_indices, &aa_dist_map, 1.5, 0.0, false,
         ));
         println!("{:?}", output);
     }
 
+    #[test]
+    fn self_match_has_zero_deformation() {
+        // Matching a motif against its own structure: identical geometry, so both
+        // the superposition RMSD and the superposition-free dRMSD must vanish.
+        let path = String::from("data/serine_peptidases/4cha.pdb");
+        let compact = read_structure_from_path(&path)
+            .expect("Error reading structure from path").to_compact();
+        let indices: Vec<usize> = vec![(b'B', 57u64), (b'B', 102), (b'C', 195)].iter()
+            .map(|(chain, res)| compact.get_index(chain, res).expect("residue not found"))
+            .collect();
+        let (rmsd, _u, _t, _ca, metrics) = rmsd_with_calpha_and_rottran(
+            &compact, &compact, &indices, &indices, false
+        );
+        assert!(rmsd < 1e-3, "rmsd {}", rmsd);
+        assert!(metrics.drmsd < 1e-3, "drmsd {}", metrics.drmsd);
+        assert!(metrics.max_dist_deviation < 1e-3, "max dev {}", metrics.max_dist_deviation);
+    }
+
+    #[test]
+    fn deformation_metrics_ignore_rigid_motion_but_not_bending() {
+        use crate::structure::metrics::{distance_matrix_rmsd, max_internal_distance_deviation};
+        let reference = [
+            [0.0f32, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 5.0, 0.0], [0.0, 5.0, 0.0],
+        ];
+        // Rotate 90 degrees about z and translate: internal distances unchanged
+        let moved = [
+            [10.0f32, 0.0, 3.0], [10.0, 5.0, 3.0], [5.0, 5.0, 3.0], [5.0, 0.0, 3.0],
+        ];
+        assert!(distance_matrix_rmsd(&reference, &moved) < 1e-3);
+        assert!(max_internal_distance_deviation(&reference, &moved) < 1e-3);
+        // Pull one point away: the deformation now shows up
+        let bent = [
+            [0.0f32, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 5.0, 0.0], [0.0, 8.0, 0.0],
+        ];
+        assert!(distance_matrix_rmsd(&reference, &bent) > 1.0);
+        assert!(max_internal_distance_deviation(&reference, &bent) >= 3.0 - 1e-3);
+    }
 }

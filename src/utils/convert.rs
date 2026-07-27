@@ -49,6 +49,45 @@ pub fn normalize_f32_value(val: f32, min: f32, max: f32) -> f32 {
     (val - min) / (max - min)
 }
 
+/// Fold an angle back into [-PI, PI]. Torsions are periodic, so a value pushed past
+/// a bound by a tolerance offset belongs at the other end of the range.
+#[inline]
+pub fn wrap_to_pi(angle: f32) -> f32 {
+    const TWO_PI: f32 = 2.0 * std::f32::consts::PI;
+    if !angle.is_finite() {
+        return angle;
+    }
+    let mut wrapped = angle % TWO_PI;
+    if wrapped > std::f32::consts::PI {
+        wrapped -= TWO_PI;
+    } else if wrapped < -std::f32::consts::PI {
+        wrapped += TWO_PI;
+    }
+    wrapped
+}
+
+/// Mirror a value that left `[lo, hi]` back into the range. Angles derived from
+/// `acos` live on a folded domain: one radian below zero is one radian above it.
+#[inline]
+pub fn reflect_into_range(value: f32, lo: f32, hi: f32) -> f32 {
+    if value >= lo && value <= hi {
+        return value;
+    }
+    let span = hi - lo;
+    if span <= 0.0 || !value.is_finite() {
+        return lo;
+    }
+    // Reflect repeatedly for offsets larger than the range itself
+    let mut folded = (value - lo) % (2.0 * span);
+    if folded < 0.0 {
+        folded += 2.0 * span;
+    }
+    if folded > span {
+        folded = 2.0 * span - folded;
+    }
+    lo + folded
+}
+
 #[inline(always)]
 pub fn map_aa_to_u8(aa: &[u8; 3]) -> u8 {
     // Applied to handle the case of non-standard amino acids

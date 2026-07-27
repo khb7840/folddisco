@@ -21,8 +21,9 @@ use crate::controller::io::{
     get_lookup_and_type,
     resolve_tid_path_from_index_prefix,
 };
+use crate::controller::expand::ToleranceConfig;
 use crate::controller::query::{
-    make_query_map, parse_threshold_string
+    make_query_map, make_query_map_with_ensemble, parse_threshold_string
 };
 use crate::controller::count_query::count_query;
 use crate::controller::result::{
@@ -54,8 +55,9 @@ input/output:
  
 search parameters:
  -t, --threads <INT>              Number of threads [1]
- -d, --distance <FLOAT>           Distance threshold in Angstroms. Multiple values can be separated by comma [0.5]
- -a, --angle <FLOAT>              Angle threshold. Multiple values can be separated by comma [5.0]
+ -d, --distance <FLOAT>           Distance tolerance in Angstroms. Widest value wins; it is
+                                  sub-stepped so every bin it spans is searched [0.5]
+ -a, --angle <FLOAT>              Angle tolerance in degrees. Widest value wins [5.0]
  --ca-distance <FLOAT>            C-alpha distance threshold in matching residues [1.0]
  --sampling-count <INT>           Number of sampled hashes to search [all]
  --sampling-ratio <FLOAT>         Sampling ratio for hashes used in searching. For long queries, smaller ratio is recommended [1.0]
@@ -63,6 +65,33 @@ search parameters:
  --length-penalty <FLOAT>         Length penalty for searching. Zero means no penalty and higher value gives more penalty to longer structures [0.5]
  --skip-match                     Skip matching residues
  --serial-index                   Handle residue indices serially
+
+non-rigid search:
+ --nonrigid                       Preset for deformed motifs: --expand-radius 2. Finds 14-24%
+                                  more true positives at a fixed false-positive count on the
+                                  zinc-finger benchmark, and roughly doubles recall for a
+                                  3-residue motif. A looser --expand-radius still wins
+ --dist-ratio <FLOAT>             Extra distance tolerance as a fraction of the pair distance,
+                                  applied to both the hash expansion and residue matching.
+                                  Trades ranking for recall: on the zinc-finger benchmark it
+                                  raised total recall but lost true positives at every
+                                  early-precision point, so it is off by default and not part
+                                  of --nonrigid. Use it only when total recall is what matters
+                                  and you will rescore the hits yourself [0.0]
+ --expand-radius <INT>            How many geometric features of a residue pair may fall in a
+                                  neighbouring bin at once. 1 searches one feature at a time,
+                                  2 covers pairs of features and finds more distorted motifs
+                                  at the cost of a larger query. 0 searches the observed bins
+                                  only [1]
+ --enm-sample                     Wiggle the query along its low-frequency torsional normal
+                                  modes and search the union of the ensemble's hashes. Best
+                                  deep recall measured (recall 0.542 vs 0.518 on the
+                                  zinc-finger benchmark) at ~4x the runtime, and it can lose
+                                  ground at the very top of the ranking for 3-residue motifs
+ --num-confs <INT>                Conformers sampled by --enm-sample [5]
+ --nma-rmsd <FLOAT>               Target backbone RMSD of each conformer, in Angstroms.
+                                  Clamped to [0.05, 0.75] to keep the backbone plausible [0.5]
+ --nma-modes <INT>                Low-frequency torsional modes to sample from [3]
 
 filtering options:
  --total-match <INT>              Filter out structures with less than total match count [0]
@@ -81,6 +110,10 @@ filtering options:
  --gdt-ha <FLOAT>                 Minimum GDT-HA cutoff. Thresholds: 0.5Å, 1.0Å, 2.0Å, 4.0Å [0.0]
  --chamfer <FLOAT>                Maximum Chamfer distance cutoff. Chamfer distance is mean of nearest neighbor distances between two point clouds [no limit]
  --hausdorff <FLOAT>              Maximum Hausdorff distance cutoff. Hausdorff distance is maximum of nearest neighbor distances between two point clouds [no limit]
+ --drmsd <FLOAT>                  Maximum dRMSD cutoff. dRMSD compares the internal distances of the
+                                  match instead of superposing it, so a motif bent on a hinge keeps
+                                  a low dRMSD where its RMSD is large. Prefer it over --rmsd for
+                                  non-rigid search [no limit]
  --top <INT>                      Limit output to top N structures based on IDF score [all]
 
 display options:
@@ -90,12 +123,14 @@ display options:
  --per-match                      Print output per match. Not working with --skip-match
  --format-output <KEYS>           Comma-separated column names to output
                                   - Per-match: qid, tid, nid, db_key, node_count, idf, rmsd, matching_residues, u_matrix, t_vector,
-                                    matching_coordinates, query_residues, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance
+                                    matching_coordinates, query_residues, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance,
+                                    drmsd, max_dist_deviation
                                   - Per-structure: qid, tid, nid, db_key, total_match_count, node_count, edge_count, idf, nres, plddt,
                                     max_node_cov, min_rmsd, matching_residues, query_residues
                                   - Example: --format-output tid,idf,rmsd,tm_score
  --sort-by <KEYS>                 Comma-separated sort keys with optional :asc or :desc [default: node_count:desc,rmsd:asc]
-                                  - Per-match: node_count, idf, rmsd, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance
+                                  - Per-match: node_count, idf, rmsd, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance,
+                                    drmsd, max_dist_deviation
                                   - Per-structure: max_node_count, node_count, idf, min_rmsd, total_match_count, edge_count, nres, plddt
                                   - Example: --sort-by tm_score,rmsd or --sort-by idf:desc
  --skip-ca-match                  Print matching residues before C-alpha distance check
@@ -136,10 +171,34 @@ folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --con
 
 ## Coverage based filtering & top N filtering without residue matching
 folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --covered-node 3 --top 1000 --per-structure --skip-match
+
+# Torsion-angle ENM sampling on top: best deep recall, ~4x slower
+folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 \\
+  --nonrigid --enm-sample --num-confs 10
+
+# Non-rigid search for a deformed motif, ranked by superposition-free deformation
+folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --nonrigid \\
+  --sort-by node_count,drmsd --format-output tid,node_count,idf,rmsd,drmsd,matching_residues
+
+# Maximum recall, accepting a worse ranking: widen every tolerance and rescore by dRMSD
+folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 \\
+  -d 1.0 -a 10 --dist-ratio 0.08 --expand-radius 2 --ca-distance 2.0 --sort-by drmsd
 ";
 
 pub const MIN_CONNECTED_COMPONENT_SIZE: usize = 2;
 pub const MAX_NUM_LINES_FOR_WEB: usize = 1000;
+
+/// Expansion radius `--nonrigid` raises the search to.
+///
+/// Radius 2 lets two features of a residue pair fall on the far side of their bin
+/// boundary at the same time. On the zinc-finger benchmark (1816 annotated proteins
+/// in the human proteome) it finds 14-24% more true positives than radius 1 at a
+/// fixed false-positive count, and roughly doubles total recall for a 3-residue
+/// motif. Radius 3 measured no better than 2 and slightly worse on some motifs.
+///
+/// `--dist-ratio` is deliberately *not* part of this preset: on the same benchmark it
+/// lost true positives at every early-precision operating point.
+pub const NONRIGID_EXPAND_RADIUS: usize = 2;
 
 pub fn query_pdb(env: AppArgs) {
     match env {
@@ -152,6 +211,13 @@ pub fn query_pdb(env: AppArgs) {
             dist_threshold,
             angle_threshold,
             ca_dist_threshold,
+            dist_ratio,
+            expand_radius,
+            nonrigid,
+            enm_sample,
+            num_confs,
+            nma_rmsd,
+            nma_modes,
             total_match_count,
             covered_node_count,
             covered_node_ratio,
@@ -168,6 +234,7 @@ pub fn query_pdb(env: AppArgs) {
             gdt_ha_cutoff,
             chamfer_distance_cutoff,
             hausdorff_distance_cutoff,
+            drmsd_cutoff,
             top_n,
             web_mode,
             sampling_count,
@@ -316,7 +383,20 @@ pub fn query_pdb(env: AppArgs) {
 
             let dist_thresholds = parse_threshold_string(Some(dist_threshold.clone()));
             let angle_thresholds = parse_threshold_string(Some(angle_threshold.clone()));
-    
+
+            // `--nonrigid` only raises the expansion radius. It never lowers an
+            // explicit --expand-radius, and it leaves --dist-ratio alone.
+            let expand_radius = if nonrigid { expand_radius.max(NONRIGID_EXPAND_RADIUS) } else { expand_radius };
+            let tolerance = ToleranceConfig::new(
+                dist_thresholds, angle_thresholds, dist_ratio, expand_radius
+            );
+            if verbose {
+                print_log_msg(INFO, &format!(
+                    "Tolerance: distance {} A (+{:.0}% of pair distance), angle {} deg, expansion radius {}",
+                    &dist_threshold, dist_ratio * 100.0, &angle_threshold, expand_radius
+                ));
+            }
+
             // Load foldcomp db 
             #[cfg(feature = "foldcomp")]
             let using_foldcomp = config.foldcomp_db.is_some() && config.input_format == StructureFileFormat::FCZDB;
@@ -373,19 +453,30 @@ pub fn query_pdb(env: AppArgs) {
                 let multiple_bin = &config.multiple_bin;
                 let total_structures = lookup.len() as f32;
                         
-                let (pdb_query_map, query_indices, aa_dist_map ) = measure_time!(make_query_map(
-                    &pdb_path, &query_residues, hash_type, num_bin_dist, num_bin_angle, multiple_bin,
-                    &dist_thresholds, &angle_thresholds, &aa_substitutions, dist_cutoff, serial_query,
-                    &Some(&index), total_structures
-                ), verbose);
+                let (pdb_query_map, query_indices, aa_dist_map ) = measure_time!(if enm_sample {
+                    make_query_map_with_ensemble(
+                        &pdb_path, &query_residues, hash_type, num_bin_dist, num_bin_angle, multiple_bin,
+                        &tolerance, &aa_substitutions, dist_cutoff, serial_query,
+                        &Some(&index), total_structures, num_confs, nma_rmsd, nma_modes
+                    )
+                } else {
+                    make_query_map(
+                        &pdb_path, &query_residues, hash_type, num_bin_dist, num_bin_angle, multiple_bin,
+                        &tolerance, &aa_substitutions, dist_cutoff, serial_query,
+                        &Some(&index), total_structures
+                    )
+                }, verbose);
 
                 let pdb_query = pdb_query_map.keys().cloned().collect::<Vec<_>>();
+                if verbose {
+                    print_log_msg(INFO, &format!("Expanded query into {} hashes", pdb_query.len()));
+                }
                 // Make filters out of filtering parameters
                 let structure_filter = StructureFilter::new(
                     total_match_count, covered_node_count, covered_node_ratio,
-                    idf_score_cutoff, num_res_cutoff, plddt_cutoff, 
+                    idf_score_cutoff, num_res_cutoff, plddt_cutoff,
                     max_matching_node_count, max_matching_node_ratio, rmsd_cutoff,
-                    residue_count,
+                    drmsd_cutoff, residue_count,
                 );
 
                 let query_count_map = measure_time!(count_query(
@@ -426,7 +517,7 @@ pub fn query_pdb(env: AppArgs) {
                             resolved_tid, MIN_CONNECTED_COMPONENT_SIZE, &pdb_query,
                             hash_type, num_bin_dist, num_bin_angle, multiple_bin, dist_cutoff,
                             &pdb_query_map, &query_structure, &query_indices,
-                            &aa_dist_map, ca_dist_threshold, partial_fit
+                            &aa_dist_map, ca_dist_threshold, dist_ratio, partial_fit
                         );
                         #[cfg(feature = "foldcomp")]
                         let retrieval_result = if using_foldcomp {
@@ -434,7 +525,7 @@ pub fn query_pdb(env: AppArgs) {
                                 v.db_key, MIN_CONNECTED_COMPONENT_SIZE, &pdb_query,
                                 hash_type, num_bin_dist, num_bin_angle, multiple_bin, dist_cutoff,
                                 &pdb_query_map, &query_structure, &query_indices,
-                                &aa_dist_map, ca_dist_threshold, partial_fit,
+                                &aa_dist_map, ca_dist_threshold, dist_ratio, partial_fit,
                                 &foldcomp_db_reader
                             )
                         } else {
@@ -442,13 +533,14 @@ pub fn query_pdb(env: AppArgs) {
                                 resolved_tid, MIN_CONNECTED_COMPONENT_SIZE, &pdb_query,
                                 hash_type, num_bin_dist, num_bin_angle, multiple_bin, dist_cutoff,
                                 &pdb_query_map, &query_structure, &query_indices,
-                                &aa_dist_map, ca_dist_threshold, partial_fit,
+                                &aa_dist_map, ca_dist_threshold, dist_ratio, partial_fit,
                             )
                         };
                         v.matching_residues = retrieval_result.0;
                         v.matching_residues_processed = retrieval_result.1;
                         v.max_matching_node_count = retrieval_result.2;
                         v.min_rmsd_with_max_match = retrieval_result.3;
+                        v.min_drmsd_with_max_match = retrieval_result.4;
                     }), verbose);
 
                     // Filter query_count_vec with reasonable retrieval results
@@ -458,9 +550,9 @@ pub fn query_pdb(env: AppArgs) {
                 drop(query_residues);
                 let evalue_cutoff = f64::MAX; // Currently not used
                 let match_filter= MatchFilter::new(
-                    connected_node_count, connected_node_ratio, idf_score_cutoff, evalue_cutoff, 
-                    rmsd_cutoff, tm_score_cutoff, gdt_ts_cutoff, gdt_ha_cutoff, 
-                    chamfer_distance_cutoff, hausdorff_distance_cutoff,
+                    connected_node_count, connected_node_ratio, idf_score_cutoff, evalue_cutoff,
+                    rmsd_cutoff, tm_score_cutoff, gdt_ts_cutoff, gdt_ha_cutoff,
+                    chamfer_distance_cutoff, hausdorff_distance_cutoff, drmsd_cutoff,
                     residue_count,
                 );
 
@@ -548,6 +640,13 @@ mod tests {
             dist_threshold: String::from("0.5"),
             angle_threshold: String::from("5.0"),
             ca_dist_threshold: 1.0,
+            dist_ratio: 0.0,
+            expand_radius: 1,
+            nonrigid: false,
+            enm_sample: false,
+            num_confs: 5,
+            nma_rmsd: 0.5,
+            nma_modes: 3,
             total_match_count: 0,
             covered_node_count: 0,
             covered_node_ratio: 0.0,
@@ -564,6 +663,7 @@ mod tests {
             gdt_ha_cutoff: 0.0,
             chamfer_distance_cutoff: 0.0,
             hausdorff_distance_cutoff: 0.0,
+            drmsd_cutoff: 0.0,
             top_n: 1000,
             web_mode: false,
             sampling_count: None,
@@ -602,6 +702,13 @@ mod tests {
                 dist_threshold: String::from("0.5"),
                 angle_threshold: String::from("5.0"),
                 ca_dist_threshold: 1.0,
+                dist_ratio: 0.0,
+                expand_radius: 1,
+                nonrigid: false,
+                enm_sample: false,
+                num_confs: 5,
+                nma_rmsd: 0.5,
+                nma_modes: 3,
                 total_match_count: 0,
                 covered_node_count: 0,
                 covered_node_ratio: 0.0,
@@ -618,6 +725,7 @@ mod tests {
                 gdt_ha_cutoff: 0.0,
                 chamfer_distance_cutoff: 0.0,
                 hausdorff_distance_cutoff: 0.0,
+                drmsd_cutoff: 0.0,
                 top_n: 1000,
                 web_mode: false,
                 sampling_count: None,
@@ -656,6 +764,13 @@ mod tests {
             dist_threshold: String::from("0.5"),
             angle_threshold: String::from("5.0"),
             ca_dist_threshold: 1.0,
+            dist_ratio: 0.0,
+            expand_radius: 1,
+            nonrigid: false,
+            enm_sample: false,
+            num_confs: 5,
+            nma_rmsd: 0.5,
+            nma_modes: 3,
             total_match_count: 0,
             covered_node_count: 0,
             covered_node_ratio: 0.0,
@@ -672,6 +787,7 @@ mod tests {
             gdt_ha_cutoff: 0.0,
             chamfer_distance_cutoff: 0.0,
             hausdorff_distance_cutoff: 0.0,
+            drmsd_cutoff: 0.0,
             top_n: 1000,
             web_mode: false,
             sampling_count: None,

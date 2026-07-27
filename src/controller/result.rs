@@ -27,6 +27,8 @@ pub struct StructureResult<'a> {
     pub matching_residues_processed: Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>, // Match with c-alpha distances, with subgraph IDF
     pub max_matching_node_count: usize,
     pub min_rmsd_with_max_match: f32,
+    /// Lowest superposition-free deformation among the best matches
+    pub min_drmsd_with_max_match: f32,
 }
 
 impl<'a> StructureResult<'a> {
@@ -48,6 +50,7 @@ impl<'a> StructureResult<'a> {
             matching_residues_processed: Vec::new(),
             max_matching_node_count: 0,
             min_rmsd_with_max_match: 0.0,
+            min_drmsd_with_max_match: 0.0,
         }
     }
 
@@ -237,6 +240,7 @@ fn build_structure_result_columns<'a>(qid: String, query_residues: String) -> Ha
         Column::new("plddt", "pLDDT score", |r: &StructureResult| Value::Float(r.plddt, 2)),
         Column::new("max_node_cov", "Max node coverage", |r: &StructureResult| (r.max_matching_node_count as u64).into()),
         Column::new("min_rmsd", "Min RMSD", |r: &StructureResult| Value::Float(r.min_rmsd_with_max_match, DEFAULT_FLOAT_PRECISION)),
+        Column::new("min_drmsd", "Min dRMSD", |r: &StructureResult| Value::Float(r.min_drmsd_with_max_match, DEFAULT_FLOAT_PRECISION)),
         Column::new("matching_residues", "Matching residues with RMSD", |r: &StructureResult| {
             if r.matching_residues_processed.is_empty() {
                 "NA".into()
@@ -293,6 +297,8 @@ fn build_match_result_columns<'a>(qid: String, query_residues: String) -> HashMa
         Column::new("gdt_ha", "GDT-HA", |r: &MatchResult| Value::Float(r.metrics.gdt_ha, DEFAULT_FLOAT_PRECISION)),
         Column::new("chamfer_distance", "Chamfer distance", |r: &MatchResult| Value::Float(r.metrics.chamfer_distance, DEFAULT_FLOAT_PRECISION)),
         Column::new("hausdorff_distance", "Hausdorff distance", |r: &MatchResult| Value::Float(r.metrics.hausdorff_distance, DEFAULT_FLOAT_PRECISION)),
+        Column::new("drmsd", "Distance-matrix RMSD", |r: &MatchResult| Value::Float(r.metrics.drmsd, DEFAULT_FLOAT_PRECISION)),
+        Column::new("max_dist_deviation", "Max internal distance deviation", |r: &MatchResult| Value::Float(r.metrics.max_dist_deviation, DEFAULT_FLOAT_PRECISION)),
     ].into_iter().map(|col| (col.key, col)).collect()
 }
 

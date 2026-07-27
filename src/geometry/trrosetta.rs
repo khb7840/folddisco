@@ -15,6 +15,10 @@ use crate::utils::convert::*;
 // 9 bit for AA pairs, 3 bit for distance, 2 bits for sin & cos (4 bits for one angle)
 // TOTAL: 9 + 3 + (2 * 2 * 5) = 32 bits
 
+// Widest bin counts the bit layout above can hold
+pub const MAX_NBIN_DIST: f32 = 8.0;
+pub const MAX_NBIN_SIN_COS: f32 = 4.0;
+
 #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Copy, Hash)]
 pub struct HashValue(pub u32);
 
@@ -57,8 +61,8 @@ impl HashValue {
         phi1: f32, phi2: f32, nbin_dist: f32, nbin_angle: f32
     ) -> u32 {
         // By default, bit for the distance is 3 and angle is 2
-        let nbin_dist = if nbin_dist > 8.0 { 8.0 } else { nbin_dist };
-        let nbin_angle = if nbin_angle > 4.0 { 4.0 } else { nbin_angle };
+        let nbin_dist = if nbin_dist > MAX_NBIN_DIST { MAX_NBIN_DIST } else { nbin_dist };
+        let nbin_angle = if nbin_angle > MAX_NBIN_SIN_COS { MAX_NBIN_SIN_COS } else { nbin_angle };
         
         let res_pair = map_aa_u32_pair_to_u32(res1, res2);
         let h_cb_dist = discretize_value(cb_dist, MIN_DIST, MAX_DIST, nbin_dist);

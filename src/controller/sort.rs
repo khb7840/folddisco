@@ -30,6 +30,10 @@ pub enum SortKey {
     ChamferDistance,
     /// Hausdorff distance
     HausdorffDistance,
+    /// Distance-matrix RMSD: deformation without superposition
+    Drmsd,
+    /// Worst single internal-distance deviation
+    MaxDistDeviation,
 }
 
 impl SortKey {
@@ -57,6 +61,8 @@ impl SortKey {
             "gdt_ha" | "gdt-ha" | "gdtha" => Ok(Self::GdtHa),
             "chamfer" | "chamfer-distance" | "chamfer_distance" => Ok(Self::ChamferDistance),
             "hausdorff" | "hausdorff-distance" | "hausdorff_distance" => Ok(Self::HausdorffDistance),
+            "drmsd" | "d_rmsd" | "dist_rmsd" => Ok(Self::Drmsd),
+            "max_dist_deviation" | "max-dist-deviation" | "max_dist_dev" => Ok(Self::MaxDistDeviation),
             _ => Err(format!(
                 "Unknown sort key: '{}'. Valid keys: {}",
                 s,
@@ -67,19 +73,20 @@ impl SortKey {
 
     /// Get all valid key names for help text
     pub fn valid_keys() -> &'static str {
-        "node_count, idf, evalue, rmsd, tm_score, tm_score_strict, gdt_ts, gdt_ha, gdt_strict, chamfer_distance, hausdorff_distance"
+        "node_count, idf, evalue, rmsd, tm_score, tm_score_strict, gdt_ts, gdt_ha, gdt_strict, chamfer_distance, hausdorff_distance, drmsd, max_dist_deviation"
     }
 
     /// Get the default sort order for this key
-    /// 
+    ///
     /// Higher is better: NodeCount, IDF, TM-score, GDT scores -> Descending
-    /// Lower is better: RMSD, Chamfer, Hausdorff -> Ascending
+    /// Lower is better: RMSD, Chamfer, Hausdorff, dRMSD -> Ascending
     pub fn default_order(&self) -> SortOrder {
         match self {
             // Descending order for NodeCount, IDF, TM-score, GDT scores
             Self::NodeCount | Self::Idf | Self::TmScore | Self::GdtTs | Self::GdtHa => SortOrder::Desc,
             // Ascending order for distance metrics: RMSD, Chamfer, Hausdorff, E-value
-            Self::Evalue | Self::Rmsd | Self::ChamferDistance | Self::HausdorffDistance => SortOrder::Asc,
+            Self::Evalue | Self::Rmsd | Self::ChamferDistance | Self::HausdorffDistance |
+            Self::Drmsd | Self::MaxDistDeviation => SortOrder::Asc,
         }
     }
 
@@ -95,6 +102,8 @@ impl SortKey {
             Self::GdtHa => result.metrics.gdt_ha as f64,
             Self::ChamferDistance => result.metrics.chamfer_distance as f64,
             Self::HausdorffDistance => result.metrics.hausdorff_distance as f64,
+            Self::Drmsd => result.metrics.drmsd as f64,
+            Self::MaxDistDeviation => result.metrics.max_dist_deviation as f64,
         }
     }
 
@@ -299,6 +308,8 @@ pub enum StructureSortKey {
     Idf,
     /// Minimum RMSD with max match
     MinRmsd,
+    /// Minimum dRMSD with max match: deformation without superposition
+    MinDrmsd,
     /// Total match count
     TotalMatchCount,
     /// Edge count
@@ -317,6 +328,7 @@ impl StructureSortKey {
             "node_count" | "node-count" | "nodes" | "node" | "n" => Ok(Self::NodeCount),
             "idf" | "score" => Ok(Self::Idf),
             "min_rmsd" | "min-rmsd" | "rmsd" => Ok(Self::MinRmsd),
+            "min_drmsd" | "min-drmsd" | "drmsd" => Ok(Self::MinDrmsd),
             "total_match_count" | "total-match-count" | "total_match" | "total-match" | "matches" | "match" => Ok(Self::TotalMatchCount),
             "edge_count" | "edge-count" | "edges" | "edge" | "e" => Ok(Self::EdgeCount),
             "nres" | "num_residues" | "num-residues" | "length" | "residues" | "residue" | "l" => Ok(Self::Nres),
@@ -331,7 +343,7 @@ impl StructureSortKey {
 
     /// Get all valid key names for help text
     pub fn valid_keys() -> &'static str {
-        "max_node_count, node_count, idf, min_rmsd, total_match_count, edge_count, nres, plddt"
+        "max_node_count, node_count, idf, min_rmsd, min_drmsd, total_match_count, edge_count, nres, plddt"
     }
 
     /// Get the default sort order for this key
@@ -341,7 +353,7 @@ impl StructureSortKey {
             Self::MaxNodeCount | Self::NodeCount | Self::Idf | Self::TotalMatchCount | 
             Self::EdgeCount | Self::Nres | Self::Plddt => SortOrder::Desc,
             // Lower is better
-            Self::MinRmsd => SortOrder::Asc,
+            Self::MinRmsd | Self::MinDrmsd => SortOrder::Asc,
         }
     }
 
@@ -352,6 +364,7 @@ impl StructureSortKey {
             Self::NodeCount => result.node_count as f32,
             Self::Idf => result.idf,
             Self::MinRmsd => result.min_rmsd_with_max_match,
+            Self::MinDrmsd => result.min_drmsd_with_max_match,
             Self::TotalMatchCount => result.total_match_count as f32,
             Self::EdgeCount => result.edge_count as f32,
             Self::Nres => result.nres as f32,
@@ -577,6 +590,8 @@ mod tests {
                 gdt_ha: 0.4,
                 chamfer_distance: 1.2,
                 hausdorff_distance: 2.5,
+                drmsd: 0.3,
+                max_dist_deviation: 0.6,
             },
         };
         let result_b = MatchResult {
@@ -597,6 +612,8 @@ mod tests {
                 gdt_ha: 0.3,
                 chamfer_distance: 2.9,
                 hausdorff_distance: 3.0,
+                drmsd: 0.9,
+                max_dist_deviation: 1.4,
             },
         };
         let result_c = MatchResult {
@@ -617,6 +634,8 @@ mod tests {
                 gdt_ha: 0.1,
                 chamfer_distance: 1.2,
                 hausdorff_distance: 8.0,
+                drmsd: 1.8,
+                max_dist_deviation: 3.2,
             },
         };
         
@@ -718,6 +737,7 @@ mod tests {
             matching_residues_processed: vec![],
             max_matching_node_count: 10,
             min_rmsd_with_max_match: 0.5,
+            min_drmsd_with_max_match: 0.4,
         };
 
         let result_b = StructureResult {
@@ -734,6 +754,7 @@ mod tests {
             matching_residues_processed: vec![],
             max_matching_node_count: 8,
             min_rmsd_with_max_match: 0.3,
+            min_drmsd_with_max_match: 0.6,
         };
 
         let result_c = StructureResult {
@@ -750,6 +771,7 @@ mod tests {
             matching_residues_processed: vec![],
             max_matching_node_count: 10,
             min_rmsd_with_max_match: 0.7,
+            min_drmsd_with_max_match: 0.2,
         };
 
         // MaxNodeCount (desc) -> MinRmsd (asc)

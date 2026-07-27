@@ -10,6 +10,12 @@ use crate::prelude::GeometricHash;
 
 use super::result::StructureResult;
 
+/// How much rarer than its observed hash a tolerance-expanded hash may be before it is
+/// dropped, in IDF (log2) units. 3.0 means "up to 8x rarer is fine".
+///
+/// Picked by sweeping the zinc-finger benchmark; see the use site for the numbers.
+const EXPANDED_HASH_IDF_MAX_EXCESS: f32 = 3.0;
+
 
 // Efficient bit vector for tracking sets of IDs
 #[derive(Debug, Clone)]
@@ -120,14 +126,42 @@ pub fn count_query<'a>(
                 
                 let single_queried_values = index.get_entries(query.as_u32());
                 let hash_count = single_queried_values.len();
-                
+
                 if let Some(freq_filter) = freq_filter {
                     if hash_count as f32 / lookup.len() as f32 > freq_filter {
                         continue;  // Skip queries that do not pass the frequency filter
                     }
                 }
 
-                let idf = (lookup.len() as f32 / hash_count as f32).log2();
+                let idf = if hash_count > 0 {
+                    (lookup.len() as f32 / hash_count as f32).log2()
+                } else {
+                    continue;  // Hash absent from the index; nothing to count
+                };
+
+                // Drop a tolerance-expanded hash that turns out to be far rarer in the
+                // database than the observed hash it came from. A rare hash carries a
+                // large IDF, so a single spurious hit on one can outweigh several real
+                // ones; those are the hashes that poison the top of the ranking. A one
+                // or two bit difference is normal boundary noise and is kept.
+                //
+                // The threshold is a *ratio* between two IDFs computed against the same
+                // index, so it needs no tuning per database size.
+                //
+                // Measured on the zinc-finger benchmark (23391 human proteins, 1816
+                // answers) with --expand-radius 2, true positives at 5 false positives:
+                // no filter 535, excess 5.0 -> 655, excess 3.0 -> 684, excess 0 -> 509.
+                // 3.0 was also the best or tied on a 3-residue and a 16-residue motif.
+                if let Some(&(_, is_primary, observed_idf)) = query_map.get(query) {
+                    // observed_idf == 0.0 means the observed hash was missing from the
+                    // index (or no index was given), leaving nothing to compare against.
+                    if !is_primary
+                        && observed_idf > 0.0
+                        && idf > observed_idf + EXPANDED_HASH_IDF_MAX_EXCESS
+                    {
+                        continue;
+                    }
+                }
 
                 for &value in single_queried_values.iter() {
                     if value >= lookup.len() {

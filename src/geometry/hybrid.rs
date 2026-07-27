@@ -15,19 +15,22 @@ pub struct HashValue(pub u32);
 
 pub const HYBRID_NBIN_DIST: f32 = 16.0;
 pub const HYBRID_NBIN_SIN_COS: f32 = 4.0;
+// Widest bin counts the bit layout below can hold
+pub const HYBRID_MAX_NBIN_DIST: f32 = 16.0;
+pub const HYBRID_MAX_NBIN_SIN_COS: f32 = 4.0;
 
 impl HashValue {
     #[inline]
     pub fn perfect_hash(feature: &Vec<f32>, nbin_dist: usize, nbin_angle: usize) -> u32 {
-        let nbin_dist = if nbin_dist > 16 {
-            16.0
+        let nbin_dist = if nbin_dist > HYBRID_MAX_NBIN_DIST as usize {
+            HYBRID_MAX_NBIN_DIST
         } else if nbin_dist == 0 {
             HYBRID_NBIN_DIST
         } else {
             nbin_dist as f32
         };
-        let nbin_angle = if nbin_angle > 4 {
-            4.0
+        let nbin_angle = if nbin_angle > HYBRID_MAX_NBIN_SIN_COS as usize {
+            HYBRID_MAX_NBIN_SIN_COS
         } else if nbin_angle == 0 {
             HYBRID_NBIN_SIN_COS
         } else {

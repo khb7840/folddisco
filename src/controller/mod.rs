@@ -5,6 +5,7 @@
 // Author: Hyunbin Kim (khb7840@gmail.com)
 // Copyright © 2024 Hyunbin Kim, All rights reserved
 
+pub mod expand;
 pub mod feature;
 pub mod filter;
 pub mod graph;

@@ -147,7 +147,176 @@ impl HashType {
             HashType::Other => 0,
         }
     }
-    
+
+    /// Widest bin count the bit layout of this hash type can hold. `perfect_hash`
+    /// clamps its arguments to these, so anything reasoning about bin boundaries has
+    /// to use the same numbers.
+    pub fn max_dist_bin(&self) -> usize {
+        match self {
+            HashType::PDBMotif => super::pdb_motif::MAX_NBIN_DIST as usize,
+            HashType::PDBMotifSinCos => super::pdb_motif_sincos::MAX_NBIN_DIST as usize,
+            HashType::TrRosetta => super::trrosetta::MAX_NBIN_DIST as usize,
+            HashType::PDBTrRosetta => super::pdb_tr::PDBTR_MAX_NBIN_DIST as usize,
+            HashType::PointPairFeature => super::ppf::MAX_NBIN_DIST as usize,
+            HashType::TertiaryInteraction => super::tertiary_interaction::MAX_NBIN_DIST as usize,
+            HashType::Hybrid => super::hybrid::HYBRID_MAX_NBIN_DIST as usize,
+            // These two clamp against their own default bin count
+            HashType::FolddiscoAngle => super::folddisco_angle::NBIN_DIST as usize,
+            HashType::FolddiscoDist => super::folddisco_dist::NBIN_DIST as usize,
+            // append new hash type here
+            HashType::Other => 0,
+        }
+    }
+
+    pub fn max_angle_bin(&self) -> usize {
+        match self {
+            HashType::PDBMotif => super::pdb_motif::MAX_NBIN_ANGLE as usize,
+            HashType::PDBMotifSinCos => super::pdb_motif_sincos::MAX_NBIN_SIN_COS as usize,
+            HashType::TrRosetta => super::trrosetta::MAX_NBIN_SIN_COS as usize,
+            HashType::PDBTrRosetta => super::pdb_tr::PDBTR_MAX_NBIN_SIN_COS as usize,
+            HashType::PointPairFeature => super::ppf::MAX_NBIN_SIN_COS as usize,
+            HashType::TertiaryInteraction => super::tertiary_interaction::MAX_NBIN_SIN_COS as usize,
+            HashType::Hybrid => super::hybrid::HYBRID_MAX_NBIN_SIN_COS as usize,
+            // These two clamp against their own default bin count
+            HashType::FolddiscoAngle => super::folddisco_angle::NBIN_ANGLE_360 as usize,
+            HashType::FolddiscoDist => super::folddisco_dist::NBIN_ANGLE_360 as usize,
+            // append new hash type here
+            HashType::Other => 0,
+        }
+    }
+
+    /// Bin count actually used for a requested one, mirroring `perfect_hash`
+    /// (0 means "use the default for this hash type").
+    pub fn effective_dist_bin(&self, nbin_dist: usize) -> usize {
+        if nbin_dist == 0 { self.default_dist_bin() } else { nbin_dist.min(self.max_dist_bin()) }
+    }
+
+    pub fn effective_angle_bin(&self, nbin_angle: usize) -> usize {
+        if nbin_angle == 0 { self.default_angle_bin() } else { nbin_angle.min(self.max_angle_bin()) }
+    }
+
+    /// Distance window this hash type discretizes over. `PDBMotif` carries its own
+    /// copy of the constants, the rest share the ones in `utils::convert`.
+    pub fn dist_range(&self) -> (f32, f32) {
+        match self {
+            HashType::PDBMotif => (super::pdb_motif::MIN_DIST, super::pdb_motif::MAX_DIST),
+            // append new hash type here if it uses its own window
+            _ => (crate::utils::convert::MIN_DIST, crate::utils::convert::MAX_DIST),
+        }
+    }
+
+    /// Width of one distance bin, in Angstroms.
+    pub fn dist_bin_width(&self, nbin_dist: usize) -> f32 {
+        let nbin = self.effective_dist_bin(nbin_dist);
+        if nbin < 2 {
+            return f32::INFINITY;
+        }
+        let (min_dist, max_dist) = self.dist_range();
+        (max_dist - min_dist) / (nbin as f32 - 1.0)
+    }
+
+    /// Angular step guaranteed not to skip over a bin, in the unit this hash type
+    /// stores angles in.
+    ///
+    /// The types that discretize the angle value directly get the plain bin width.
+    /// Sin-cos encoded types bin `sin` and `cos` over `[MIN_SIN_COS, MAX_SIN_COS]`
+    /// instead; since `|d sin/d theta| <= 1`, an angular step no wider than one
+    /// sin-cos bin cannot jump past a bin there either.
+    pub fn angle_bin_width(&self, nbin_angle: usize) -> f32 {
+        let nbin = self.effective_angle_bin(nbin_angle);
+        if nbin < 2 {
+            return f32::INFINITY;
+        }
+        let span = match self {
+            HashType::PDBMotif => super::pdb_motif::MAX_ANGLE - super::pdb_motif::MIN_ANGLE,
+            HashType::FolddiscoAngle => {
+                super::folddisco_angle::MAX_ANGLE_RAD - super::folddisco_angle::MIN_ANGLE_RAD
+            }
+            HashType::FolddiscoDist => {
+                super::folddisco_dist::MAX_ANGLE_RAD - super::folddisco_dist::MIN_ANGLE_RAD
+            }
+            // sin-cos encoded types
+            _ => crate::utils::convert::MAX_SIN_COS - crate::utils::convert::MIN_SIN_COS,
+        };
+        span / (nbin as f32 - 1.0)
+    }
+
+    /// True when the angle features of this hash type are stored in degrees.
+    /// Everything except the original `PDBMotif` encoding works in radians.
+    pub fn angle_in_degrees(&self) -> bool {
+        matches!(self, HashType::PDBMotif)
+    }
+
+    /// Feature dimensions holding a periodic torsion, i.e. an `atan2` value on
+    /// `[-PI, PI]`. A tolerance offset that runs past a bound belongs at the other
+    /// end of the range rather than clamped against it.
+    ///
+    /// This only changes anything for the types that bin the angle value directly
+    /// (`FolddiscoAngle`, `FolddiscoDist`), where 179 degrees is the top bin and
+    /// -179 the bottom one, so an unwrapped +5 degree offset runs off the end of the
+    /// field instead of reaching the neighbour 2 degrees away. Sin-cos encoded types
+    /// are periodic already -- `sin(184 deg) == sin(-176 deg)` -- so wrapping their
+    /// value first is a harmless no-op that keeps the handling uniform.
+    pub fn periodic_angle_index(&self) -> Option<Vec<usize>> {
+        match self {
+            // omega, theta1, theta2
+            HashType::TrRosetta => Some(vec![3, 4, 5]),
+            // theta1, theta2
+            HashType::PDBTrRosetta | HashType::FolddiscoAngle | HashType::FolddiscoDist => Some(vec![5, 6]),
+            // theta1, theta2 and the two backbone torsions
+            HashType::Hybrid => Some(vec![5, 6, 7, 8]),
+            // append new hash type here
+            _ => None,
+        }
+    }
+
+    /// Angle dimensions confined to a range, together with that range. These come
+    /// out of `acos`, so a tolerance offset crossing a bound is reflected back into
+    /// the range: one radian below zero is one radian above it.
+    pub fn bounded_angle_index(&self) -> Option<Vec<(usize, f32, f32)>> {
+        const PI: f32 = std::f32::consts::PI;
+        match self {
+            HashType::PDBMotif => Some(vec![
+                (4, super::pdb_motif::MIN_ANGLE, super::pdb_motif::MAX_ANGLE)
+            ]),
+            // Ca-Cb angle
+            HashType::PDBMotifSinCos | HashType::PDBTrRosetta | HashType::Hybrid |
+            HashType::FolddiscoAngle | HashType::FolddiscoDist => Some(vec![(4, 0.0, PI)]),
+            // phi1, phi2
+            HashType::TrRosetta => Some(vec![(6, 0.0, PI), (7, 0.0, PI)]),
+            HashType::PointPairFeature => Some(vec![(3, 0.0, PI), (4, 0.0, PI), (5, 0.0, PI)]),
+            HashType::TertiaryInteraction => Some((0..=6).map(|i| (i, 0.0, PI)).collect()),
+            // append new hash type here
+            _ => None,
+        }
+    }
+
+    /// Pull the angle dimensions of a perturbed feature vector back into the domain
+    /// they are defined on: torsions wrap at +-PI, bounded angles reflect at their
+    /// ends. Without this a wide angle tolerance pushes the bin index past the end of
+    /// its bit field on the types that discretize the angle directly, which corrupts
+    /// the neighbouring field, and on sin-cos types it asks for a `sin` sign no real
+    /// structure can produce.
+    ///
+    /// Distances are deliberately left alone. A structure can hold a Cb-Cb distance
+    /// beyond `MAX_DIST` -- only the Ca distance is checked against the cutoff -- so
+    /// the index itself contains those out-of-window encodings, aliasing included.
+    /// Indexing and querying run through the same discretizer, so mirroring it
+    /// exactly is what makes a perturbed query hash mean the same thing as an index
+    /// hash; clamping here would be a *different* encoding and would stop the
+    /// tolerance from reaching long pairs at all.
+    pub fn sanitize_perturbed_feature(&self, feature: &mut [f32]) {
+        if let Some(periodic) = self.periodic_angle_index() {
+            for idx in periodic {
+                feature[idx] = crate::utils::convert::wrap_to_pi(feature[idx]);
+            }
+        }
+        if let Some(bounded) = self.bounded_angle_index() {
+            for (idx, lo, hi) in bounded {
+                feature[idx] = crate::utils::convert::reflect_into_range(feature[idx], lo, hi);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

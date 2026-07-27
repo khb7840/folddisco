@@ -13,16 +13,18 @@ pub struct StructureFilter {
     pub max_matching_node_count: usize,
     pub max_matching_node_ratio: f32,
     pub rmsd: f32,
+    /// Superposition-free deformation cutoff, for non-rigid matches
+    pub drmsd: f32,
     // Expected number of residues and nodes
     pub expected_node_count: usize,
 }
 
 impl StructureFilter {
     pub fn new(
-        total_match_count: usize, covered_node_count: usize, 
+        total_match_count: usize, covered_node_count: usize,
         covered_node_ratio: f32, idf_per_structure: f32, nres: usize, plddt: f32,
         max_matching_node_count: usize, max_matching_node_ratio: f32,
-        rmsd: f32, expected_node_count: usize,
+        rmsd: f32, drmsd: f32, expected_node_count: usize,
     ) -> Self {
         StructureFilter {
             total_match_count: total_match_count,
@@ -34,6 +36,7 @@ impl StructureFilter {
             max_matching_node_count: max_matching_node_count,
             max_matching_node_ratio: max_matching_node_ratio,
             rmsd,
+            drmsd,
             expected_node_count,
         }
     }
@@ -50,10 +53,11 @@ impl StructureFilter {
             max_matching_node_count: 0,
             max_matching_node_ratio: 0.0,
             rmsd: 0.0,
+            drmsd: 0.0,
             expected_node_count: 0,
         }
     }
-    
+
     // Default filters
     pub fn default(node_count: usize) -> Self {
         StructureFilter {
@@ -66,6 +70,7 @@ impl StructureFilter {
             max_matching_node_count: 0,
             max_matching_node_ratio: 0.0,
             rmsd: 0.0,
+            drmsd: 0.0,
             expected_node_count: node_count,
         }
     }
@@ -111,6 +116,9 @@ impl StructureFilter {
         if self.rmsd > 0.0 {
             pass = pass && result.min_rmsd_with_max_match <= self.rmsd;
         }
+        if self.drmsd > 0.0 {
+            pass = pass && result.min_drmsd_with_max_match <= self.drmsd;
+        }
         //
         pass
     }
@@ -129,6 +137,8 @@ pub struct MatchFilter {
     pub gdt_ha: f32,
     pub chamfer_distance: f32,
     pub hausdorff_distance: f32,
+    /// Superposition-free deformation cutoff, for non-rigid matches
+    pub drmsd: f32,
     // Expected number of nodes
     pub expected_node_count: usize,
 }
@@ -137,7 +147,7 @@ impl MatchFilter {
     pub fn new(
         node_count: usize, node_ratio: f32, idf_per_match: f32, evalue: f64,
         rmsd: f32, tm_score: f32, gdt_ts: f32, gdt_ha: f32,
-        chamfer_distance: f32, hausdorff_distance: f32, 
+        chamfer_distance: f32, hausdorff_distance: f32, drmsd: f32,
         expected_node_count: usize
     ) -> Self {
         MatchFilter {
@@ -151,6 +161,7 @@ impl MatchFilter {
             gdt_ha,
             chamfer_distance,
             hausdorff_distance,
+            drmsd,
             expected_node_count,
         }
     }
@@ -168,10 +179,11 @@ impl MatchFilter {
             gdt_ha: 0.0,
             chamfer_distance: 0.0,
             hausdorff_distance: 0.0,
+            drmsd: 0.0,
             expected_node_count: 0,
         }
     }
-    
+
     pub fn default(node_count: usize) -> Self {
         MatchFilter {
             node_count: 0,
@@ -184,6 +196,7 @@ impl MatchFilter {
             gdt_ha: 0.0,
             chamfer_distance: 0.0,
             hausdorff_distance: 0.0,
+            drmsd: 0.0,
             expected_node_count: node_count,
         }
     }
@@ -229,6 +242,9 @@ impl MatchFilter {
         }
         if self.hausdorff_distance > 0.0 {
             pass = pass && result.metrics.hausdorff_distance <= self.hausdorff_distance;
+        }
+        if self.drmsd > 0.0 {
+            pass = pass && result.metrics.drmsd <= self.drmsd;
         }
 
         pass

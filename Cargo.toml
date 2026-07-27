@@ -31,6 +31,9 @@ regex = "1.10.4"
 petgraph = "0.6.4"
 libc = "0.2.155"
 dashmap = { version = "6.1.0", features = ["rayon"] }
+# Torsion-angle ENM query sampling (--non-rigid)
+nalgebra = "0.33.2"
+rand = "0.8.5"
 
 
 [build-dependencies]

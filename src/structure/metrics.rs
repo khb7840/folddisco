@@ -273,6 +273,78 @@ pub fn rmsd(distances: &PrecomputedDistances) -> f32 {
 }
 
 
+/// Distance-matrix RMSD (dRMSD) between two equal-length point sets.
+///
+/// dRMSD compares the *internal* distances of the two sets instead of the positions
+/// after superposition:
+///
+/// ```text
+/// dRMSD = sqrt( mean over i<j of ( |a_i - a_j| - |b_i - b_j| )^2 )
+/// ```
+///
+/// That makes it the metric to reach for on non-rigid matches. Superposition RMSD
+/// has to find one rotation that fits every residue at once, so a motif whose halves
+/// swung apart on a hinge scores badly even when both halves are individually
+/// perfect. dRMSD only asks whether the residues kept their mutual distances, and
+/// needs neither a rotation matrix nor a translation.
+///
+/// Returns 0.0 when there are fewer than two points, where the metric is undefined.
+pub fn distance_matrix_rmsd(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> f32 {
+    deformation_stats(reference_coords, coords).0
+}
+
+/// Largest single internal-distance deviation between two point sets, in Angstroms.
+///
+/// The companion of `distance_matrix_rmsd`: dRMSD averages the deformation while
+/// this reports the worst pair, which separates a motif that stretched everywhere a
+/// little from one where a single residue moved a lot.
+pub fn max_internal_distance_deviation(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> f32 {
+    deformation_stats(reference_coords, coords).1
+}
+
+/// Both superposition-free deformation numbers in one pass over the internal
+/// distances: `(dRMSD, largest single deviation)`.
+fn deformation_stats(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> (f32, f32) {
+    if reference_coords.len() != coords.len() {
+        return (0.0, 0.0);
+    }
+    deformation_stats_indexed(
+        reference_coords.len(),
+        |i, j| dist(reference_coords[i], reference_coords[j]),
+        |i, j| dist(coords[i], coords[j]),
+    )
+}
+
+/// Same as `deformation_stats`, reading the two point sets through distance closures
+/// so callers holding another coordinate layout do not have to copy into `[f32; 3]`.
+pub fn deformation_stats_indexed(
+    n: usize,
+    reference_distance: impl Fn(usize, usize) -> f32,
+    model_distance: impl Fn(usize, usize) -> f32,
+) -> (f32, f32) {
+    if n < 2 {
+        return (0.0, 0.0);
+    }
+    let mut sum_sq = 0.0_f64;
+    let mut worst = 0.0_f32;
+    let mut count = 0usize;
+    for i in 0..n - 1 {
+        for j in i + 1..n {
+            let deviation = reference_distance(i, j) - model_distance(i, j);
+            sum_sq += (deviation as f64) * (deviation as f64);
+            let magnitude = deviation.abs();
+            if magnitude > worst {
+                worst = magnitude;
+            }
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return (0.0, 0.0);
+    }
+    (((sum_sq / count as f64).sqrt()) as f32, worst)
+}
+
 /// Structure similarity metrics calculator
 #[derive(Debug, Clone, Default, PartialEq, Copy)]
 pub struct StructureSimilarityMetrics {
@@ -281,6 +353,10 @@ pub struct StructureSimilarityMetrics {
     pub gdt_ha: f32,
     pub chamfer_distance: f32,
     pub hausdorff_distance: f32,
+    /// Distance-matrix RMSD: deformation of the match without superposing it
+    pub drmsd: f32,
+    /// Worst single internal-distance deviation, in Angstroms
+    pub max_dist_deviation: f32,
 }
 
 impl StructureSimilarityMetrics {
@@ -296,13 +372,15 @@ impl StructureSimilarityMetrics {
     ///
     /// # Returns
     /// StructureMetrics containing all calculated metrics
-    pub fn new() -> Self {      
+    pub fn new() -> Self {
         Self {
             tm_score: 0.0,
             gdt_ts: 0.0,
             gdt_ha: 0.0,
             chamfer_distance: 0.0,
             hausdorff_distance: 0.0,
+            drmsd: 0.0,
+            max_dist_deviation: 0.0,
         }
     }
 
@@ -333,7 +411,20 @@ impl StructureSimilarityMetrics {
         self.chamfer_distance = self.calculate_chamfer_distance(precomputed);
         self.hausdorff_distance = self.calculate_hausdorff_distance(precomputed);
     }
-    
+
+    /// Fill in the superposition-free metrics from the raw, unaligned coordinates.
+    ///
+    /// Kept apart from `calculate_all` on purpose: those metrics read a cross
+    /// distance matrix of already superposed points, while these two compare the
+    /// internal distances of the two sets and must see the original coordinates.
+    pub fn calculate_deformation(
+        &mut self, reference_coords: &[[f32; 3]], coords: &[[f32; 3]]
+    ) {
+        let (drmsd, max_dist_deviation) = deformation_stats(reference_coords, coords);
+        self.drmsd = drmsd;
+        self.max_dist_deviation = max_dist_deviation;
+    }
+
     /// Print metrics in a formatted way
     pub fn print_in_a_formatted_way(&self) {
         println!("Structure Similarity Metrics:");
@@ -342,6 +433,8 @@ impl StructureSimilarityMetrics {
         println!("  GDT-HA:             {:.4}", self.gdt_ha);
         println!("  Chamfer Distance:   {:.4} Å", self.chamfer_distance);
         println!("  Hausdorff Distance: {:.4} Å", self.hausdorff_distance);
+        println!("  dRMSD:              {:.4} Å", self.drmsd);
+        println!("  Max dist deviation: {:.4} Å", self.max_dist_deviation);
     }
 }
 
@@ -350,12 +443,14 @@ impl fmt::Display for StructureSimilarityMetrics {
         // Print all metrics in a tab-separated format with 4 decimal places
         write!(
             f,
-            "{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
+            "{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
             self.tm_score,
             self.gdt_ts,
             self.gdt_ha,
             self.chamfer_distance,
-            self.hausdorff_distance
+            self.hausdorff_distance,
+            self.drmsd,
+            self.max_dist_deviation
         )
     }
 }
