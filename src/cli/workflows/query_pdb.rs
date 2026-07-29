@@ -59,7 +59,7 @@ search parameters:
  --ca-distance <FLOAT>            C-alpha distance threshold in matching residues [1.0]
  --sampling-count <INT>           Number of sampled hashes to search [all]
  --sampling-ratio <FLOAT>         Sampling ratio for hashes used in searching. For long queries, smaller ratio is recommended [1.0]
- --freq-filter <FLOAT>            Skip queries with hash frequency higher than given ratio [0.0]
+ --freq-filter <FLOAT>            Skip queries with hash frequency higher than given ratio [no limit]
  --length-penalty <FLOAT>         Length penalty for searching. Zero means no penalty and higher value gives more penalty to longer structures [0.5]
  --skip-match                     Skip matching residues
  --serial-index                   Handle residue indices serially
@@ -390,7 +390,7 @@ pub fn query_pdb(env: AppArgs) {
 
                 let query_count_map = measure_time!(count_query(
                     &pdb_query, &pdb_query_map, &index, &lookup,
-                    sampling_ratio, sampling_count, freq_filter, length_penalty
+                    sampling_ratio, sampling_count, freq_filter, length_penalty,
                 ), verbose);
                 let mut query_count_vec: Vec<(usize, StructureResult)> = query_count_map.into_par_iter().filter(|(_k, v)| {
                     structure_filter.filter_before_matching(v)

@@ -120,14 +120,34 @@ pub fn count_query<'a>(
                 
                 let single_queried_values = index.get_entries(query.as_u32());
                 let hash_count = single_queried_values.len();
+
+                // Skip hashes not present in the index
+                if hash_count == 0 {
+                    continue;
+                }
                 
                 if let Some(freq_filter) = freq_filter {
                     if hash_count as f32 / lookup.len() as f32 > freq_filter {
-                        continue;  // Skip queries that do not pass the frequency filter
+                        continue;  // Skip queries that are too common
                     }
                 }
 
                 let idf = (lookup.len() as f32 / hash_count as f32).log2();
+
+                // Skip expanded (non-primary) hashes that are *unreasonably* rarer in the
+                // database than their originating primary hash. A higher IDF means fewer
+                // database hits (rarer). We only discard an expanded hash when its actual IDF
+                // exceeds the primary IDF by more than log2(32) = 5.0, i.e. the expanded hash
+                // is at least 32× rarer than the primary. A mere 1–2 IDF difference is expected
+                // from discretisation boundary effects and should not cause a skip.
+                // `original_idf` == 0.0 means the primary hash was absent from the index (or
+                // no index was provided), so we cannot make a meaningful comparison; skip.
+                const EXPANDED_HASH_IDF_MAX_EXCESS: f32 = 5.0; // log2(32) — 32× rarer threshold
+                if let Some(&(_, is_primary, original_idf)) = query_map.get(query) {
+                    if !is_primary && original_idf > 0.0 && idf > original_idf + EXPANDED_HASH_IDF_MAX_EXCESS {
+                        continue;  // expanded hash is >32× rarer than primary → skip
+                    }
+                }
 
                 for &value in single_queried_values.iter() {
                     if value >= lookup.len() {
