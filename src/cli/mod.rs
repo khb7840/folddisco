@@ -89,6 +89,7 @@ pub enum AppArgs {
         // novelty output mode: replace the result listing with a one-line verdict
         novelty_mode: bool,
         novelty_coverage_threshold: f32,
+        novelty_rmsd_threshold: f32,
         verbose: bool,
         help: bool,
     },

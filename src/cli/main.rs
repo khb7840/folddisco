@@ -100,6 +100,7 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             // Novelty output mode
             novelty_mode: args.contains("--novelty-mode"),
             novelty_coverage_threshold: args.value_from_str("--novelty-coverage").unwrap_or(0.8),
+            novelty_rmsd_threshold: args.value_from_str("--novelty-rmsd").unwrap_or(2.0),
             verbose: args.contains(["-v", "--verbose"]),
             help: args.contains(["-h", "--help"]),
         }),

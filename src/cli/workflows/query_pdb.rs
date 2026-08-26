@@ -122,7 +122,15 @@ novelty options:
                                   sensitivity options above: the more sensitive the search, the
                                   fewer motifs are wrongly called novel
  --novelty-coverage <FLOAT>       Residue coverage of the best hit needed to call a motif KNOWN.
-                                  Anything covered but below it is PARTIAL_MATCH [0.8]
+                                  Coverage is covered/total residues, so for a motif under
+                                  5 residues the default demands every residue [0.8]
+ --novelty-rmsd <FLOAT>           Best-hit RMSD, in Angstroms, still allowed for KNOWN. A hit
+                                  that covers every residue in a different arrangement is not
+                                  the same motif: over 100 arbitrary motifs, a third of the
+                                  KNOWN verdicts had a best hit worse than 2.0 A, up to 10.4 A.
+                                  Covered but over the limit is PARTIAL_MATCH. With --skip-match
+                                  no RMSD is computed, so the verdict falls back to coverage
+                                  alone and is correspondingly weaker [2.0]
 
 advanced options:
  --expand-radius <INT>            Geometric features of a residue pair allowed in a neighbouring
@@ -240,6 +248,7 @@ pub fn query_pdb(env: AppArgs) {
             output,
             novelty_mode,
             novelty_coverage_threshold,
+            novelty_rmsd_threshold,
             verbose,
             help: _,
         } => {
@@ -370,6 +379,24 @@ pub fn query_pdb(env: AppArgs) {
                 vec![(pdb_path.clone(), query_string.clone(), output.clone())]
             };
 
+            // Every other output mode truncates its file (`File::create` in result.rs).
+            // Novelty verdicts are appended, so that a batch of queries sharing one
+            // output file accumulates instead of racing to overwrite each other; that
+            // makes a rerun of the same command double the file unless each distinct
+            // path is emptied once, here, before the queries start.
+            if novelty_mode {
+                let mut truncated: Vec<&str> = Vec::new();
+                for (_, _, output_path) in queries.iter() {
+                    if output_path.is_empty() || truncated.contains(&output_path.as_str()) {
+                        continue;
+                    }
+                    std::fs::File::create(output_path).expect(
+                        &log_msg(FAIL, &format!("Failed to create file: {}", output_path))
+                    );
+                    truncated.push(output_path);
+                }
+            }
+
             let dist_thresholds = parse_threshold_string(Some(dist_threshold.clone()));
             let angle_thresholds = parse_threshold_string(Some(angle_threshold.clone()));
 
@@ -451,6 +478,23 @@ pub fn query_pdb(env: AppArgs) {
                 let pdb_query = pdb_query_map.keys().cloned().collect::<Vec<_>>();
                 if verbose {
                     print_log_msg(INFO, &format!("Expanded query into {} hashes", pdb_query.len()));
+                }
+                // A query whose residues are all further apart than the index cutoff
+                // produces no hashes at all, so it matches nothing. That is an
+                // unrepresentable query, not a result: saying so is the difference
+                // between "this motif is new" and "this motif cannot be searched".
+                if pdb_query.is_empty() {
+                    print_log_msg(WARN, &format!(
+                        "{}:{} produced no hashes; its residues are further apart than the index \
+                         distance cutoff, so nothing can match it",
+                        &pdb_path, &query_string
+                    ));
+                    if novelty_mode {
+                        print_novelty_verdict(
+                            &novelty_no_hash_line(&pdb_path, &query_string), &output_path
+                        );
+                        return;
+                    }
                 }
                 // Make filters out of filtering parameters
                 let structure_filter = StructureFilter::new(
@@ -553,7 +597,7 @@ pub fn query_pdb(env: AppArgs) {
                             ).map(|v| (v.tid, v.node_count, Some(v.rmsd)));
                             print_novelty_verdict(&novelty_verdict_line(
                                 &pdb_path, &query_string, residue_count,
-                                novelty_coverage_threshold, best,
+                                novelty_coverage_threshold, novelty_rmsd_threshold, best,
                             ), &output_path);
                         } else {
                             sort_and_print_match_query_result(
@@ -598,7 +642,7 @@ pub fn query_pdb(env: AppArgs) {
                             });
                             print_novelty_verdict(&novelty_verdict_line(
                                 &pdb_path, &query_string, residue_count,
-                                novelty_coverage_threshold, best,
+                                novelty_coverage_threshold, novelty_rmsd_threshold, best,
                             ), &output_path);
                         } else {
                             sort_and_print_structure_query_result(
@@ -627,15 +671,25 @@ pub fn query_pdb(env: AppArgs) {
     }
 }
 
+/// Verdict for a query that produced no hashes, and so cannot match anything. Kept
+/// distinct from NOVEL: an unrepresentable query is not a discovery.
+fn novelty_no_hash_line(query_id: &str, query_residues: &str) -> String {
+    format!("{}\tNO_HASHES\tNA\t0.0000\tNA\t{}", query_id, query_residues)
+}
+
 /// One-line novelty verdict for a query, tab separated:
 /// `query_id, NOVEL|PARTIAL_MATCH|KNOWN, best hit or NA, coverage, RMSD or NA, query residues`
+///
+/// KNOWN needs both enough coverage and a close enough best hit; anything covered but
+/// failing either is PARTIAL_MATCH. (A query that produced no hashes at all is reported
+/// as NO_HASHES by the caller, and never reaches this function.)
 ///
 /// `best` is the highest-coverage hit as (target id, covered residues, RMSD). Its
 /// RMSD is `None` when residue matching was skipped, printed as `NA` instead of the
 /// 0.0 it was never computed into. No hit at all is the NOVEL verdict.
 fn novelty_verdict_line(
     query_id: &str, query_residues: &str, query_residue_count: usize,
-    coverage_threshold: f32, best: Option<(&str, usize, Option<f32>)>,
+    coverage_threshold: f32, rmsd_threshold: f32, best: Option<(&str, usize, Option<f32>)>,
 ) -> String {
     let (tid, covered_nodes, rmsd) = match best {
         Some(best) => best,
@@ -647,7 +701,12 @@ fn novelty_verdict_line(
     } else {
         0.0
     };
-    let tier = if query_residue_count > 0 && coverage >= coverage_threshold {
+    // Coverage alone does not make a motif known: the same residues in a different
+    // arrangement cover everything and are still a different motif, so the RMSD the
+    // line already prints has to gate the verdict too. With --skip-match there is no
+    // RMSD to gate on and coverage is all there is.
+    let close_enough = rmsd.map_or(true, |rmsd| rmsd <= rmsd_threshold);
+    let tier = if query_residue_count > 0 && coverage >= coverage_threshold && close_enough {
         "KNOWN"
     } else if covered_nodes > 0 {
         "PARTIAL_MATCH"
@@ -659,7 +718,10 @@ fn novelty_verdict_line(
 }
 
 /// Append one verdict line to the output file, or print it to stdout. Verdicts are
-/// appended because a batch of queries usually collects into a single output file.
+/// appended because a batch of queries usually collects into a single output file; the
+/// caller empties each distinct path once before the queries start, so a rerun replaces
+/// the file rather than growing it. One `write_all` per line keeps lines from
+/// interleaving on a local filesystem (NFS makes no such promise).
 fn print_novelty_verdict(line: &str, output_path: &str) {
     if output_path.is_empty() {
         println!("{}", line);
@@ -740,6 +802,7 @@ mod tests {
             output: String::from(""),
             novelty_mode: false,
             novelty_coverage_threshold: 0.8,
+            novelty_rmsd_threshold: 2.0,
             verbose: true,
             help: false,
         };
@@ -798,6 +861,7 @@ mod tests {
                 output: String::from(""),
                 novelty_mode: false,
                 novelty_coverage_threshold: 0.8,
+                novelty_rmsd_threshold: 2.0,
                 verbose: true,
                 partial_fit: false,
                 help: false,
@@ -858,6 +922,7 @@ mod tests {
             output: String::from(""),
             novelty_mode: false,
             novelty_coverage_threshold: 0.8,
+            novelty_rmsd_threshold: 2.0,
             verbose: true,
             help: false,
         };
@@ -869,28 +934,62 @@ mod tests {
         let residues = "A10,A20,A30";
         // No hit at all is the NOVEL verdict, and it is still emitted
         assert_eq!(
-            novelty_verdict_line("design.pdb", residues, 3, 0.8, None),
+            novelty_verdict_line("design.pdb", residues, 3, 0.8, 2.0, None),
             "design.pdb\tNOVEL\tNA\t0.0000\tNA\tA10,A20,A30"
         );
         // Fully covered motif with a matched RMSD
         assert_eq!(
-            novelty_verdict_line("design.pdb", residues, 3, 0.8, Some(("1abc", 3, Some(0.5)))),
+            novelty_verdict_line("design.pdb", residues, 3, 0.8, 2.0, Some(("1abc", 3, Some(0.5)))),
             "design.pdb\tKNOWN\t1abc\t1.0000\t0.5000\tA10,A20,A30"
         );
         // Covered below the threshold
         assert_eq!(
-            novelty_verdict_line("design.pdb", residues, 3, 0.8, Some(("1abc", 2, Some(1.25)))),
+            novelty_verdict_line("design.pdb", residues, 3, 0.8, 2.0, Some(("1abc", 2, Some(1.25)))),
             "design.pdb\tPARTIAL_MATCH\t1abc\t0.6667\t1.2500\tA10,A20,A30"
         );
         // --skip-match: the RMSD was never computed, so it is NA and not 0.0000
         assert_eq!(
-            novelty_verdict_line("design.pdb", residues, 3, 0.8, Some(("1abc", 3, None))),
+            novelty_verdict_line("design.pdb", residues, 3, 0.8, 2.0, Some(("1abc", 3, None))),
             "design.pdb\tKNOWN\t1abc\t1.0000\tNA\tA10,A20,A30"
         );
         // Zero residues must not divide by zero, and is never KNOWN
         assert_eq!(
-            novelty_verdict_line("design.pdb", "", 0, 0.0, Some(("1abc", 0, None))),
+            novelty_verdict_line("design.pdb", "", 0, 0.0, 2.0, Some(("1abc", 0, None))),
             "design.pdb\tNOVEL\t1abc\t0.0000\tNA\t"
+        );
+    }
+
+    #[test]
+    fn test_novelty_verdict_needs_a_close_hit_not_just_a_covering_one() {
+        // The measured failure mode: an 8-residue motif covered 1.0 by a hit 6.15 A
+        // away was called KNOWN. Covering every residue in a different arrangement is
+        // a different motif.
+        let residues = "A10,A20,A30,A40,A50,A60,A70,A80";
+        assert_eq!(
+            novelty_verdict_line("design.pdb", residues, 8, 0.8, 2.0, Some(("1abc", 8, Some(6.1487)))),
+            format!("design.pdb\tPARTIAL_MATCH\t1abc\t1.0000\t6.1487\t{}", residues)
+        );
+        // The genuine hits of the same measurement stay KNOWN, even at 0.5 A
+        for (rmsd, threshold, tier) in [
+            (0.0599f32, 2.0f32, "KNOWN"), (0.1669, 2.0, "KNOWN"),
+            (0.0599, 0.5, "KNOWN"), (4.3167, 2.0, "PARTIAL_MATCH"),
+        ] {
+            let line = novelty_verdict_line("d.pdb", "A1,A2,A3", 3, 0.8, threshold,
+                Some(("1abc", 3, Some(rmsd))));
+            assert_eq!(line.split('\t').nth(1).unwrap(), tier, "{} A at limit {}", rmsd, threshold);
+        }
+        // Without a computed RMSD (--skip-match) the gate cannot apply
+        let line = novelty_verdict_line("d.pdb", "A1,A2,A3", 3, 0.8, 0.5, Some(("1abc", 3, None)));
+        assert_eq!(line.split('\t').nth(1).unwrap(), "KNOWN");
+    }
+
+    #[test]
+    fn test_no_hash_query_is_not_reported_as_novel() {
+        // Residues further apart than the index cutoff hash to nothing. Reporting that
+        // as NOVEL turns unsearchable input into a discovery.
+        assert_eq!(
+            novelty_no_hash_line("query/1SU6.pdb", "A4,A39,A70"),
+            "query/1SU6.pdb\tNO_HASHES\tNA\t0.0000\tNA\tA4,A39,A70"
         );
     }
 }
