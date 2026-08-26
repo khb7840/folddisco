@@ -13,6 +13,7 @@ analysis/
 *.value
 *.offset
 *.lookup
+*.lookup.cache
 *.type
 *_folddisco
 *.tar.gz
