@@ -43,9 +43,6 @@ pub enum AppArgs {
         // Non-rigid / sensitivity knobs
         expand_radius: usize, // feature dimensions allowed to deviate at once
         nonrigid: bool,       // preset that raises the expansion radius
-        // Torsion-angle ENM query sampling
-        enm_sample: bool,     // wiggle the query along its torsional normal modes
-        nma_rmsd: f32,
         // filtering parameters
         // These are for filtering StructQueryResult only
         total_match_count: usize, 

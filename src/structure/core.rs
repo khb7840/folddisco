@@ -63,9 +63,6 @@ pub struct CompactStructure {
     pub n_vector: CarbonCoordinateVector,
     pub ca_vector: CarbonCoordinateVector,
     pub cb_vector: CarbonCoordinateVector,
-    /// Backbone carbonyl carbon, needed for the phi/psi torsions the
-    /// torsion-angle ENM samples (`--non-rigid`).
-    pub c_vector: CarbonCoordinateVector,
     pub b_factors: Vec<f32>,
 }
 
@@ -80,7 +77,6 @@ impl CompactStructure {
         let mut n_vec = CarbonCoordinateVector::with_capacity(origin.num_residues);
         let mut ca_vec = CarbonCoordinateVector::with_capacity(origin.num_residues);
         let mut cb_vec = CarbonCoordinateVector::with_capacity(origin.num_residues);
-        let mut c_vec = CarbonCoordinateVector::with_capacity(origin.num_residues);
 
         let mut n_vec_x: Vec<f32> = Vec::with_capacity(origin.num_residues);
         let mut n_vec_y: Vec<f32> = Vec::with_capacity(origin.num_residues);
@@ -100,12 +96,6 @@ impl CompactStructure {
         let mut ca: Option<Coordinate> = None;
         let mut cb: Option<Coordinate> = None;
         let mut c: Option<Coordinate> = None;
-        // Carbonyl C of the residue currently being accumulated. `c` above deliberately
-        // is NOT reset between residues -- the Cb approximation below has always been
-        // allowed to fall back on an earlier residue's C, and changing that would change
-        // every hash and invalidate published indices. `residue_c` is the per-residue
-        // value, which is what the torsion-angle ENM needs.
-        let mut residue_c: Option<Coordinate> = None;
         
         let mut gly_n: Option<Coordinate> = None;
         let mut gly_c: Option<Coordinate> = None;
@@ -134,10 +124,7 @@ impl CompactStructure {
                         cb_vec_x.push(cb.x);
                         cb_vec_y.push(cb.y);
                         cb_vec_z.push(cb.z);
-                        match residue_c {
-                            Some(c) => c_vec.push(&c),
-                            None => c_vec.push_none(),
-                        }
+                        
                     }
                     (Some(n), Some(ca), None) => {
                         let resi = prev_res_serial.expect("expected residue serial number");
@@ -172,10 +159,7 @@ impl CompactStructure {
                         ca_vec_x.push(ca.x);
                         ca_vec_y.push(ca.y);
                         ca_vec_z.push(ca.z);
-                        match residue_c {
-                            Some(c) => c_vec.push(&c),
-                            None => c_vec.push_none(),
-                        }
+
                     }
                     (None, None, None) => {}
                     (None, None, Some(_)) => {}
@@ -188,7 +172,6 @@ impl CompactStructure {
                 ca = None;
                 cb = None;
                 n = None;
-                residue_c = None;
                 prev_res_serial = Some(model.get_res_serial(idx));
                 prev_res_name = model.res_name.get(idx);
             }
@@ -199,7 +182,6 @@ impl CompactStructure {
                 cb = Some(model.get_coordinates(idx));
             } else if model.is_c(idx) {
                 c = Some(model.get_coordinates(idx));
-                residue_c = c;
             } else if model.is_n(idx) && &model.get_res_name(idx) != b"GLY" {
                 n = Some(model.get_coordinates(idx));
             } else if &model.get_res_name(idx) == b"GLY" {
@@ -227,7 +209,6 @@ impl CompactStructure {
             n_vector: n_vec,
             ca_vector: ca_vec,
             cb_vector: cb_vec,
-            c_vector: c_vec,
             b_factors: b_factors,
         }
     }
@@ -263,16 +244,6 @@ impl CompactStructure {
     #[inline(always)]
     pub fn get_n(&self, idx: usize) -> Option<Coordinate> {
         let (x, y, z) = self.n_vector.get(idx);
-
-        if x.is_some() && y.is_some() && z.is_some() {
-            Some(Coordinate::build(&x, &y, &z))
-        } else {
-            None
-        }
-    }
-
-    pub fn get_c(&self, idx: usize) -> Option<Coordinate> {
-        let (x, y, z) = self.c_vector.get(idx);
 
         if x.is_some() && y.is_some() && z.is_some() {
             Some(Coordinate::build(&x, &y, &z))
@@ -545,33 +516,5 @@ mod structure_tests {
         let avg_bfactor = compact.get_avg_bfactor();
         println!("Average B-factor: {}", avg_bfactor);
         assert!(avg_bfactor > 0.0);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::prelude::PDBReader;
-
-    /// `c_vector` has to stay index-aligned with the other backbone vectors: the
-    /// torsion-angle ENM reads N/CA/C per residue and a shifted vector would sample
-    /// torsions of the wrong residue.
-    #[test]
-    fn carbonyl_carbon_is_captured_and_aligned() {
-        let structure = PDBReader::from_file("query/4CHA.pdb")
-            .unwrap().read_structure().unwrap().to_compact();
-        assert_eq!(structure.c_vector.x.len(), structure.num_residues);
-        let present = (0..structure.num_residues)
-            .filter(|&i| structure.get_c(i).is_some()).count();
-        assert!(
-            present * 100 / structure.num_residues > 90,
-            "only {} of {} residues kept a carbonyl C", present, structure.num_residues
-        );
-        // A CA-C bond is ~1.52 A; anything else means the vectors are misaligned
-        for i in 0..structure.num_residues {
-            if let (Some(ca), Some(c)) = (structure.get_ca(i), structure.get_c(i)) {
-                let d = ca.calc_distance(&c);
-                assert!(d > 1.2 && d < 1.9, "residue {} has a CA-C distance of {}", i, d);
-            }
-        }
     }
 }

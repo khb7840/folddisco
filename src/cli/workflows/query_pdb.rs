@@ -23,9 +23,7 @@ use crate::controller::io::{
     resolve_tid_path_from_index_prefix,
 };
 use crate::controller::expand::ToleranceConfig;
-use crate::controller::query::{
-    make_query_map, make_query_map_with_ensemble, parse_threshold_string
-};
+use crate::controller::query::{make_query_map, parse_threshold_string};
 use crate::controller::count_query::count_query;
 use crate::controller::result::{
     convert_structure_query_result_to_match_query_results, 
@@ -72,16 +70,6 @@ non-rigid search:
                                   more true positives at a fixed false-positive count on the
                                   zinc-finger benchmark, and roughly doubles recall for a
                                   3-residue motif. A looser --expand-radius still wins
- --enm-sample                     Wiggle the query along its low-frequency torsional normal
-                                  modes and search the union of the ensemble's hashes. Best
-                                  deep recall measured (recall 0.542 vs 0.518 on the
-                                  zinc-finger benchmark) at ~4x the runtime, and it can lose
-                                  ground at the very top of the ranking for 3-residue motifs
- --nma-rmsd <FLOAT>               How far each conformer is displaced, as the RMSD of its
-                                  backbone N/CA/C atoms from the query, in Angstroms. Delivered
-                                  to within a few percent: each conformer is measured and
-                                  rescaled, because a torsion's reach depends on the length of
-                                  the chain downstream of it [0.5]
 
 filtering options:
  --total-match <INT>              Filter out structures with less than total match count [0]
@@ -176,10 +164,6 @@ folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --con
 ## Coverage based filtering & top N filtering without residue matching
 folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --covered-node 3 --top 1000 --per-structure --skip-match
 
-# Torsion-angle ENM sampling on top: best deep recall, ~4x slower
-folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 \\
-  --nonrigid --enm-sample
-
 # Non-rigid search for a deformed motif, ranked by superposition-free deformation
 folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --nonrigid \\
   --sort-by node_count,drmsd --format-output tid,node_count,idf,rmsd,drmsd,matching_residues
@@ -221,8 +205,6 @@ pub fn query_pdb(env: AppArgs) {
             ca_dist_threshold,
             expand_radius,
             nonrigid,
-            enm_sample,
-            nma_rmsd,
             total_match_count,
             covered_node_count,
             covered_node_ratio,
@@ -460,19 +442,11 @@ pub fn query_pdb(env: AppArgs) {
                 let multiple_bin = &config.multiple_bin;
                 let total_structures = lookup.len() as f32;
                         
-                let (pdb_query_map, query_indices, aa_dist_map ) = measure_time!(if enm_sample {
-                    make_query_map_with_ensemble(
-                        &pdb_path, &query_residues, hash_type, num_bin_dist, num_bin_angle, multiple_bin,
-                        &tolerance, &aa_substitutions, dist_cutoff, serial_query,
-                        &Some(&index), total_structures, nma_rmsd
-                    )
-                } else {
-                    make_query_map(
-                        &pdb_path, &query_residues, hash_type, num_bin_dist, num_bin_angle, multiple_bin,
-                        &tolerance, &aa_substitutions, dist_cutoff, serial_query,
-                        &Some(&index), total_structures
-                    )
-                }, verbose);
+                let (pdb_query_map, query_indices, aa_dist_map ) = measure_time!(make_query_map(
+                    &pdb_path, &query_residues, hash_type, num_bin_dist, num_bin_angle, multiple_bin,
+                    &tolerance, &aa_substitutions, dist_cutoff, serial_query,
+                    &Some(&index), total_structures
+                ), verbose);
 
                 let pdb_query = pdb_query_map.keys().cloned().collect::<Vec<_>>();
                 if verbose {
@@ -731,8 +705,6 @@ mod tests {
             ca_dist_threshold: 1.0,
             expand_radius: 1,
             nonrigid: false,
-            enm_sample: false,
-            nma_rmsd: 0.5,
             total_match_count: 0,
             covered_node_count: 0,
             covered_node_ratio: 0.0,
@@ -792,8 +764,6 @@ mod tests {
                 ca_dist_threshold: 1.0,
                 expand_radius: 1,
                 nonrigid: false,
-                enm_sample: false,
-                nma_rmsd: 0.5,
                 total_match_count: 0,
                 covered_node_count: 0,
                 covered_node_ratio: 0.0,
@@ -853,8 +823,6 @@ mod tests {
             ca_dist_threshold: 1.0,
             expand_radius: 1,
             nonrigid: false,
-            enm_sample: false,
-            nma_rmsd: 0.5,
             total_match_count: 0,
             covered_node_count: 0,
             covered_node_ratio: 0.0,

@@ -7,4 +7,3 @@ pub mod qcp;
 pub mod kabsch;
 pub mod lms_qcp;
 pub mod metrics;
-pub mod nma;

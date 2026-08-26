@@ -8,12 +8,11 @@ use crate::geometry::core::{GeometricHash, HashType};
 use crate::index::indextable::FolddiscoIndex;
 use crate::utils::convert::{is_aa_group_char, map_one_letter_to_u8_vec};
 use crate::utils::combination::CombinationIterator;
-use crate::utils::log::{log_msg, print_log_msg, FAIL, WARN};
+use crate::utils::log::{log_msg, FAIL};
 use super::expand::{FeatureExpander, ToleranceConfig};
 use super::feature::get_single_feature;
 use super::io::read_compact_structure;
 use crate::structure::core::CompactStructure;
-use crate::structure::nma::{ENSEMBLE_CONFORMERS, ENSEMBLE_TORSION_MODES};
 
 /// Ceiling on the hashes generated for a single residue pair.
 ///
@@ -157,76 +156,7 @@ pub fn make_query_map(
     )
 }
 
-/// Query map for a torsion-angle ENM conformer ensemble.
-///
-/// The query structure is wiggled along its low-frequency torsional normal modes and
-/// every conformer's hashes are merged into one query, so a single search covers the
-/// whole ensemble. This is the "union hashes" strategy: it costs one search rather
-/// than one per conformer, and it was the only one of the three sampling strategies
-/// that measured better than a plain search per unit of runtime.
-///
-/// The original structure is hashed first, so its hashes keep `is_primary` and their
-/// own IDF. Hashes contributed only by a conformer are marked non-primary and inherit
-/// the primary IDF of the same residue pair, which keeps the rare-hash filter in
-/// `count_query` comparing like with like.
-///
-/// Residue indices and the observed distance map come from the original structure —
-/// residue matching must be done against the real query, not a wiggled copy.
-pub fn make_query_map_with_ensemble(
-    path: &String, query_residues: &Vec<(u8, u64)>, hash_type: HashType,
-    nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
-    tolerance: &ToleranceConfig,
-    amino_acid_substitutions: &Vec<Option<Vec<u8>>>, distance_cutoff: f32, serial_query: bool,
-    index: &Option<&FolddiscoIndex>, total_structures: f32, target_rmsd: f32,
-) -> (HashMap<GeometricHash, ((usize, usize), bool, f32)>, Vec<usize>, HashMap<(u8, u8), Vec<(f32, usize)>>) {
-    let (compact, _) = read_compact_structure(path).expect("Failed to read compact structure");
-
-    let (mut hash_collection, indices, observed_distance_map) = make_query_map_from_structure(
-        &compact, query_residues, hash_type, nbin_dist, nbin_angle, multiple_bin,
-        tolerance, amino_acid_substitutions, distance_cutoff, serial_query,
-        index, total_structures,
-    );
-    // Primary IDF per residue pair, for the hashes the conformers add
-    let mut primary_idf: HashMap<(usize, usize), f32> = HashMap::default();
-    for (edge, is_primary, idf) in hash_collection.values() {
-        if *is_primary {
-            primary_idf.insert(*edge, *idf);
-        }
-    }
-
-    let ensemble = match crate::structure::nma::generate_ensemble(
-        &compact, ENSEMBLE_CONFORMERS, target_rmsd, ENSEMBLE_TORSION_MODES
-    ) {
-        Ok(ensemble) => ensemble,
-        Err(err) => {
-            print_log_msg(WARN, &format!(
-                "Torsion-ENM sampling failed ({}); searching the original query only", err
-            ));
-            return (hash_collection, indices, observed_distance_map);
-        }
-    };
-
-    // Skip the first entry: generate_ensemble returns the original structure there and
-    // it is already hashed above.
-    for conformer in ensemble.iter().skip(1) {
-        let (conformer_map, _, _) = make_query_map_from_structure(
-            conformer, query_residues, hash_type, nbin_dist, nbin_angle, multiple_bin,
-            tolerance, amino_acid_substitutions, distance_cutoff, serial_query,
-            index, total_structures,
-        );
-        for (hash, (edge, _, conformer_idf)) in conformer_map {
-            if hash_collection.contains_key(&hash) {
-                continue;
-            }
-            let idf = primary_idf.get(&edge).copied().unwrap_or(conformer_idf);
-            hash_collection.insert(hash, (edge, false, idf));
-        }
-    }
-    (hash_collection, indices, observed_distance_map)
-}
-
-/// Same as `make_query_map` for a structure already in memory, which is what the
-/// torsion-ENM conformer ensemble produces.
+/// Same as `make_query_map` for a structure already in memory.
 pub fn make_query_map_from_structure(
     compact: &CompactStructure, query_residues: &Vec<(u8, u64)>, hash_type: HashType,
     nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,

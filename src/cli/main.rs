@@ -59,8 +59,6 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             // Non-rigid / sensitivity knobs
             expand_radius: args.value_from_str("--expand-radius").unwrap_or(1),
             nonrigid: args.contains("--nonrigid"),
-            enm_sample: args.contains("--enm-sample"),
-            nma_rmsd: args.value_from_str("--nma-rmsd").unwrap_or(0.5),
             total_match_count: args.value_from_str("--total-match").unwrap_or(0),
             covered_node_count: args.value_from_str("--covered-node").unwrap_or(0),
             covered_node_ratio: args.value_from_str("--covered-node-ratio").unwrap_or(0.0),
