@@ -74,9 +74,12 @@ non-rigid search:
                                   one, 0.8831 -> 0.9160 on a Ser-His-Asp triad against an
                                   independent MEROPS set. Without --max-node the same 4-residue
                                   query is 0.9265 -> 0.9226, i.e. slightly worse. Long segment
-                                  queries lose either way (23 residues: 0.9204 -> 0.9117), and
-                                  residue matching runs ~11% longer. A looser explicit
-                                  --expand-radius is kept
+                                  queries lose either way (23 residues: 0.9204 -> 0.9117).
+                                  Matching runs 11% longer on that benchmark and 73% longer on
+                                  M-CSA over a 62k-structure PDB index: the cost tracks how much
+                                  the expansion inflates the candidate pool, so it grows with
+                                  motif size and index size. A looser explicit --expand-radius
+                                  is kept
 
 filtering options:
  --total-match <INT>              Filter out structures with less than total match count [0]
@@ -125,11 +128,17 @@ display options:
 
 novelty options:
  --novelty-mode                   Replace the result listing with one verdict line per query:
-                                  query_id, NOVEL/PARTIAL_MATCH/KNOWN, best hit, residue coverage,
-                                  RMSD (NA with --skip-match), query residues. A query that
-                                  hashes to nothing is reported as NO_HASHES, not as NOVEL.
-                                  Composes with the sensitivity options above, though on 200
-                                  measured comparisons --nonrigid changed exactly one verdict
+                                  query_id, verdict, best hit, residue coverage, RMSD (NA with
+                                  --skip-match), query residues. The verdict is KNOWN,
+                                  PARTIAL_MATCH, NOVEL when nothing in the index covers a single
+                                  residue, FILTERED_OUT when the index had candidates but this
+                                  run's filters kept none (coverage then reports what the index
+                                  held), or NO_HASHES when the query could not be searched.
+                                  Screen with --skip-match or a LOW --max-node: a high --max-node
+                                  asks whether a full-coverage match exists, where novelty asks
+                                  whether anything like this exists at all, and the filters that
+                                  sharpen a ranking discard exactly the partial matches that
+                                  answer the second question
  --novelty-coverage <FLOAT>       Residue coverage of the best hit needed to call a motif KNOWN.
                                   Coverage is covered/total residues, so for a motif under
                                   5 residues the default demands every residue [0.8]

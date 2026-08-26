@@ -226,8 +226,25 @@ Two conditions come with it, both measured:
   consistently: long queries are already saturated and the extra candidates only dilute
   the list.
 
-Residue matching runs about 11% longer with the flag (157 → 175 ms on that command). The
-prefilter difference is smaller than the run-to-run spread and is not worth quoting.
+Residue matching runs about 11% longer with the flag on that command (157 → 175 ms), and
+about 73% longer on the M-CSA benchmark below. The cost tracks how much the expansion
+inflates the candidate pool that then has to be matched, so it grows with motif size and
+index size — expect anything in that range. The prefilter difference is smaller than the
+run-to-run spread and is not worth quoting.
+
+It is not a repackaging of `-d`/`-a`: across a grid of wider tolerances, widening never
+reaches `--nonrigid`'s F1 and *loses* recall rather than gaining it (0.920 → 0.894 against
+`--nonrigid`'s 0.970 on the matched 4-residue query). `-d`/`-a` set how far one geometric
+feature may move; `--nonrigid` sets how many may move at once, and a deformed motif is
+usually two features crossing a bin boundary together.
+
+On a second benchmark — **M-CSA catalytic sites over a 62,122-entry PDB index**, 250
+queries, the paper's own mean-sensitivity-at-first-false-positive metric — the picture is
+more mixed: it improves 94 queries and degrades 42, raising the mean (0.4475 → 0.4536)
+while *lowering* the median (0.4032 → 0.3810). That protocol has no `--max-node`, so it
+is the flag measured outside the configuration that makes it work. On the same benchmark,
+widening tolerances under a fixed `--top` budget is far worse (0.3599), and stacking
+widening with `--nonrigid` triples the queries that return no true positive at all.
 
 Rank the results with **dRMSD** rather than RMSD when the motif may be deformed. dRMSD
 compares the internal distances of the match instead of superposing it, so a motif whose
@@ -270,7 +287,8 @@ residues. The verdict is one of:
 | --- | --- |
 | `KNOWN` | Coverage ≥ `--novelty-coverage` (default 0.8) **and** best-hit RMSD ≤ `--novelty-rmsd` (default 2.0 Å) |
 | `PARTIAL_MATCH` | Something matched, but it failed the coverage or the RMSD bar |
-| `NOVEL` | Nothing in the reference database matched any residue of the motif |
+| `NOVEL` | Nothing in the reference database covered a single residue of the motif |
+| `FILTERED_OUT` | The database had candidates and this run's search filters kept none of them. The coverage column reports what the database held; there is no hit and no RMSD. Also warned about on stderr |
 | `NO_HASHES` | The query could not be searched at all — its residues are further apart than the index distance cutoff, so it produced no hashes. Also warned about on stderr |
 
 Both bars matter. Coverage alone is not enough: the same residues in a different
@@ -280,15 +298,30 @@ bar was added. Under `--skip-match` no RMSD is computed, so the verdict falls ba
 coverage alone and is weaker. Verdicts append to `-o`, so a batch of queries sharing one
 output file accumulates, while rerunning the same command replaces it.
 
+**Screen with the prefilter, or with a low `--max-node`.** `--max-node <n>` drops
+structures whose best match covers fewer than *n* residues, so on a 3-residue motif
+`--max-node 3` throws away every partial match — including, measured against the PDB
+index, a 2-of-3 match at 0.02 Å to the query's own family. A high `--max-node` answers
+"is there a full-coverage match"; a novelty screen is asking "does anything like this
+exist", and partial matches are most of the answer. Note this pulls the opposite way from
+the `--max-node` advice for [`--nonrigid`](#non-rigid-search), which is about ranking
+precision: the two recommendations serve different questions and should not be stacked
+without thinking about which one you are asking.
+
 ### Lookup cache
 
 The first time an index is loaded, Folddisco writes a binary cache of its parsed lookup
 file next to it as `<index>.lookup.cache`, and every later load decodes that instead of
 re-parsing the text. There is no flag and nothing to manage:
 
-- **2.2–4.3x faster at one thread**, 1.2–1.7x at 8; never slower at any size or thread
-  count. The gain shrinks as threads rise because both paths allocate one string per
-  entry.
+- **On the largest index that ships — the PDB index, 230,655 entries — it saves about
+  10 ms** (0.12 s of text parsing against 0.11 s of decoding). That is ~8% of a
+  prefilter query on that index and negligible against a matched one, which takes
+  ~11 s. A real saving, and a small one.
+- It scales with the file: 2.2x at one thread on a 10^6-entry lookup and 2.25x at 10^7,
+  which is AFDB-v6 territory and roughly 43x larger than any index that exists today.
+  Read those as a projection, not as something you get on a current index. It is
+  **never slower** at any size or thread count.
 - The first load pays for the write, roughly one extra parse, so a fresh index breaks
   even after about four loads at 8 threads.
 - The cache file is ~1.3x the size of the text lookup, and is safe to delete at any time.
