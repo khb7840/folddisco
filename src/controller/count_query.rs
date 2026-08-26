@@ -10,14 +10,6 @@ use crate::prelude::GeometricHash;
 
 use super::result::StructureResult;
 
-/// How much rarer than its observed hash a tolerance-expanded hash may be before it is
-/// dropped, in IDF (log2) units. 5.0 means "up to 32x rarer is fine".
-///
-/// This is a floor that keeps pathologically rare expanded hashes out, not a precision
-/// win; see the use site for what was measured.
-const EXPANDED_HASH_IDF_MAX_EXCESS: f32 = 5.0;
-
-
 // Efficient bit vector for tracking sets of IDs
 #[derive(Debug, Clone)]
 struct BitVector {
@@ -139,47 +131,6 @@ pub fn count_query<'a>(
                 } else {
                     continue;  // Hash absent from the index; nothing to count
                 };
-
-                // Drop a tolerance-expanded hash that turns out to be far rarer in the
-                // database than the observed hash it came from. A rare hash carries a
-                // large IDF, so a single spurious hit on one can outweigh several real
-                // ones; those are the hashes that poison the top of the ranking. A one
-                // or two bit difference is normal boundary noise and is kept.
-                //
-                // The threshold is a *ratio* between two IDFs computed against the same
-                // index, so it needs no tuning per database size.
-                //
-                // What the sweep actually shows, in average precision against no filter
-                // at all, over 200 paired 5% answer-dropout replicates on three motifs
-                // of the zinc-finger benchmark (23391 human proteins, 1816 answers,
-                // --expand-radius 2):
-                //
-                //   margin 0   -0.0116 AP on the 4-residue motif, 0/200 replicates
-                //              positive. The one robust result in the whole sweep, and
-                //              the only reason to run a filter at all.
-                //   margin 3   -0.0011 AP on the 16-residue motif, worse in 97% of
-                //              replicates. Robustly worse than no filter there.
-                //   margin 5   never robustly worse on any of the three motifs.
-                //   2 .. off   all within +/-0.004 AP of each other.
-                //
-                // So 5.0 is the smallest margin that is never robustly worse, which is
-                // the whole of its justification. The filter is measurably *neutral*
-                // otherwise: false positives in the top 100 are 0-1 at every setting
-                // including off, and the prefilter costs 9.1 ms with it and 9.3 ms
-                // without. An earlier version of this comment cited true positives at
-                // 5 false positives (535 -> 684); that metric moves with the rank of the
-                // 5th false positive and its deltas flip sign in two thirds of dropout
-                // replicates, so it cannot support a choice between margins.
-                if let Some(&(_, is_primary, observed_idf)) = query_map.get(query) {
-                    // observed_idf == 0.0 means the observed hash was missing from the
-                    // index (or no index was given), leaving nothing to compare against.
-                    if !is_primary
-                        && observed_idf > 0.0
-                        && idf > observed_idf + EXPANDED_HASH_IDF_MAX_EXCESS
-                    {
-                        continue;
-                    }
-                }
 
                 for &value in single_queried_values.iter() {
                     if value >= lookup.len() {
