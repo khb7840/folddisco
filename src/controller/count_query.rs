@@ -10,6 +10,7 @@ use crate::prelude::GeometricHash;
 
 use super::result::StructureResult;
 
+
 // Efficient bit vector for tracking sets of IDs
 #[derive(Debug, Clone)]
 struct BitVector {
@@ -119,7 +120,7 @@ pub fn count_query<'a>(
                 
                 let single_queried_values = index.get_entries(query.as_u32());
                 let hash_count = single_queried_values.len();
-
+                
                 if let Some(freq_filter) = freq_filter {
                     if hash_count as f32 / lookup.len() as f32 > freq_filter {
                         continue;  // Skip queries that do not pass the frequency filter

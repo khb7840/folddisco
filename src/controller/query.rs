@@ -8,7 +8,7 @@ use crate::geometry::core::{GeometricHash, HashType};
 use crate::index::indextable::FolddiscoIndex;
 use crate::utils::convert::{is_aa_group_char, map_one_letter_to_u8_vec};
 use crate::utils::combination::CombinationIterator;
-use crate::utils::log::{log_msg, print_log_msg, FAIL};
+use crate::utils::log::{log_msg, print_log_msg, FAIL, WARN};
 use super::expand::{FeatureExpander, ToleranceConfig};
 use super::feature::get_single_feature;
 use super::io::read_compact_structure;
@@ -61,6 +61,16 @@ pub fn parse_threshold_string(threshold_string: Option<String>) -> Vec<f32> {
 
 // Doesn't support duplicate hash
 // If hash is already in the hash_collection, skip.
+//
+// `is_primary` marks the hash of the observed geometry, as opposed to one the tolerance
+// expansion added. It has **no production consumer**: the rare-hash IDF filter that read
+// it was removed once it measured worse than no filter at all, and the only remaining
+// reader is `test_make_query_map`, which uses it to assert that the expansion produces
+// at most one observed hash per ordered residue pair. It is kept rather than deleted
+// because the tuple type `((usize, usize), bool, f32)` is spelled in ten places across
+// three files with about seventeen edit sites, and the `f32` beside it *is* load-bearing
+// (`retrieve::calculate_subgraph_idf` reads it), so removing one bool costs a wide
+// refactor for six lines. Written down here so the next maintainer does not redo the grep.
 fn insert_binned_hash(
     hash_collection: &mut HashMap<GeometricHash, ((usize, usize), bool, f32)>,
     feature: &Vec<f32>, indices: (usize, usize), hash_type: HashType,
@@ -287,6 +297,18 @@ fn make_query_map_from_structure(
     (hash_collection, indices, observed_distance_map)
 }
 
+/// Widest residue span a single `-q` range may expand to.
+///
+/// Ranges are expanded eagerly, one residue pushed per position, so the span is an
+/// allocation. 100,000 sits above anything a real query can want - the default
+/// `--residue` indexing limit is 50,000, i.e. the largest structure folddisco will index
+/// unless told otherwise, and the longest human protein (titin) is about 35,000 residues
+/// - so it cannot reject a range that any default-built index could match. Its purpose is
+/// the other end of the scale: `A204-A2150000000`, one mistyped digit, asks for 2.15e9
+/// residues and roughly 80 GB, and used to be killed by the OOM reaper with no message at
+/// all. At this cap the two vectors stay a few megabytes and a typo gets a diagnostic.
+const MAX_RESIDUE_RANGE_SPAN: u64 = 100_000;
+
 /// Residue number at one end of a range, or a single position.
 ///
 /// A chain letter may be repeated here - `F204-F215` means the same as `F204-215` - but
@@ -310,11 +332,18 @@ fn parse_residue_number(token: &str, chain: u8, segment: &str) -> Result<u64, St
     ))
 }
 
-/// Parse a query string, exiting with a diagnostic rather than a panic when it is
-/// malformed - a bad `-q` is user input, not a bug.
+/// Parse a query string for the CLI, exiting with a diagnostic rather than a panic when
+/// it is malformed - a bad `-q` is user input, not a bug.
+///
+/// This **terminates the process** on a malformed query, which is right for a command
+/// line and wrong for anything else. Library consumers should call
+/// `parse_query_string_checked` and handle the `Err`.
 pub fn parse_query_string(query_string: &str, default_chain: u8) -> (Vec<(u8, u64)>, Vec<Option<Vec<u8>>>) {
     match parse_query_string_checked(query_string, default_chain) {
-        Ok(parsed) => parsed,
+        Ok((query_residues, amino_acid_substitutions)) => {
+            warn_on_duplicate_residues(query_string, &query_residues);
+            (query_residues, amino_acid_substitutions)
+        }
         Err(err) => {
             print_log_msg(FAIL, &err);
             std::process::exit(1);
@@ -322,7 +351,30 @@ pub fn parse_query_string(query_string: &str, default_chain: u8) -> (Vec<(u8, u6
     }
 }
 
-fn parse_query_string_checked(
+/// Warn when a query names the same residue more than once, as `B57,B57` or a pair of
+/// overlapping ranges like `A1-A5,A3-A7` does.
+///
+/// Deduplicating would be the real fix, but the length of this list is the denominator of
+/// `--covered-node-ratio`, `--max-node-ratio` and the novelty coverage, so dropping
+/// repeats changes filtering on the default path - which is the one path this branch
+/// keeps byte-identical to upstream. It waits for a benchmark run that can clear it.
+fn warn_on_duplicate_residues(query_string: &str, query_residues: &[(u8, u64)]) {
+    let mut distinct = query_residues.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    if distinct.len() < query_residues.len() {
+        print_log_msg(WARN, &format!(
+            "Query '{}' names {} residues but only {} distinct ones. The repeats still \
+             count toward the query length, so coverage ratios and the novelty verdict are \
+             computed against {} and read low",
+            query_string, query_residues.len(), distinct.len(), query_residues.len()
+        ));
+    }
+}
+
+/// Parse a query string into its residues and their allowed substitutions, returning the
+/// diagnostic instead of acting on it. This is the entry point for library use.
+pub fn parse_query_string_checked(
     query_string: &str, mut default_chain: u8,
 ) -> Result<(Vec<(u8, u64)>, Vec<Option<Vec<u8>>>), String> {
     let mut query_residues = Vec::new();
@@ -368,6 +420,14 @@ fn parse_query_string_checked(
                 return Err(format!(
                     "Query '{}' ends before it starts; a range runs from the lower residue",
                     segment
+                ));
+            }
+            if end - start >= MAX_RESIDUE_RANGE_SPAN {
+                return Err(format!(
+                    "Query '{}' spans {} residues, past the {} a range may expand to. \
+                     A range is expanded one residue at a time, so check for a mistyped \
+                     digit before this becomes an out-of-memory kill",
+                    segment, (end - start).saturating_add(1), MAX_RESIDUE_RANGE_SPAN
                 ));
             }
             for r in start..=end {
@@ -506,6 +566,39 @@ mod tests {
         assert_eq!(bare.0.len(), 23);
         assert_eq!(bare.0[0], (b'F', 204));
         assert_eq!(*bare.0.last().unwrap(), (b'F', 232));
+    }
+
+    #[test]
+    fn an_unbounded_range_is_a_diagnostic_not_an_allocation() {
+        // `A204-A2150000000` asks for 2.15e9 residues, about 80 GB, and used to be killed
+        // by the OOM reaper with no message. One mistyped digit is exactly the malformed
+        // input this parser exists to name.
+        let err = parse_query_string_checked("A204-A2150000000", b'A').unwrap_err();
+        assert!(err.contains("2150000000") || err.contains("spans"), "{}", err);
+        assert!(err.contains("100000"), "the message should name the limit: {}", err);
+        // A range that a real index could match is not rejected: the default --residue
+        // indexing limit is 50,000, and the cap sits above it
+        let (residues, _) = parse_query_string_checked("A1-A50000", b'A').unwrap();
+        assert_eq!(residues.len(), 50_000);
+        // Exactly at the cap is allowed, one past it is not
+        assert_eq!(parse_query_string_checked("A1-A100000", b'A').unwrap().0.len(), 100_000);
+        assert!(parse_query_string_checked("A1-A100001", b'A').is_err());
+    }
+
+    #[test]
+    fn duplicate_residues_are_kept_but_countable() {
+        // Overlapping ranges repeat residues 3-5, and the length of this list is the
+        // denominator of the coverage ratios, so a perfect 7-residue match would read
+        // 7/10. Deduplicating changes filtering on the default path, so the parser keeps
+        // them and the caller warns; this test pins the arithmetic the warning is about.
+        let (residues, _) = parse_query_string_checked("A1-A5,A3-A7", b'A').unwrap();
+        assert_eq!(residues.len(), 10);
+        let mut distinct = residues.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 7);
+        // The plain repeated-residue form behaves the same way
+        assert_eq!(parse_query_string_checked("B57,B57,B57", b'A').unwrap().0.len(), 3);
     }
 
     #[test]

@@ -132,8 +132,14 @@ novelty options:
                                   --skip-match), query residues. The verdict is KNOWN,
                                   PARTIAL_MATCH, NOVEL when nothing in the index covers a single
                                   residue, FILTERED_OUT when the index had candidates but this
-                                  run's filters kept none (coverage then reports what the index
-                                  held), or NO_HASHES when the query could not be searched.
+                                  run's filters kept none, or NO_HASHES when the query could
+                                  not be searched. The coverage column is not one quantity down
+                                  the whole file: on KNOWN and PARTIAL_MATCH rows it is the
+                                  geometric match coverage, on FILTERED_OUT rows the hash-level
+                                  coverage the index held, which is generally larger. Each is the
+                                  honest number for its row; comparing the column across rows is
+                                  not. A residue named twice in the query counts twice in the
+                                  denominator, and is warned about.
                                   Screen with --skip-match or a LOW --max-node: a high --max-node
                                   asks whether a full-coverage match exists, where novelty asks
                                   whether anything like this exists at all, and the filters that

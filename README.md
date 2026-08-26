@@ -291,6 +291,14 @@ residues. The verdict is one of:
 | `FILTERED_OUT` | The database had candidates and this run's search filters kept none of them. The coverage column reports what the database held; there is no hit and no RMSD. Also warned about on stderr |
 | `NO_HASHES` | The query could not be searched at all — its residues are further apart than the index distance cutoff, so it produced no hashes. Also warned about on stderr |
 
+The coverage column is not one quantity down the whole file: on `KNOWN` and
+`PARTIAL_MATCH` rows it is geometric match coverage, on `FILTERED_OUT` rows the hash-level
+coverage the index held, which is generally larger. And a residue named twice in the query
+counts twice in the denominator — `A1-A5,A3-A7` has seven distinct residues but ten
+entries, so a perfect match reads 0.70 — which is warned about on stderr but not yet
+deduplicated, because the query length also feeds `--covered-node-ratio` and
+`--max-node-ratio`.
+
 Both bars matter. Coverage alone is not enough: the same residues in a different
 arrangement cover everything and are still a different motif — over 100 arbitrary
 motifs, a third of the KNOWN verdicts had a best hit worse than 2.0 Å before the RMSD

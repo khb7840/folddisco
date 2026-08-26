@@ -523,6 +523,24 @@ inverted index returned is captured before any search filter runs, and when filt
 remove every candidate the verdict is `FILTERED_OUT` with the index's coverage, no hit,
 no RMSD, and a warning on stderr naming the filters to loosen.
 
+### 10.2 Two things the coverage column will not tell you
+
+**The column is not one quantity.** On `KNOWN` and `PARTIAL_MATCH` rows it is geometric
+match coverage — residues the retrieval step actually placed. On `FILTERED_OUT` rows it is
+hash-level coverage, what the inverted index held before the filters ran, and that is
+generally the larger number. Each is the honest number for its row, and the row's verdict
+names which one it is, but a consumer reading down the column is mixing two measurements.
+
+**A residue named twice counts twice.** The parser keeps duplicates, and `residue_count`
+— the coverage denominator — is the length of that list, so `A1-A5,A3-A7` (two overlapping
+ranges, seven distinct residues, ten entries) scores a *perfect* seven-residue match as
+7/10 = 0.70 and reads `PARTIAL_MATCH` where it should read `KNOWN`. The same applies to
+`--covered-node-ratio` and `--max-node-ratio`. A query with repeats now warns on stderr,
+which is all that is safe to do here: **deduplicating is the right fix**, but it changes
+`residue_count` on the default path and therefore filtering, which would invalidate the
+byte-identity property in §4 and needs the author's protocol re-run to clear. The order is
+warn now, dedupe once it can be measured.
+
 **Operationally: screen with the prefilter or a low `--max-node`.** A high `--max-node`
 answers "is there a full-coverage match"; novelty asks "does anything like this exist",
 and partial matches are most of that answer. This pulls the *opposite* way from §2.1's
