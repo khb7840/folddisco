@@ -102,6 +102,9 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             header: args.contains("--header"),
             serial_query: args.contains("--serial-index"),
             output: args.value_from_str(["-o", "--output"]).unwrap_or("".into()),
+            // Novelty output mode
+            novelty_mode: args.contains("--novelty-mode"),
+            novelty_coverage_threshold: args.value_from_str("--novelty-coverage").unwrap_or(0.8),
             verbose: args.contains(["-v", "--verbose"]),
             help: args.contains(["-h", "--help"]),
         }),

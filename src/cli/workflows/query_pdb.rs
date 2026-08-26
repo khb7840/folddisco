@@ -7,6 +7,7 @@
 // When querying PDB files, we need index table and query file.
 
 use std::io::BufRead;
+use std::io::Write;
 
 use rayon::prelude::*;
 
@@ -137,6 +138,15 @@ display options:
  --partial-fit                    Superposition will find the best aligning substructure using LMS (Least Median of Squares)
  --superpose                      Print U, T, CA of matching residues
 
+novelty options:
+ --novelty-mode                   Replace the result listing with one verdict line per query:
+                                  query_id, NOVEL/PARTIAL_MATCH/KNOWN, best hit, residue coverage,
+                                  RMSD (NA with --skip-match), query residues. Composes with the
+                                  sensitivity options above: the more sensitive the search, the
+                                  fewer motifs are wrongly called novel
+ --novelty-coverage <FLOAT>       Residue coverage of the best hit needed to call a motif KNOWN.
+                                  Anything covered but below it is PARTIAL_MATCH [0.8]
+
 general options:
  -v, --verbose                    Print verbose messages
  -h, --help                       Print this help menu
@@ -183,6 +193,13 @@ folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco 
 # Maximum recall, accepting a worse ranking: widen every tolerance and rescore by dRMSD
 folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 \\
   -d 1.0 -a 10 --dist-ratio 0.08 --expand-radius 2 --ca-distance 2.0 --sort-by drmsd
+
+# Is a designed motif novel? One verdict line per design; grep NOVEL to keep the novel ones
+folddisco query -p design.pdb -q A10,A20,A30 -i index/pdb_folddisco --novelty-mode --nonrigid
+
+# Fast novelty screen of many designs without residue matching (RMSD prints as NA)
+folddisco query -q designs.txt -i index/afdb50_folddisco -t 6 --skip-match \\
+  --novelty-mode --novelty-coverage 0.9
 ";
 
 pub const MIN_CONNECTED_COMPONENT_SIZE: usize = 2;
@@ -251,6 +268,8 @@ pub fn query_pdb(env: AppArgs) {
             header,
             serial_query,
             output,
+            novelty_mode,
+            novelty_coverage_threshold,
             verbose,
             help: _,
         } => {
@@ -563,12 +582,25 @@ pub fn query_pdb(env: AppArgs) {
                             total_structures as usize, residue_count
                         );
                         match_results.retain(|(_, v)| match_filter.filter(v));
-                        sort_and_print_match_query_result(
-                            &mut match_results, top_n, 
-                            &output_path, &pdb_path, &query_string, 
-                            column_refs.as_deref(), output_with_superpose, header, verbose,
-                            match_sort_strategy.clone(),
-                        );
+                        if novelty_mode {
+                            // Highest residue coverage wins, lower RMSD breaks ties
+                            let best = match_results.iter().map(|(_, v)| v).max_by(
+                                |a, b| a.node_count.cmp(&b.node_count).then_with(
+                                    || b.rmsd.partial_cmp(&a.rmsd).unwrap_or(std::cmp::Ordering::Equal)
+                                )
+                            ).map(|v| (v.tid, v.node_count, Some(v.rmsd)));
+                            print_novelty_verdict(&novelty_verdict_line(
+                                &pdb_path, &query_string, residue_count,
+                                novelty_coverage_threshold, best,
+                            ), &output_path);
+                        } else {
+                            sort_and_print_match_query_result(
+                                &mut match_results, top_n, 
+                                &output_path, &pdb_path, &query_string, 
+                                column_refs.as_deref(), output_with_superpose, header, verbose,
+                                match_sort_strategy.clone(),
+                            );
+                        }
                     }
                     QueryMode::Web => {
                         let mut match_results = convert_structure_query_result_to_match_query_results(
@@ -585,10 +617,33 @@ pub fn query_pdb(env: AppArgs) {
                         );
                     }
                     QueryMode::PerStructure | QueryMode::SkipMatch => {
-                        sort_and_print_structure_query_result(
-                            &mut queried_from_indices, &output_path, 
-                            &pdb_path, &query_string, column_refs.as_deref(), header, verbose, structure_sort_strategy.clone()
-                        );
+                        if novelty_mode {
+                            // Without matching, the hashes covering a node are all we know,
+                            // and the IDF score has to break ties instead of the RMSD
+                            let best = queried_from_indices.iter().map(|(_, v)| v).max_by(|a, b| if skip_match {
+                                a.node_count.cmp(&b.node_count).then_with(
+                                    || a.idf.partial_cmp(&b.idf).unwrap_or(std::cmp::Ordering::Equal)
+                                )
+                            } else {
+                                a.max_matching_node_count.cmp(&b.max_matching_node_count).then_with(
+                                    || b.min_rmsd_with_max_match.partial_cmp(&a.min_rmsd_with_max_match)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                )
+                            }).map(|v| if skip_match {
+                                (v.tid, v.node_count, None)
+                            } else {
+                                (v.tid, v.max_matching_node_count, Some(v.min_rmsd_with_max_match))
+                            });
+                            print_novelty_verdict(&novelty_verdict_line(
+                                &pdb_path, &query_string, residue_count,
+                                novelty_coverage_threshold, best,
+                            ), &output_path);
+                        } else {
+                            sort_and_print_structure_query_result(
+                                &mut queried_from_indices, &output_path, 
+                                &pdb_path, &query_string, column_refs.as_deref(), header, verbose, structure_sort_strategy.clone()
+                            );
+                        }
                     }
                     QueryMode::ContradictoryPrintError => {
                         // This should have been caught earlier, but handle it just in case
@@ -608,6 +663,52 @@ pub fn query_pdb(env: AppArgs) {
             std::process::exit(1);
         }
     }
+}
+
+/// One-line novelty verdict for a query, tab separated:
+/// `query_id, NOVEL|PARTIAL_MATCH|KNOWN, best hit or NA, coverage, RMSD or NA, query residues`
+///
+/// `best` is the highest-coverage hit as (target id, covered residues, RMSD). Its
+/// RMSD is `None` when residue matching was skipped, printed as `NA` instead of the
+/// 0.0 it was never computed into. No hit at all is the NOVEL verdict.
+fn novelty_verdict_line(
+    query_id: &str, query_residues: &str, query_residue_count: usize,
+    coverage_threshold: f32, best: Option<(&str, usize, Option<f32>)>,
+) -> String {
+    let (tid, covered_nodes, rmsd) = match best {
+        Some(best) => best,
+        None => return format!("{}\tNOVEL\tNA\t0.0000\tNA\t{}", query_id, query_residues),
+    };
+    // A query without residues has nothing to cover, so it is never KNOWN
+    let coverage = if query_residue_count > 0 {
+        covered_nodes as f32 / query_residue_count as f32
+    } else {
+        0.0
+    };
+    let tier = if query_residue_count > 0 && coverage >= coverage_threshold {
+        "KNOWN"
+    } else if covered_nodes > 0 {
+        "PARTIAL_MATCH"
+    } else {
+        "NOVEL"
+    };
+    let rmsd = rmsd.map_or("NA".to_string(), |rmsd| format!("{:.4}", rmsd));
+    format!("{}\t{}\t{}\t{:.4}\t{}\t{}", query_id, tier, tid, coverage, rmsd, query_residues)
+}
+
+/// Append one verdict line to the output file, or print it to stdout. Verdicts are
+/// appended because a batch of queries usually collects into a single output file.
+fn print_novelty_verdict(line: &str, output_path: &str) {
+    if output_path.is_empty() {
+        println!("{}", line);
+        return;
+    }
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(output_path).expect(
+        &log_msg(FAIL, &format!("Failed to open file: {}", output_path))
+    );
+    file.write_all(format!("{}\n", line).as_bytes()).expect(
+        &log_msg(FAIL, &format!("Failed to write to file: {}", output_path))
+    );
 }
 
 pub fn res_chain_to_string(res_chain: &Vec<(u8, u64)>) -> String {
@@ -680,6 +781,8 @@ mod tests {
             header: true,
             serial_query: false,
             output: String::from(""),
+            novelty_mode: false,
+            novelty_coverage_threshold: 0.8,
             verbose: true,
             help: false,
         };
@@ -741,6 +844,8 @@ mod tests {
                 header: true,
                 serial_query: false,
                 output: String::from(""),
+                novelty_mode: false,
+                novelty_coverage_threshold: 0.8,
                 verbose: true,
                 partial_fit: false,
                 help: false,
@@ -804,9 +909,41 @@ mod tests {
             header: true,
             serial_query: false,
             output: String::from(""),
+            novelty_mode: false,
+            novelty_coverage_threshold: 0.8,
             verbose: true,
             help: false,
         };
         query_pdb(env);
+    }
+
+    #[test]
+    fn test_novelty_verdict_line() {
+        let residues = "A10,A20,A30";
+        // No hit at all is the NOVEL verdict, and it is still emitted
+        assert_eq!(
+            novelty_verdict_line("design.pdb", residues, 3, 0.8, None),
+            "design.pdb\tNOVEL\tNA\t0.0000\tNA\tA10,A20,A30"
+        );
+        // Fully covered motif with a matched RMSD
+        assert_eq!(
+            novelty_verdict_line("design.pdb", residues, 3, 0.8, Some(("1abc", 3, Some(0.5)))),
+            "design.pdb\tKNOWN\t1abc\t1.0000\t0.5000\tA10,A20,A30"
+        );
+        // Covered below the threshold
+        assert_eq!(
+            novelty_verdict_line("design.pdb", residues, 3, 0.8, Some(("1abc", 2, Some(1.25)))),
+            "design.pdb\tPARTIAL_MATCH\t1abc\t0.6667\t1.2500\tA10,A20,A30"
+        );
+        // --skip-match: the RMSD was never computed, so it is NA and not 0.0000
+        assert_eq!(
+            novelty_verdict_line("design.pdb", residues, 3, 0.8, Some(("1abc", 3, None))),
+            "design.pdb\tKNOWN\t1abc\t1.0000\tNA\tA10,A20,A30"
+        );
+        // Zero residues must not divide by zero, and is never KNOWN
+        assert_eq!(
+            novelty_verdict_line("design.pdb", "", 0, 0.0, Some(("1abc", 0, None))),
+            "design.pdb\tNOVEL\t1abc\t0.0000\tNA\t"
+        );
     }
 }

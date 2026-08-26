@@ -92,6 +92,9 @@ pub enum AppArgs {
         header: bool,
         serial_query: bool,
         output: String,
+        // novelty output mode: replace the result listing with a one-line verdict
+        novelty_mode: bool,
+        novelty_coverage_threshold: f32,
         verbose: bool,
         help: bool,
     },
