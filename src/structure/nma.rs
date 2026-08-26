@@ -3,10 +3,15 @@
 //! This module builds a residue-level elastic network in torsion space (phi/psi),
 //! samples low-frequency torsional normal modes, and applies the perturbations by
 //! rotating downstream backbone atoms around peptide bond axes.
+//!
+//! Rotating about the N-CA and CA-C axes leaves both pivot atoms on the axis, so
+//! every bonded distance is preserved exactly - the conformers are valid backbones
+//! by construction and there is nothing to validate afterwards. What does need care
+//! is where a rotation stops: chains are not bonded to each other, so a torsion in
+//! one chain must not displace another, and the displacement of every rotation is
+//! rescaled to the backbone RMSD the caller asked for.
 
 use nalgebra::{DMatrix, DVector, SymmetricEigen};
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
 use rayon::prelude::*;
 
 use crate::structure::coordinate::{approx_cb, Coordinate};
@@ -42,6 +47,15 @@ const DIAGONAL_REGULARIZATION: f64 = 1e-5;
 /// the downstream chain least). Both arbitrary, never swept.
 const LOCAL_TORSION_SELF_WEIGHT: f64 = 0.25;
 const LOCAL_PHI_PSI_COUPLING: f64 = 0.10;
+/// A mode counts as a uniform (trivial) torsion mode when the phi and psi fields
+/// deviate from their own means by less than this. Eigenvectors are unit norm, so it
+/// is a fraction of the mode's length; anything this flat carries no deformation.
+const UNIFORM_MODE_RESIDUAL: f64 = 1e-3;
+/// Torsion RMS, in radians, at which the response of the backbone to the sampled mode
+/// is probed before scaling it to the requested displacement. A quarter of a degree is
+/// small enough for the response to be linear in the amplitude (which is what makes a
+/// single rescale land on the target) and large enough to stay clear of float noise.
+const TORSION_PROBE_RAD: f32 = 0.005;
 
 /// Ensemble shape used by `--enm-sample`: how many conformers to sample and how many
 /// low-frequency modes to draw them from. The benchmark on this branch varied the
@@ -49,24 +63,55 @@ const LOCAL_PHI_PSI_COUPLING: f64 = 0.10;
 pub const ENSEMBLE_CONFORMERS: usize = 5;
 pub const ENSEMBLE_TORSION_MODES: usize = 3;
 
-const TORSION_RADIANS_PER_ANGSTROM: f32 = 0.06;
-const MAX_TORSION_STEP_RAD: f32 = 0.12;
-const MAX_TARGET_RMSD_FOR_WIGGLE: f32 = 0.75;
-const MIN_TARGET_RMSD_FOR_WIGGLE: f32 = 0.05;
-
-// Plausibility limits of a backbone, in Angstroms: bonded distances and the widest
-// adjacent C-alpha separation a peptide can show. Physical ranges, deliberately loose.
-const MIN_N_CA_BOND: f32 = 0.7;
-const MAX_N_CA_BOND: f32 = 2.6;
-const MIN_CA_C_BOND: f32 = 0.7;
-const MAX_CA_C_BOND: f32 = 2.6;
-const MIN_C_N_PEPTIDE_BOND: f32 = 0.7;
-const MAX_C_N_PEPTIDE_BOND: f32 = 2.6;
-const MAX_ADJACENT_CA_DISTANCE: f32 = 6.5;
-const MAX_CONFORMER_SAMPLING_ATTEMPTS: usize = 8;
-const CONFORMER_RETRY_SCALE_FACTOR: f32 = 0.85;
-
 type TorsionField = Vec<[f32; 2]>;
+
+/// SplitMix64. Sampling has to be reproducible from the seed alone, and this is short
+/// enough to audit here rather than resting on a dependency's stability across
+/// versions. Constants from Steele et al., "Fast splittable pseudorandom number
+/// generators" (2014).
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in [-1, 1), from the top 53 bits.
+    fn next_signed_unit(&mut self) -> f64 {
+        let unit = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+        unit * 2.0 - 1.0
+    }
+}
+
+/// Half-open residue ranges of the chains, in the order the residues are stored.
+///
+/// Everything downstream of a torsion is rotated with it, and "downstream" stops at
+/// the end of the chain: two chains share no covalent bond, so a phi in one cannot
+/// move the other. Without this the dominant term of a multi-chain query's
+/// displacement is one chain sliding rigidly away from the rest.
+fn chain_segments(chain_per_residue: &[u8]) -> Vec<(usize, usize)> {
+    let mut segments = Vec::new();
+    if chain_per_residue.is_empty() {
+        return segments;
+    }
+    let mut start = 0usize;
+    for i in 1..chain_per_residue.len() {
+        if chain_per_residue[i] != chain_per_residue[i - 1] {
+            segments.push((start, i));
+            start = i;
+        }
+    }
+    segments.push((start, chain_per_residue.len()));
+    segments
+}
 
 fn build_backbone_arrays(
     structure: &CompactStructure,
@@ -101,11 +146,12 @@ fn add_laplacian_coupling(h: &mut DMatrix<f64>, i: usize, j: usize, weight: f64)
     }
 }
 
-fn build_torsion_hessian(ca_vec: &[Coordinate]) -> DMatrix<f64> {
+fn build_torsion_hessian(ca_vec: &[Coordinate], segments: &[(usize, usize)]) -> DMatrix<f64> {
     let n = ca_vec.len();
     let mut h = DMatrix::<f64>::zeros(2 * n, 2 * n);
 
-    // Spatial ENM couplings in torsion space
+    // Spatial ENM couplings in torsion space. These are non-bonded contacts, so they
+    // are wanted between chains as much as within one.
     let cutoff2 = TORSION_ENM_CUTOFF_ANGSTROM * TORSION_ENM_CUTOFF_ANGSTROM;
     for i in 0..n {
         for j in (i + 1)..n {
@@ -119,9 +165,12 @@ fn build_torsion_hessian(ca_vec: &[Coordinate]) -> DMatrix<f64> {
         }
     }
 
-    // Sequence-neighbor couplings (chain smoothness)
-    for i in 0..n.saturating_sub(1) {
-        add_laplacian_coupling(&mut h, i, i + 1, SEQUENCE_COUPLING_WEIGHT);
+    // Sequence-neighbor couplings (chain smoothness). Bonded, so they stop at the end
+    // of each chain.
+    for (start, end) in segments {
+        for i in *start..end.saturating_sub(1) {
+            add_laplacian_coupling(&mut h, i, i + 1, SEQUENCE_COUPLING_WEIGHT);
+        }
     }
 
     // Mild phi/psi local coupling + regularization for numerical stability
@@ -135,6 +184,29 @@ fn build_torsion_hessian(ca_vec: &[Coordinate]) -> DMatrix<f64> {
     }
 
     h
+}
+
+/// True for a mode that only shifts every phi (or every psi) by the same amount.
+///
+/// Such a mode deforms nothing: it is the torsion-space equivalent of a rigid motion,
+/// and the centering step in the sampler removes it exactly. It has to be recognised by
+/// its shape rather than by a near-zero eigenvalue, because the local phi/psi
+/// self-coupling in the Hessian lifts these modes to an eigenvalue of order
+/// `LOCAL_TORSION_SELF_WEIGHT`. Left in, they crowd out the genuine low-frequency modes
+/// and every conformer of the ensemble comes out as the same displacement.
+fn is_uniform_torsion_mode(mode: &DVector<f64>) -> bool {
+    let n_res = mode.len() / 2;
+    if n_res == 0 {
+        return true;
+    }
+    let mut residual = 0.0f64;
+    for torsion_idx in 0..2 {
+        let mean = (0..n_res).map(|i| mode[2 * i + torsion_idx]).sum::<f64>() / n_res as f64;
+        residual += (0..n_res)
+            .map(|i| (mode[2 * i + torsion_idx] - mean).powi(2))
+            .sum::<f64>();
+    }
+    residual.sqrt() < UNIFORM_MODE_RESIDUAL
 }
 
 fn select_nontrivial_modes(hessian: DMatrix<f64>, mode_count: usize) -> Vec<DVector<f64>> {
@@ -155,8 +227,9 @@ fn select_nontrivial_modes(hessian: DMatrix<f64>, mode_count: usize) -> Vec<DVec
     ranked
         .into_iter()
         .filter(|(val, _)| *val > EIGENVALUE_EPS)
-        .take(mode_count)
         .map(|(_, idx)| eig.eigenvectors.column(idx).into_owned())
+        .filter(|mode| !is_uniform_torsion_mode(mode))
+        .take(mode_count)
         .collect()
 }
 
@@ -164,7 +237,9 @@ fn select_nontrivial_modes(hessian: DMatrix<f64>, mode_count: usize) -> Vec<DVec
 ///
 /// `seed` makes the ensemble reproducible: the same query, conformer count and mode
 /// count must give the same hashes on every run, otherwise a search is not repeatable
-/// and neither are the benchmarks measuring it.
+/// and neither are the benchmarks measuring it. Everything from here to the finished
+/// conformer is therefore serial - a rayon `sum` over floats reorders the additions
+/// with the thread count, which was enough to move a conformer by 2e-5 A.
 fn sample_torsion_displacement(
     modes: &[DVector<f64>], n_residues: usize, seed: u64,
 ) -> TorsionField {
@@ -173,12 +248,10 @@ fn sample_torsion_displacement(
         return disp;
     }
 
-    let mut rng = StdRng::seed_from_u64(seed);
-    let coeffs: Vec<f64> = (0..modes.len())
-        .map(|_| rng.gen_range(-1.0f64..1.0f64))
-        .collect();
+    let mut rng = SplitMix64::new(seed);
+    let coeffs: Vec<f64> = (0..modes.len()).map(|_| rng.next_signed_unit()).collect();
 
-    disp.par_iter_mut().enumerate().for_each(|(i, d)| {
+    for (i, d) in disp.iter_mut().enumerate() {
         for torsion_idx in 0..2 {
             let idx = 2 * i + torsion_idx;
             let mut value = 0.0f64;
@@ -187,7 +260,7 @@ fn sample_torsion_displacement(
             }
             d[torsion_idx] = value as f32;
         }
-    });
+    }
 
     disp
 }
@@ -197,36 +270,29 @@ fn torsion_rmsd(disp: &TorsionField) -> f32 {
         return 0.0;
     }
 
-    let sum: f32 = disp.par_iter().map(|d| d[0] * d[0] + d[1] * d[1]).sum();
+    let sum: f32 = disp.iter().map(|d| d[0] * d[0] + d[1] * d[1]).sum();
     (sum / ((disp.len() * 2) as f32)).sqrt()
 }
 
-fn scale_torsion_displacement(disp: &mut TorsionField, target_rmsd_angstrom: f32) {
-    let target_torsion_rmsd = (target_rmsd_angstrom.abs() * TORSION_RADIANS_PER_ANGSTROM).max(0.0);
-    let current = torsion_rmsd(disp);
-    if current <= f32::EPSILON || target_torsion_rmsd <= 0.0 {
-        return;
-    }
-
-    let scale = target_torsion_rmsd / current;
-    disp.par_iter_mut().for_each(|d| {
+fn scale_torsion_displacement(disp: &mut TorsionField, scale: f32) {
+    for d in disp.iter_mut() {
         d[0] *= scale;
         d[1] *= scale;
-    });
-}
-
-fn cap_torsion_step(disp: &mut TorsionField, cap: f32) {
-    if cap <= 0.0 {
-        return;
     }
-
-    disp.par_iter_mut().for_each(|d| {
-        d[0] = d[0].clamp(-cap, cap);
-        d[1] = d[1].clamp(-cap, cap);
-    });
 }
 
-fn center_and_smooth_torsion_displacement(disp: &mut TorsionField) {
+/// Rescale the field to a given torsion RMS, in radians. Returns false when the field
+/// is all but zero and cannot be scaled to anything.
+fn set_torsion_rmsd(disp: &mut TorsionField, target_rad: f32) -> bool {
+    let current = torsion_rmsd(disp);
+    if current <= f32::EPSILON {
+        return false;
+    }
+    scale_torsion_displacement(disp, target_rad / current);
+    true
+}
+
+fn center_and_smooth_torsion_displacement(disp: &mut TorsionField, segments: &[(usize, usize)]) {
     if disp.is_empty() {
         return;
     }
@@ -240,22 +306,29 @@ fn center_and_smooth_torsion_displacement(disp: &mut TorsionField) {
         d[1] -= mean_psi;
     }
 
-    if disp.len() < 3 || TORSION_SMOOTHING_PASSES == 0 {
+    if TORSION_SMOOTHING_PASSES == 0 {
         return;
     }
 
+    // Smoothing runs along the chain, so it stops where the chain does: averaging the
+    // last torsion of one chain with the first of the next has no physical meaning.
     let mut scratch = disp.clone();
     let self_weight = 1.0 - (2.0 * TORSION_SMOOTHING_NEIGHBOR_WEIGHT);
     for _ in 0..TORSION_SMOOTHING_PASSES {
-        for i in 1..(disp.len() - 1) {
-            for torsion_idx in 0..2 {
-                scratch[i][torsion_idx] = disp[i][torsion_idx] * self_weight
-                    + disp[i - 1][torsion_idx] * TORSION_SMOOTHING_NEIGHBOR_WEIGHT
-                    + disp[i + 1][torsion_idx] * TORSION_SMOOTHING_NEIGHBOR_WEIGHT;
+        for (start, end) in segments {
+            if end - start < 3 {
+                continue;
             }
+            for i in (start + 1)..(end - 1) {
+                for torsion_idx in 0..2 {
+                    scratch[i][torsion_idx] = disp[i][torsion_idx] * self_weight
+                        + disp[i - 1][torsion_idx] * TORSION_SMOOTHING_NEIGHBOR_WEIGHT
+                        + disp[i + 1][torsion_idx] * TORSION_SMOOTHING_NEIGHBOR_WEIGHT;
+                }
+            }
+            scratch[*start] = disp[*start];
+            scratch[end - 1] = disp[end - 1];
         }
-        scratch[0] = disp[0];
-        scratch[disp.len() - 1] = disp[disp.len() - 1];
         std::mem::swap(disp, &mut scratch);
     }
 }
@@ -283,19 +356,21 @@ fn rotate_point_around_axis(
     pivot.add(&term1.add(&term2).add(&term3))
 }
 
+/// Rotate `coords[start..end]` about the axis from `pivot_a` to `pivot_b`.
 fn apply_axis_rotation(
     coords: &mut [Coordinate],
-    start_idx: usize,
+    start: usize,
+    end: usize,
     pivot_a: &Coordinate,
     pivot_b: &Coordinate,
     angle: f32,
 ) {
-    if start_idx >= coords.len() || angle.abs() <= f32::EPSILON {
+    if start >= end || end > coords.len() || angle.abs() <= f32::EPSILON {
         return;
     }
 
     let axis = pivot_b.sub(pivot_a);
-    for coord in coords.iter_mut().skip(start_idx) {
+    for coord in coords[start..end].iter_mut() {
         *coord = rotate_point_around_axis(coord, pivot_a, &axis, angle);
     }
 }
@@ -314,36 +389,53 @@ fn build_backbone_atom_coords(
     atoms
 }
 
-fn apply_torsion_displacement(
-    structure: &CompactStructure,
-    n_vec: &[Coordinate],
-    ca_vec: &[Coordinate],
-    c_vec: &[Coordinate],
-    disp: &TorsionField,
-) -> CompactStructure {
-    let mut sampled = structure.clone();
-    let mut atoms = build_backbone_atom_coords(n_vec, ca_vec, c_vec);
-    let n_res = structure.num_residues;
+/// Apply a torsion displacement to a backbone atom array laid out as
+/// `[N, CA, C]` per residue, one chain at a time.
+fn displace_backbone(
+    base_atoms: &[Coordinate], segments: &[(usize, usize)], disp: &TorsionField,
+) -> Vec<Coordinate> {
+    let mut atoms = base_atoms.to_vec();
+    for (start, end) in segments {
+        let (start, end) = (*start, *end);
+        for i in start..end {
+            // phi rotation around N-CA; rotate C(i) and everything after it in this chain
+            if i > start {
+                let n_i = atoms[3 * i];
+                let ca_i = atoms[3 * i + 1];
+                apply_axis_rotation(&mut atoms, 3 * i + 2, 3 * end, &n_i, &ca_i, disp[i][0]);
+            }
 
-    for i in 0..n_res {
-        // phi rotation around N-CA; rotate C(i) and all downstream atoms
-        if i > 0 {
-            let n_i = atoms[3 * i];
-            let ca_i = atoms[3 * i + 1];
-            let phi_delta = disp[i][0];
-            apply_axis_rotation(&mut atoms, 3 * i + 2, &n_i, &ca_i, phi_delta);
-        }
-
-        // psi rotation around CA-C; rotate next residue and downstream atoms
-        if i + 1 < n_res {
-            let ca_i = atoms[3 * i + 1];
-            let c_i = atoms[3 * i + 2];
-            let psi_delta = disp[i][1];
-            apply_axis_rotation(&mut atoms, 3 * (i + 1), &ca_i, &c_i, psi_delta);
+            // psi rotation around CA-C; rotate the next residue and everything after it
+            if i + 1 < end {
+                let ca_i = atoms[3 * i + 1];
+                let c_i = atoms[3 * i + 2];
+                apply_axis_rotation(&mut atoms, 3 * (i + 1), 3 * end, &ca_i, &c_i, disp[i][1]);
+            }
         }
     }
+    atoms
+}
 
-    for i in 0..n_res {
+/// Backbone displacement RMSD between two atom arrays in the same frame, in Angstroms.
+///
+/// No superposition: the rotations keep the first residue of every chain fixed, so the
+/// two conformations already share a frame and this is the distance the atoms actually
+/// moved. It is the quantity `--nma-rmsd` names.
+fn backbone_displacement_rmsd(base_atoms: &[Coordinate], atoms: &[Coordinate]) -> f32 {
+    if base_atoms.is_empty() || base_atoms.len() != atoms.len() {
+        return 0.0;
+    }
+    let mut sum = 0.0f64;
+    for (a, b) in base_atoms.iter().zip(atoms.iter()) {
+        sum += a.calc_distance(b).powi(2) as f64;
+    }
+    (sum / base_atoms.len() as f64).sqrt() as f32
+}
+
+/// Write a displaced backbone back into a copy of the structure, C-beta included.
+fn structure_with_backbone(structure: &CompactStructure, atoms: &[Coordinate]) -> CompactStructure {
+    let mut sampled = structure.clone();
+    for i in 0..structure.num_residues {
         let n = atoms[3 * i];
         let ca = atoms[3 * i + 1];
         let c = atoms[3 * i + 2];
@@ -365,104 +457,230 @@ fn apply_torsion_displacement(
         sampled.cb_vector.y[i] = Some(cb.y);
         sampled.cb_vector.z[i] = Some(cb.z);
     }
-
     sampled
 }
 
-fn is_backbone_plausible(structure: &CompactStructure) -> bool {
-    if structure.num_residues < 2 {
-        return true;
-    }
-
-    for i in 0..structure.num_residues {
-        let (n, ca, c) = (
-            structure.n_vector.get_coord(i),
-            structure.ca_vector.get_coord(i),
-            structure.c_vector.get_coord(i),
-        );
-        if let (Some(n), Some(ca), Some(c)) = (n, ca, c) {
-            let n_ca = n.calc_distance(&ca);
-            let ca_c = ca.calc_distance(&c);
-            if !(MIN_N_CA_BOND..=MAX_N_CA_BOND).contains(&n_ca) {
-                return false;
-            }
-            if !(MIN_CA_C_BOND..=MAX_CA_C_BOND).contains(&ca_c) {
-                return false;
-            }
-            if i + 1 < structure.num_residues {
-                if let Some(next_n) = structure.n_vector.get_coord(i + 1) {
-                    let c_n = c.calc_distance(&next_n);
-                    if !(MIN_C_N_PEPTIDE_BOND..=MAX_C_N_PEPTIDE_BOND).contains(&c_n) {
-                        return false;
-                    }
-                }
-                if let Some(next_ca) = structure.ca_vector.get_coord(i + 1) {
-                    let ca_ca = ca.calc_distance(&next_ca);
-                    if ca_ca > MAX_ADJACENT_CA_DISTANCE {
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-    true
-}
-
-/// Generate an ensemble consisting of the original structure plus torsion-ENM sampled conformations.
+/// Generate an ensemble consisting of the original structure plus torsion-ENM sampled
+/// conformations, each displaced by `target_backbone_rmsd` Angstroms of backbone RMSD.
+///
+/// The requested displacement is delivered rather than approximated: the response of a
+/// backbone to a torsion perturbation depends on the length of the chain downstream of
+/// it, so there is no fixed radians-per-Angstrom. Each conformer is therefore probed at
+/// a small amplitude and scaled once by the ratio to the target, which lands inside a
+/// few percent while the response is linear.
 pub fn generate_ensemble(
     query_structure: &CompactStructure,
     num_confs: usize,
-    target_rmsd: f32,
+    target_backbone_rmsd: f32,
     nma_modes: usize,
 ) -> Result<Vec<CompactStructure>, String> {
     let mut ensemble = Vec::with_capacity(num_confs.saturating_add(1));
     ensemble.push(query_structure.clone());
 
-    if num_confs == 0 || nma_modes == 0 || query_structure.num_residues < 3 {
+    let target_backbone_rmsd = target_backbone_rmsd.abs();
+    if num_confs == 0 || nma_modes == 0 || query_structure.num_residues < 3
+        || target_backbone_rmsd <= 0.0 {
         return Ok(ensemble);
     }
-    let effective_target_rmsd = target_rmsd
-        .abs()
-        .clamp(MIN_TARGET_RMSD_FOR_WIGGLE, MAX_TARGET_RMSD_FOR_WIGGLE);
 
     let (n_vec, ca_vec, c_vec) = build_backbone_arrays(query_structure)?;
-    let hessian = build_torsion_hessian(&ca_vec);
+    let segments = chain_segments(&query_structure.chain_per_residue[..query_structure.num_residues]);
+    let hessian = build_torsion_hessian(&ca_vec, &segments);
     let modes = select_nontrivial_modes(hessian, nma_modes);
 
     if modes.is_empty() {
         return Ok(ensemble);
     }
+    let base_atoms = build_backbone_atom_coords(&n_vec, &ca_vec, &c_vec);
 
     let sampled: Vec<CompactStructure> = (0..num_confs)
         .into_par_iter()
         .map(|conf_index| {
-            let mut best: Option<(f32, CompactStructure)> = None;
-            for attempt in 0..MAX_CONFORMER_SAMPLING_ATTEMPTS {
-                // Deterministic per (conformer, attempt) so the ensemble is reproducible
-                // regardless of how rayon schedules the work.
-                let seed = (conf_index as u64) << 8 | attempt as u64;
-                let mut disp =
-                    sample_torsion_displacement(&modes, query_structure.num_residues, seed);
-                let attempt_scale = CONFORMER_RETRY_SCALE_FACTOR.powi(attempt as i32);
-                scale_torsion_displacement(&mut disp, effective_target_rmsd * attempt_scale);
-                center_and_smooth_torsion_displacement(&mut disp);
-                cap_torsion_step(&mut disp, MAX_TORSION_STEP_RAD);
-                let conformer =
-                    apply_torsion_displacement(query_structure, &n_vec, &ca_vec, &c_vec, &disp);
-                if is_backbone_plausible(&conformer) {
-                    return conformer;
-                }
-
-                let eff = torsion_rmsd(&disp);
-                if best.as_ref().map_or(true, |(curr, _)| eff < *curr) {
-                    best = Some((eff, conformer));
-                }
+            // Deterministic per conformer, so the ensemble does not depend on how
+            // rayon schedules the work.
+            let mut disp =
+                sample_torsion_displacement(&modes, query_structure.num_residues, conf_index as u64);
+            center_and_smooth_torsion_displacement(&mut disp, &segments);
+            if !set_torsion_rmsd(&mut disp, TORSION_PROBE_RAD) {
+                return query_structure.clone();
             }
-            best.map(|(_, conf)| conf)
-                .unwrap_or_else(|| query_structure.clone())
+            let probe = displace_backbone(&base_atoms, &segments, &disp);
+            let probe_rmsd = backbone_displacement_rmsd(&base_atoms, &probe);
+            if probe_rmsd <= f32::EPSILON {
+                return query_structure.clone();
+            }
+            scale_torsion_displacement(&mut disp, target_backbone_rmsd / probe_rmsd);
+            let atoms = displace_backbone(&base_atoms, &segments, &disp);
+            structure_with_backbone(query_structure, &atoms)
         })
         .collect();
 
     ensemble.extend(sampled);
     Ok(ensemble)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::controller::io::read_compact_structure;
+
+    /// Both queries shipped with the tool. Multi-chain on purpose: 1G2F has 2 chains
+    /// and 4CHA has 6, and treating them as one continuous chain is exactly the bug
+    /// these tests exist to keep out.
+    const EXAMPLE_QUERIES: [&str; 2] = ["query/1G2F.pdb", "query/4CHA.pdb"];
+
+    fn load(path: &str) -> CompactStructure {
+        read_compact_structure(path).expect("failed to read structure").0
+    }
+
+    /// Backbone (N, CA, C) displacement RMSD between two conformations of the same
+    /// structure, in the frame they are stored in.
+    fn backbone_rmsd(a: &CompactStructure, b: &CompactStructure) -> f32 {
+        let mut sum = 0.0f64;
+        let mut count = 0usize;
+        for i in 0..a.num_residues {
+            for (va, vb) in [
+                (&a.n_vector, &b.n_vector), (&a.ca_vector, &b.ca_vector), (&a.c_vector, &b.c_vector),
+            ] {
+                if let (Some(pa), Some(pb)) = (va.get_coord(i), vb.get_coord(i)) {
+                    sum += pa.calc_distance(&pb).powi(2) as f64;
+                    count += 1;
+                }
+            }
+        }
+        if count == 0 { 0.0 } else { (sum / count as f64).sqrt() as f32 }
+    }
+
+    #[test]
+    fn rotating_one_chain_leaves_the_others_where_they_were() {
+        let structure = load("query/1G2F.pdb");
+        let (n_vec, ca_vec, c_vec) = build_backbone_arrays(&structure).unwrap();
+        let base = build_backbone_atom_coords(&n_vec, &ca_vec, &c_vec);
+        let segments = chain_segments(&structure.chain_per_residue[..structure.num_residues]);
+        assert!(segments.len() > 1, "the test structure must have more than one chain");
+        let boundary = segments[1].0;
+
+        // A psi at the very start of the first chain: everything after it inside that
+        // chain swings, and nothing in any later chain may move at all.
+        let mut disp = vec![[0.0f32; 2]; structure.num_residues];
+        disp[0][1] = 0.3;
+        let moved = displace_backbone(&base, &segments, &disp);
+
+        for atom in (3 * boundary)..base.len() {
+            let drift = base[atom].calc_distance(&moved[atom]);
+            assert!(drift < 1e-4,
+                "atom {} of a later chain moved {} A for a torsion in the first chain",
+                atom, drift);
+        }
+        let last_of_first_chain = base[3 * boundary - 1]
+            .calc_distance(&moved[3 * boundary - 1]);
+        assert!(last_of_first_chain > 1.0,
+            "the rotation did not propagate along its own chain ({} A)", last_of_first_chain);
+    }
+
+    #[test]
+    fn torsion_rotation_preserves_bonded_geometry() {
+        // Rotating about the N-CA and CA-C axes leaves both pivot atoms on the axis,
+        // so every bonded distance is invariant by construction, at any amplitude.
+        // This is the invariant that makes a plausibility check on bond lengths
+        // pointless, and it has to hold for a displacement far larger than any the
+        // sampler asks for.
+        for path in EXAMPLE_QUERIES {
+            let structure = load(path);
+            let ensemble = generate_ensemble(&structure, 2, 20.0, 3).expect("sampling failed");
+            for conformer in ensemble.iter().skip(1) {
+                for i in 0..structure.num_residues {
+                    let before_n_ca = structure.n_vector.get_coord(i).unwrap()
+                        .calc_distance(&structure.ca_vector.get_coord(i).unwrap());
+                    let after_n_ca = conformer.n_vector.get_coord(i).unwrap()
+                        .calc_distance(&conformer.ca_vector.get_coord(i).unwrap());
+                    assert!((before_n_ca - after_n_ca).abs() < 1e-2,
+                        "{} residue {}: N-CA {} -> {}", path, i, before_n_ca, after_n_ca);
+                    let before_ca_c = structure.ca_vector.get_coord(i).unwrap()
+                        .calc_distance(&structure.c_vector.get_coord(i).unwrap());
+                    let after_ca_c = conformer.ca_vector.get_coord(i).unwrap()
+                        .calc_distance(&conformer.c_vector.get_coord(i).unwrap());
+                    assert!((before_ca_c - after_ca_c).abs() < 1e-2,
+                        "{} residue {}: CA-C {} -> {}", path, i, before_ca_c, after_ca_c);
+                    // Peptide bond and adjacent CA-CA, inside a chain only
+                    if i + 1 < structure.num_residues
+                        && structure.chain_per_residue[i] == structure.chain_per_residue[i + 1] {
+                        let before_c_n = structure.c_vector.get_coord(i).unwrap()
+                            .calc_distance(&structure.n_vector.get_coord(i + 1).unwrap());
+                        let after_c_n = conformer.c_vector.get_coord(i).unwrap()
+                            .calc_distance(&conformer.n_vector.get_coord(i + 1).unwrap());
+                        assert!((before_c_n - after_c_n).abs() < 1e-2,
+                            "{} residue {}: C-N {} -> {}", path, i, before_c_n, after_c_n);
+                        let before_ca_ca = structure.ca_vector.get_coord(i).unwrap()
+                            .calc_distance(&structure.ca_vector.get_coord(i + 1).unwrap());
+                        let after_ca_ca = conformer.ca_vector.get_coord(i).unwrap()
+                            .calc_distance(&conformer.ca_vector.get_coord(i + 1).unwrap());
+                        assert!((before_ca_ca - after_ca_ca).abs() < 1e-2,
+                            "{} residue {}: CA-CA {} -> {}", path, i, before_ca_ca, after_ca_ca);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn achieved_backbone_rmsd_matches_the_request() {
+        // --nma-rmsd is documented in Angstroms, so the conformers have to land on
+        // the value asked for rather than on some length-dependent multiple of it.
+        for path in EXAMPLE_QUERIES {
+            let structure = load(path);
+            for requested in [0.25f32, 0.5, 1.0] {
+                let ensemble = generate_ensemble(&structure, 3, requested, 3).expect("sampling failed");
+                assert_eq!(ensemble.len(), 4);
+                for conformer in ensemble.iter().skip(1) {
+                    let achieved = backbone_rmsd(&structure, conformer);
+                    let error = (achieved - requested).abs() / requested;
+                    assert!(error < 0.15,
+                        "{}: requested {} A, achieved {:.4} A ({:.0}% off)",
+                        path, requested, achieved, error * 100.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn conformers_deform_the_query_without_being_the_query() {
+        let structure = load("query/1G2F.pdb");
+        let ensemble = generate_ensemble(&structure, 3, 0.5, 3).expect("sampling failed");
+        for conformer in ensemble.iter().skip(1) {
+            assert!(backbone_rmsd(&structure, conformer) > 1e-3, "conformer is a copy of the query");
+        }
+        // Distinct conformers, not the same displacement three times
+        for i in 1..ensemble.len() {
+            for j in (i + 1)..ensemble.len() {
+                assert!(backbone_rmsd(&ensemble[i], &ensemble[j]) > 1e-3,
+                    "conformers {} and {} are identical", i, j);
+            }
+        }
+    }
+
+    #[test]
+    fn ensemble_is_reproducible_and_thread_count_independent() {
+        let structure = load("query/1G2F.pdb");
+        let first = generate_ensemble(&structure, 4, 0.5, 3).expect("sampling failed");
+        let second = generate_ensemble(&structure, 4, 0.5, 3).expect("sampling failed");
+        let single_threaded = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap()
+            .install(|| generate_ensemble(&structure, 4, 0.5, 3).expect("sampling failed"));
+        for (i, conformer) in first.iter().enumerate() {
+            assert_eq!(backbone_rmsd(conformer, &second[i]), 0.0, "conformer {} not reproducible", i);
+            assert_eq!(backbone_rmsd(conformer, &single_threaded[i]), 0.0,
+                "conformer {} depends on the thread count", i);
+        }
+    }
+
+    #[test]
+    fn degenerate_requests_return_the_query_alone() {
+        let structure = load("query/1G2F.pdb");
+        assert_eq!(generate_ensemble(&structure, 0, 0.5, 3).unwrap().len(), 1);
+        assert_eq!(generate_ensemble(&structure, 5, 0.5, 0).unwrap().len(), 1);
+        // A structure too short to have an interior torsion
+        let mut tiny = structure.clone();
+        tiny.num_residues = 2;
+        assert_eq!(generate_ensemble(&tiny, 5, 0.5, 3).unwrap().len(), 1);
+    }
 }

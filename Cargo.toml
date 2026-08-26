@@ -31,9 +31,9 @@ regex = "1.10.4"
 petgraph = "0.6.4"
 libc = "0.2.155"
 dashmap = { version = "6.1.0", features = ["rayon"] }
-# Torsion-angle ENM query sampling (--non-rigid)
+# Torsion-angle ENM query sampling (--enm-sample). Only SymmetricEigen is used;
+# the sampler's PRNG is the SplitMix64 in src/structure/nma.rs.
 nalgebra = "0.33.2"
-rand = "0.8.5"
 
 
 [build-dependencies]

@@ -77,8 +77,11 @@ non-rigid search:
                                   deep recall measured (recall 0.542 vs 0.518 on the
                                   zinc-finger benchmark) at ~4x the runtime, and it can lose
                                   ground at the very top of the ranking for 3-residue motifs
- --nma-rmsd <FLOAT>               Target backbone RMSD of each conformer, in Angstroms.
-                                  Clamped to [0.05, 0.75] to keep the backbone plausible [0.5]
+ --nma-rmsd <FLOAT>               How far each conformer is displaced, as the RMSD of its
+                                  backbone N/CA/C atoms from the query, in Angstroms. Delivered
+                                  to within a few percent: each conformer is measured and
+                                  rescaled, because a torsion's reach depends on the length of
+                                  the chain downstream of it [0.5]
 
 filtering options:
  --total-match <INT>              Filter out structures with less than total match count [0]
