@@ -8,7 +8,7 @@ use crate::geometry::core::{GeometricHash, HashType};
 use crate::index::indextable::FolddiscoIndex;
 use crate::utils::convert::{is_aa_group_char, map_one_letter_to_u8_vec};
 use crate::utils::combination::CombinationIterator;
-use crate::utils::log::{log_msg, FAIL};
+use crate::utils::log::{log_msg, print_log_msg, FAIL};
 use super::expand::{FeatureExpander, ToleranceConfig};
 use super::feature::get_single_feature;
 use super::io::read_compact_structure;
@@ -287,12 +287,49 @@ fn make_query_map_from_structure(
     (hash_collection, indices, observed_distance_map)
 }
 
-pub fn parse_query_string(query_string: &str, mut default_chain: u8) -> (Vec<(u8, u64)>, Vec<Option<Vec<u8>>>) {
+/// Residue number at one end of a range, or a single position.
+///
+/// A chain letter may be repeated here - `F204-F215` means the same as `F204-215` - but
+/// it has to agree with the chain the segment already declared, because a range cannot
+/// span two chains.
+fn parse_residue_number(token: &str, chain: u8, segment: &str) -> Result<u64, String> {
+    let (token_chain, digits) = match token.chars().next() {
+        Some(first) if first.is_ascii_alphabetic() => (Some(first as u8), &token[1..]),
+        _ => (None, token),
+    };
+    if let Some(token_chain) = token_chain {
+        if token_chain != chain {
+            return Err(format!(
+                "Query '{}' mixes chain '{}' and chain '{}'; a residue range stays in one chain",
+                segment, chain as char, token_chain as char
+            ));
+        }
+    }
+    digits.parse::<u64>().map_err(|_| format!(
+        "Query '{}' has '{}' where a residue number was expected", segment, token
+    ))
+}
+
+/// Parse a query string, exiting with a diagnostic rather than a panic when it is
+/// malformed - a bad `-q` is user input, not a bug.
+pub fn parse_query_string(query_string: &str, default_chain: u8) -> (Vec<(u8, u64)>, Vec<Option<Vec<u8>>>) {
+    match parse_query_string_checked(query_string, default_chain) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            print_log_msg(FAIL, &err);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn parse_query_string_checked(
+    query_string: &str, mut default_chain: u8,
+) -> Result<(Vec<(u8, u64)>, Vec<Option<Vec<u8>>>), String> {
     let mut query_residues = Vec::new();
     let mut amino_acid_substitutions = Vec::new();
 
     if query_string.is_empty() {
-        return (query_residues, amino_acid_substitutions);
+        return Ok((query_residues, amino_acid_substitutions));
     }
     if !default_chain.is_ascii_alphabetic() {
         default_chain = b'A';
@@ -324,22 +361,27 @@ pub fn parse_query_string(query_string: &str, mut default_chain: u8) -> (Vec<(u8
             None => (rest, None),
         };
 
-        if range_part.contains('-') {
-            let (start_str, end_str) = range_part.split_once('-').expect("Invalid range");
-            let start = start_str.parse::<u64>().expect("Invalid start residue");
-            let end = end_str.parse::<u64>().expect("Invalid end residue");
+        if let Some((start_str, end_str)) = range_part.split_once('-') {
+            let start = parse_residue_number(start_str, chain, segment)?;
+            let end = parse_residue_number(end_str, chain, segment)?;
+            if end < start {
+                return Err(format!(
+                    "Query '{}' ends before it starts; a range runs from the lower residue",
+                    segment
+                ));
+            }
             for r in start..=end {
                 query_residues.push((chain, r));
                 amino_acid_substitutions.push(subst_part.clone());
             }
         } else {
-            let residue_num = range_part.parse::<u64>().expect("Invalid residue");
+            let residue_num = parse_residue_number(range_part, chain, segment)?;
             query_residues.push((chain, residue_num));
             amino_acid_substitutions.push(subst_part);
         }
     }
 
-    (query_residues, amino_acid_substitutions)
+    Ok((query_residues, amino_acid_substitutions))
 }
 
 
@@ -453,6 +495,37 @@ mod tests {
         // R = 1, K = 11, Q = 5
         assert_eq!(query_residues, (vec![(b'A', 250), (b'A', 232), (b'A', 269)], vec![Some(vec![1]), Some(vec![11]), Some(vec![5, 11])]));
     }
+    #[test]
+    fn range_end_may_repeat_the_chain() {
+        // The author's benchmark commands write `F204-F215`; queries_used.tsv writes
+        // `F204-215`. Both forms have to mean the same 23 residues, and the first one
+        // used to panic on `"F215".parse::<u64>()`.
+        let bare = parse_query_string_checked("F204-215,F222-232", b'A').unwrap();
+        let prefixed = parse_query_string_checked("F204-F215,F222-F232", b'A').unwrap();
+        assert_eq!(bare, prefixed);
+        assert_eq!(bare.0.len(), 23);
+        assert_eq!(bare.0[0], (b'F', 204));
+        assert_eq!(*bare.0.last().unwrap(), (b'F', 232));
+    }
+
+    #[test]
+    fn malformed_queries_are_diagnosed_not_panicked() {
+        // A range cannot span two chains
+        let err = parse_query_string_checked("F204-G215", b'A').unwrap_err();
+        assert!(err.contains("chain 'F'") && err.contains("chain 'G'"), "{}", err);
+        // Reversed ranges used to yield an empty residue list silently
+        let err = parse_query_string_checked("F215-F204", b'A').unwrap_err();
+        assert!(err.contains("ends before it starts"), "{}", err);
+        // Non-numeric tokens name themselves
+        let err = parse_query_string_checked("F20x", b'A').unwrap_err();
+        assert!(err.contains("F20x") && err.contains("'20x'"), "{}", err);
+        assert!(parse_query_string_checked("F204-", b'A').is_err());
+        // The documented good forms keep working
+        assert!(parse_query_string_checked("B57,B102,C195", b'A').is_ok());
+        assert!(parse_query_string_checked("1-10,11:X", b'A').is_ok());
+        assert!(parse_query_string_checked("164:H,195,221,247:ND", b'A').is_ok());
+    }
+
     #[test]
     fn test_parse_query_string_with_range() {
         let query_string = "A250-252,B232-234,C269:Q";
