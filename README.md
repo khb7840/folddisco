@@ -136,8 +136,8 @@ folddisco query -i <INDEX> -p <QUERY_PDB> [-q <QUERY_RESIDUES> -d <DISTANCE_THRE
 - `-d`: Distance tolerance in Å, increase sensitivity during the prefilter (default: 0.5)
 - `-a`: Angle tolerance in degrees, increase sensitivity during the prefilter (default: 5)
 - `--nonrigid`: Preset for deformed motifs (see [Non-rigid search](#non-rigid-search))
-- `--dist-ratio`: Distance tolerance proportional to the pair distance (default: 0)
 - `--expand-radius`: How many geometric features may fall in a neighbouring bin at once (default: 1)
+- `--novelty-mode`: One verdict line per query instead of a hit list (see [Novelty screening](#novelty-screening))
 - `--skip-match`: Skips residue matching and RMSD calculation (prefilter only, much faster with same ranking)
 - `--top`: Only report top N hits from the prefilter (controls speed and size of result)
 - `-t`: Threads used for search
@@ -177,67 +177,48 @@ folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --con
 folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --covered-node 3 --top 1000 --per-structure --skip-match
 
 # Print top 100 structures with sorting by score
-folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --top 100 --per-structure --sort-by-score
-folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --covered-node 4 --top 100 --sort-by-score --per-structure --skip-match
+folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --top 100 --per-structure --sort-by idf
+folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --covered-node 4 --top 100 --sort-by idf --per-structure --skip-match
 
 # Comprehensive filtering with multiple criteria
-folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 -d 0.5 -a 10.0 --ca-distance 1.0 --covered-node-ratio 0.3 --max-node-ratio 0.35 --rmsd 5.0 --tm-score 0.2 --gdt-ts 0.25 --gdt-ha 0.15 --chamfer-distance 5.5 --hausdorff-distance 12.0 --sort-by node_count,gdt_ts,rmsd,idf --format-output tid,node_count,gdt_ts,rmsd,idf,matching_residues,query_residues
+folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 -d 0.5 -a 10.0 --ca-distance 1.0 --covered-node-ratio 0.3 --max-node-ratio 0.35 --rmsd 5.0 --tm-score 0.2 --gdt-ts 0.25 --gdt-ha 0.15 --chamfer 5.5 --hausdorff 12.0 --sort-by node_count,gdt_ts,rmsd,idf --format-output tid,node_count,gdt_ts,rmsd,idf,matching_residues,query_residues
 ```
 
 ### Non-rigid search
-
-Design notes, the full benchmark and the alternatives that were measured and rejected
-are in [nonrigid_search.md](nonrigid_search.md).
 
 Motifs are rarely rigid. The same catalytic site in two homologs, or the same site
 before and after a conformational change, keeps its residues in the same arrangement
 while the distances and angles between them drift by a few tenths of an Ångström —
 and a residue pair whose geometry lands on the far side of a bin boundary produces a
-different hash and is missed. Three flags widen the search for that case:
+different hash and is missed.
 
 | flag | what it does |
 | --- | --- |
-| `--nonrigid` | Preset: `--expand-radius 2`. An explicit `--expand-radius` is kept when it is looser |
+| `--nonrigid` | Preset: `--expand-radius 2`. The flag to reach for |
 | `--expand-radius <INT>` | How many of the geometric features of a residue pair may sit in a neighbouring bin *at the same time*. The default of 1 searches one feature at a time and misses a pair whose distance and angle both drift across a boundary; 2 covers those. 0 searches the observed bins only |
-| `--enm-sample` | Wiggle the query along its low-frequency **torsional normal modes** and search the union of the ensemble's hashes. Tune with `--num-confs`, `--nma-rmsd`, `--nma-modes`. Best deep recall measured, at ~4x runtime |
-| `--dist-ratio <FLOAT>` | Adds a tolerance proportional to the pair distance, on top of `-d`, on the theory that elastic deformation scales with distance. **Measured as a recall-for-ranking trade** (see below), so it is off by default and not part of `--nonrigid` |
+
+```bash
+folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --nonrigid
+```
+
+**What it buys, measured against the human proteome index** (full tables, robustness
+analysis and runtime in [feature_evaluation.md](feature_evaluation.md)): average
+precision rises from 0.858 to 0.895 on 89 S1 serine peptidases, from 0.160 to 0.387 on a
+3-residue zinc motif — where recall goes 0.197 to 0.484 — and from 0.472 to 0.489 on a
+4-residue one. **It costs a little on long motifs**, which are already saturated at
+recall 0.99: a 16-residue motif drops from 0.503 to 0.499 AP, consistently across
+replicates. Residue matching runs about 16% longer; the prefilter cost is too small to
+measure. Use it for short motifs, skip it for long ones.
 
 Independently of the flags, a tolerance-expanded hash that turns out far rarer in the
-database than the observed hash it came from is now dropped during search. A rare hash
-carries a large IDF, so one spurious hit on such a hash can outrank several real ones.
-The threshold is a ratio between two IDFs from the same index, so it needs no tuning
-per database.
+database than the observed hash it came from is dropped during search: one spurious hit
+on a very rare hash can outrank several real ones. This is a floor against pathological
+cases rather than a precision filter — without it, quality is measurably worse; between
+its usable settings, nothing moves.
 
-#### Benchmark
-
-Zinc-finger motif from `1G2F` against the human proteome index (23,391 proteins,
-1,816 annotated zinc-finger answers in `data/zinc_answer.tsv`). `TP@k FP` is the
-number of true positives found walking the ranked list until *k* false positives:
-
-| motif | setting | hits | TP@5FP | TP@10FP | TP@100FP | recall | sec |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `F207,F212,F225,F229` | before these changes | 1645 | 464 | 649 | 782 | 0.496 | 0.011 |
-| | default | 1607 | 578 | 691 | 789 | 0.495 | 0.010 |
-| | `--nonrigid` | 1850 | 684 | 731 | 795 | 0.518 | 0.011 |
-| | `--nonrigid --enm-sample --num-confs 10` | 2021 | **709** | **746** | **823** | **0.542** | 0.040 |
-| `F207,F212,F225` | before these changes | 595 | 94 | 113 | 268 | 0.197 | 0.009 |
-| | default | 590 | 94 | 113 | 269 | 0.197 | 0.009 |
-| | `--nonrigid` | 1248 | **108** | **145** | 301 | 0.484 | 0.009 |
-| | `--nonrigid --enm-sample --num-confs 10` | 1417 | 98 | 118 | **304** | **0.509** | 0.056 |
-
-The rare-hash filter alone lifts the 4-residue motif by 25% at 5 false positives with
-no runtime cost. `--nonrigid` adds most for short motifs. `--enm-sample` gives the best
-deep recall but can lose ground at the very top of the ranking for a 3-residue motif,
-which is why it is opt-in. `--expand-radius 3` measured no better than 2.
-
-`--dist-ratio` behaves differently: it raises total recall but loses true positives at
-every early-precision point, because widening the tolerance most for long pairs adds
-exactly the least specific matches. Reach for it only when total recall is what
-matters and you intend to rescore the hits yourself.
-
-Rank the results with **dRMSD** rather than RMSD. dRMSD compares the internal
-distances of the match instead of superposing it, so a motif whose halves swung apart
-on a hinge keeps a low dRMSD where its superposition RMSD is large:
+Rank the results with **dRMSD** rather than RMSD when the motif may be deformed. dRMSD
+compares the internal distances of the match instead of superposing it, so a motif whose
+halves swung apart on a hinge keeps a low dRMSD where its superposition RMSD is large:
 
 ```bash
 # Deformation-ranked non-rigid search
@@ -246,7 +227,7 @@ folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco 
 
 # Maximum recall, accepting a worse ranking: widen everything and rescore by deformation
 folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 \
-  -d 1.0 -a 10 --dist-ratio 0.08 --expand-radius 2 --ca-distance 2.0 --sort-by drmsd
+  -d 1.0 -a 10 --expand-radius 2 --ca-distance 2.0 --sort-by drmsd
 
 # Per-structure output reports the deformation of the best match as min_drmsd
 folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --nonrigid \
@@ -256,24 +237,54 @@ folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --non
 `drmsd` and `max_dist_deviation` (the worst single internal-distance change) are
 available to `--format-output`, `--sort-by` and `--drmsd`, and work in every output
 mode. Both are read straight off the matched coordinates, so no superposition is
-involved.
+involved. They are filtering and reporting metrics: sorting by dRMSD did not beat
+sorting by RMSD on the benchmark.
 
-#### Runtime
+### Novelty screening
 
-Same index, 8 threads, median of 15 runs, warm cache. `--nonrigid` roughly doubles the
-number of query hashes, which shows up as single-digit percent for a motif query and
-more for a whole-structure query:
+`--novelty-mode` replaces the hit list with a single verdict line per query, so a batch
+of designed motifs can be screened against a reference database in one pass:
 
-| query | prefilter (`--skip-match`) | with residue matching |
-| --- | --- | --- |
-| 3–8 residue motif | 8–30 ms, `--nonrigid` +3–5% | 39–44 ms, `--nonrigid` +5–6% |
-| 16 residue motif | 43 ms, `--nonrigid` +4% | 82 ms, `--nonrigid` +6% |
-| whole structure (1G2F) | 129 ms, `--nonrigid` +18% | 302 ms, `--nonrigid` +14% |
-| whole structure (1LAP) | 510 ms, `--nonrigid` +37% | 6.2 s, `--nonrigid` ~0% |
+```bash
+folddisco query -p design.pdb -q A10,A20,A30 -i index/pdb_folddisco --novelty-mode
+# design.pdb	KNOWN	4cha.pdb	1.0000	0.0599	A10,A20,A30
+```
 
-For a motif query — the usual case — the sensitivity gain costs a few percent. Pair
-`--nonrigid` with `--top`, `--sampling-ratio` or `--skip-match` for whole-structure
-queries, where the query is already thousands of hashes before any expansion.
+Columns are `query_id`, verdict, best hit, residue coverage, best-hit RMSD, query
+residues. The verdict is one of:
+
+| verdict | meaning |
+| --- | --- |
+| `KNOWN` | Coverage ≥ `--novelty-coverage` (default 0.8) **and** best-hit RMSD ≤ `--novelty-rmsd` (default 2.0 Å) |
+| `PARTIAL_MATCH` | Something matched, but it failed the coverage or the RMSD bar |
+| `NOVEL` | Nothing in the reference database matched any residue of the motif |
+| `NO_HASHES` | The query could not be searched at all — its residues are further apart than the index distance cutoff, so it produced no hashes. Also warned about on stderr |
+
+Both bars matter. Coverage alone is not enough: the same residues in a different
+arrangement cover everything and are still a different motif — over 100 arbitrary
+motifs, a third of the KNOWN verdicts had a best hit worse than 2.0 Å before the RMSD
+bar was added. Under `--skip-match` no RMSD is computed, so the verdict falls back to
+coverage alone and is weaker. Verdicts append to `-o`, so a batch of queries sharing one
+output file accumulates, while rerunning the same command replaces it.
+
+### Lookup cache
+
+The first time an index is loaded, Folddisco writes a binary cache of its parsed lookup
+file next to it as `<index>.lookup.cache`, and every later load decodes that instead of
+re-parsing the text. There is no flag and nothing to manage:
+
+- **2.2–4.3x faster at one thread**, 1.2–1.7x at 8; never slower at any size or thread
+  count. The gain shrinks as threads rise because both paths allocate one string per
+  entry.
+- The first load pays for the write, roughly one extra parse, so a fresh index breaks
+  even after about four loads at 8 threads.
+- The cache file is ~1.3x the size of the text lookup, and is safe to delete at any time.
+- It is invalidated automatically when the lookup file changes: its length, modification
+  time and internal sizes are all validated on every load, and anything unexpected falls
+  back to parsing the text. The one case it cannot detect is a rewrite that keeps the
+  same length *and* restores the original mtime — there is no content hash, because
+  hashing hundreds of megabytes would cost more than the load it protects. Delete the
+  `.cache` file if you have done that.
 
 ### Indexing
 

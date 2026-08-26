@@ -66,10 +66,14 @@ search parameters:
  --serial-index                   Handle residue indices serially
 
 non-rigid search:
- --nonrigid                       Preset for deformed motifs: --expand-radius 2. Finds 14-24%
-                                  more true positives at a fixed false-positive count on the
-                                  zinc-finger benchmark, and roughly doubles recall for a
-                                  3-residue motif. A looser --expand-radius still wins
+ --nonrigid                       Preset for deformed motifs: --expand-radius 2. Measured
+                                  against the human proteome: average precision 0.858 -> 0.895
+                                  on 89 S1 serine peptidases, 0.160 -> 0.387 with recall
+                                  0.197 -> 0.484 on a 3-residue zinc motif, 0.472 -> 0.489 on
+                                  a 4-residue one. It costs a little on long motifs, which are
+                                  already saturated: 0.503 -> 0.499 on a 16-residue motif.
+                                  Residue matching runs ~16% longer. A looser explicit
+                                  --expand-radius is kept
 
 filtering options:
  --total-match <INT>              Filter out structures with less than total match count [0]
@@ -90,8 +94,9 @@ filtering options:
  --hausdorff <FLOAT>              Maximum Hausdorff distance cutoff. Hausdorff distance is maximum of nearest neighbor distances between two point clouds [no limit]
  --drmsd <FLOAT>                  Maximum dRMSD cutoff. dRMSD compares the internal distances of the
                                   match instead of superposing it, so a motif bent on a hinge keeps
-                                  a low dRMSD where its RMSD is large. Prefer it over --rmsd for
-                                  non-rigid search [no limit]
+                                  a low dRMSD where its RMSD is large, so it is the more
+                                  forgiving of the two cutoffs on a hinged motif. Sorting by it
+                                  did not beat sorting by RMSD on the benchmark [no limit]
  --top <INT>                      Limit output to top N structures based on IDF score [all]
 
 display options:
@@ -118,9 +123,10 @@ display options:
 novelty options:
  --novelty-mode                   Replace the result listing with one verdict line per query:
                                   query_id, NOVEL/PARTIAL_MATCH/KNOWN, best hit, residue coverage,
-                                  RMSD (NA with --skip-match), query residues. Composes with the
-                                  sensitivity options above: the more sensitive the search, the
-                                  fewer motifs are wrongly called novel
+                                  RMSD (NA with --skip-match), query residues. A query that
+                                  hashes to nothing is reported as NO_HASHES, not as NOVEL.
+                                  Composes with the sensitivity options above, though on 200
+                                  measured comparisons --nonrigid changed exactly one verdict
  --novelty-coverage <FLOAT>       Residue coverage of the best hit needed to call a motif KNOWN.
                                   Coverage is covered/total residues, so for a motif under
                                   5 residues the default demands every residue [0.8]
@@ -194,10 +200,14 @@ pub const MAX_NUM_LINES_FOR_WEB: usize = 1000;
 /// Expansion radius `--nonrigid` raises the search to.
 ///
 /// Radius 2 lets two features of a residue pair fall on the far side of their bin
-/// boundary at the same time. On the zinc-finger benchmark (1816 annotated proteins
-/// in the human proteome) it finds 14-24% more true positives than radius 1 at a
-/// fixed false-positive count, and roughly doubles total recall for a 3-residue
-/// motif. Radius 3 measured no better than 2 and slightly worse on some motifs.
+/// boundary at the same time. Measured against the human proteome index, average
+/// precision versus radius 1: 0.858 -> 0.895 on 89 S1 serine peptidases (positive in
+/// 91% of annotation-dropout replicates), 0.160 -> 0.387 on a 3-residue zinc motif
+/// and 0.472 -> 0.489 on a 4-residue one (both 100%), against 0.503 -> 0.499 on a
+/// 16-residue motif (negative in 99%). Long motifs are already saturated at recall
+/// 0.99 and lose a little. Radius 3 measured no better than 2.
+///
+/// See feature_evaluation.md for the tables these come from.
 const NONRIGID_EXPAND_RADIUS: usize = 2;
 
 pub fn query_pdb(env: AppArgs) {
