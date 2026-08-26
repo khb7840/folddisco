@@ -22,9 +22,12 @@
 //    a `sin` sign no real structure can produce. Distances stay untouched so the
 //    query keeps mirroring the encoding the index was built with.
 //
-// Variants are produced nearest-first: every single-dimension neighbour before any
-// two-dimension neighbour, and closer offsets before farther ones. Callers can
-// therefore stop early and keep the most useful part of the neighbourhood.
+// Variants are produced nearest-first in the sense that matters for early stopping:
+// every single-dimension neighbour before any two-dimension neighbour, and within one
+// dimension the closer offsets before the farther ones. Across dimensions at the same
+// radius the order is lexicographic by dimension index, not by geometric distance. A
+// caller that stops early - which is what MAX_HASHES_PER_PAIR does - therefore keeps
+// whole radius levels, not a ball.
 
 use crate::geometry::core::HashType;
 

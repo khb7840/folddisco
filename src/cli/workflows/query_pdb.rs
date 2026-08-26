@@ -104,12 +104,12 @@ display options:
                                     matching_coordinates, query_residues, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance,
                                     drmsd, max_dist_deviation
                                   - Per-structure: qid, tid, nid, db_key, total_match_count, node_count, edge_count, idf, nres, plddt,
-                                    max_node_cov, min_rmsd, matching_residues, query_residues
+                                    max_node_cov, min_rmsd, min_drmsd, matching_residues, query_residues
                                   - Example: --format-output tid,idf,rmsd,tm_score
  --sort-by <KEYS>                 Comma-separated sort keys with optional :asc or :desc [default: node_count:desc,rmsd:asc]
                                   - Per-match: node_count, idf, rmsd, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance,
                                     drmsd, max_dist_deviation
-                                  - Per-structure: max_node_count, node_count, idf, min_rmsd, total_match_count, edge_count, nres, plddt
+                                  - Per-structure: max_node_count, node_count, idf, min_rmsd, min_drmsd, total_match_count, edge_count, nres, plddt
                                   - Example: --sort-by tm_score,rmsd or --sort-by idf:desc
  --skip-ca-match                  Print matching residues before C-alpha distance check
  --partial-fit                    Superposition will find the best aligning substructure using LMS (Least Median of Squares)

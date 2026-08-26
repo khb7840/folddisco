@@ -157,7 +157,7 @@ pub fn make_query_map(
 }
 
 /// Same as `make_query_map` for a structure already in memory.
-pub fn make_query_map_from_structure(
+fn make_query_map_from_structure(
     compact: &CompactStructure, query_residues: &Vec<(u8, u64)>, hash_type: HashType,
     nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
     tolerance: &ToleranceConfig,
