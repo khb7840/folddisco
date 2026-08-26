@@ -99,7 +99,9 @@ folddisco query -i index/serine_peptidases_folddisco -p query/4CHA.pdb -q B57,B1
 ```
 #### Residue & motif syntax
 We allow to customize the query motif using some motif syntax.
-* **Residues:** `B57` = chain `B`, residue number `57`. Ranges are inclusive: `1-10`.
+* **Residues:** `B57` = chain `B`, residue number `57`. Ranges are inclusive and may
+  repeat the chain on the end: `1-10`, `F204-215` and `F204-F215` all work. A range
+  cannot span two chains.
 * **Lists:** comma-separated: `B57,B102,C195`.
 * **Substitutions:** `:<ALT>` allows alternatives:
   * Single amino acid: `164:H`
@@ -201,20 +203,31 @@ different hash and is missed.
 folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --nonrigid
 ```
 
-**What it buys, measured against the human proteome index** (full tables, robustness
-analysis and runtime in [feature_evaluation.md](feature_evaluation.md)): average
-precision rises from 0.858 to 0.895 on 89 S1 serine peptidases, from 0.160 to 0.387 on a
-3-residue zinc motif — where recall goes 0.197 to 0.484 — and from 0.472 to 0.489 on a
-4-residue one. **It costs a little on long motifs**, which are already saturated at
-recall 0.99: a 16-residue motif drops from 0.503 to 0.499 AP, consistently across
-replicates. Residue matching runs about 16% longer; the prefilter cost is too small to
-measure. Use it for short motifs, skip it for long ones.
+**What it buys**, measured on the human proteome index with the benchmark protocol,
+answer sets and metrics used by this project (full tables, robustness analysis and
+runtime in [feature_evaluation.md](feature_evaluation.md)). F1 over the whole result
+list, against the same command without the flag:
 
-Independently of the flags, a tolerance-expanded hash that turns out far rarer in the
-database than the observed hash it came from is dropped during search: one spurious hit
-on a very rare hash can outrank several real ones. This is a floor against pathological
-cases rather than a precision filter — without it, quality is measurably worse; between
-its usable settings, nothing moves.
+| query | F1 without | F1 with `--nonrigid` |
+| --- | --- | --- |
+| 4-residue zinc finger, matched | 0.9421 | **0.9641** |
+| 3-residue zinc finger, matched | 0.9418 | **0.9577** |
+| Ser-His-Asp triad, prefilter (independent MEROPS S01 set) | 0.8831 | **0.9160** |
+| 23-residue two-segment query, matched | **0.9204** | 0.9117 |
+
+Two conditions come with it, both measured:
+
+- **Use it with `--max-node <n_residues>`.** It raises recall and lowers precision, and
+  it is `--max-node` — requiring the whole motif to be covered inside one structure —
+  that converts that trade into a win. On the 4-residue query the F1 delta runs from
+  −0.053 with no filters, to −0.004 with `--covered-node 3`, to **+0.022** with
+  `--covered-node 3 --max-node 4 --rmsd 1.0`.
+- **Not for long segment queries.** On the 23-residue query above it loses 0.009 F1
+  consistently: long queries are already saturated and the extra candidates only dilute
+  the list.
+
+Residue matching runs about 11% longer with the flag (157 → 175 ms on that command). The
+prefilter difference is smaller than the run-to-run spread and is not worth quoting.
 
 Rank the results with **dRMSD** rather than RMSD when the motif may be deformed. dRMSD
 compares the internal distances of the match instead of superposing it, so a motif whose

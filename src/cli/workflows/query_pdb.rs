@@ -66,13 +66,16 @@ search parameters:
  --serial-index                   Handle residue indices serially
 
 non-rigid search:
- --nonrigid                       Preset for deformed motifs: --expand-radius 2. Measured
-                                  against the human proteome: average precision 0.858 -> 0.895
-                                  on 89 S1 serine peptidases, 0.160 -> 0.387 with recall
-                                  0.197 -> 0.484 on a 3-residue zinc motif, 0.472 -> 0.489 on
-                                  a 4-residue one. It costs a little on long motifs, which are
-                                  already saturated: 0.503 -> 0.499 on a 16-residue motif.
-                                  Residue matching runs ~16% longer. A looser explicit
+ --nonrigid                       Preset for deformed motifs: --expand-radius 2. Raises recall
+                                  and lowers precision, so pair it with --max-node <n_residues>,
+                                  which is what turns the trade into a win. Measured on the
+                                  human proteome, F1 over the whole list: 0.9421 -> 0.9641 on a
+                                  matched 4-residue zinc motif, 0.9418 -> 0.9577 on a 3-residue
+                                  one, 0.8831 -> 0.9160 on a Ser-His-Asp triad against an
+                                  independent MEROPS set. Without --max-node the same 4-residue
+                                  query is 0.9265 -> 0.9226, i.e. slightly worse. Long segment
+                                  queries lose either way (23 residues: 0.9204 -> 0.9117), and
+                                  residue matching runs ~11% longer. A looser explicit
                                   --expand-radius is kept
 
 filtering options:
@@ -200,12 +203,15 @@ pub const MAX_NUM_LINES_FOR_WEB: usize = 1000;
 /// Expansion radius `--nonrigid` raises the search to.
 ///
 /// Radius 2 lets two features of a residue pair fall on the far side of their bin
-/// boundary at the same time. Measured against the human proteome index, average
-/// precision versus radius 1: 0.858 -> 0.895 on 89 S1 serine peptidases (positive in
-/// 91% of annotation-dropout replicates), 0.160 -> 0.387 on a 3-residue zinc motif
-/// and 0.472 -> 0.489 on a 4-residue one (both 100%), against 0.503 -> 0.499 on a
-/// 16-residue motif (negative in 99%). Long motifs are already saturated at recall
-/// 0.99 and lose a little. Radius 3 measured no better than 2.
+/// boundary at the same time. Measured against the human proteome index with this
+/// project's own benchmark protocol, F1 over the whole result list versus radius 1,
+/// every delta holding its sign in 200 of 200 annotation-dropout replicates:
+/// 0.9421 -> 0.9641 on the matched 4-residue zinc command, 0.9418 -> 0.9577 on the
+/// 3-residue one, 0.8831 -> 0.9160 on the Ser-His-Asp triad against an independent
+/// MEROPS set, against 0.9204 -> 0.9117 on a 23-residue two-segment query.
+///
+/// It needs the matching step to pay off: on the same 4-residue query without
+/// --max-node it is 0.9265 -> 0.9226. Radius 3 measured no better than 2.
 ///
 /// See feature_evaluation.md for the tables these come from.
 const NONRIGID_EXPAND_RADIUS: usize = 2;

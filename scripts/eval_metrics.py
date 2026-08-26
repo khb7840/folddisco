@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Ranking metrics for a folddisco result file, including average precision.
+"""Ranking metrics for a folddisco result file.
 
-`folddisco benchmark` reports true positives at k false positives and recall;
-it does not compute average precision, which is the headline metric in
-feature_evaluation.md. This script computes both from the same inputs, so every
-number in that document can be re-derived from the repository.
+`folddisco benchmark` reports the two metrics this project decides on - Sens@1FP
+(with `--fp 1`) and F1 over the whole list (without it) - and this script
+reproduces both from the same inputs, plus the depths in between that neither
+call gives you.
 
 It replicates `benchmark --afdb-to-uniprot` exactly: an identifier is the
 basename with its structure extension removed, then the second dash-separated
@@ -12,28 +12,36 @@ field (`AF-P17538-F1-model_v4.pdb` -> `P17538`), and duplicates are dropped
 keeping first occurrence, so the AlphaFold fragments of one protein collapse to
 a single accession. Ranking order is the order of lines in the result file.
 
-Reported:
-  hits_raw       lines in the result file (AFDB fragments, before deduplication)
-  result_len     distinct accessions ranked
-  tp@kfp         true positives found walking the ranked list until the k-th
-                 false positive, for k in 1..500
+Reported, in this order:
+  sens@1fp       tp@1fp / answer_len - the author's headline metric. Fragile: it
+                 is decided by the rank of one false positive, and its deltas
+                 keep their sign in only about half of 5 % answer-dropout
+                 replicates. Report it; do not decide on it alone.
+  f1             set F1 over the whole list, the decision metric. Has no rank
+                 dependence at all, so a reordering that promotes real hits into
+                 the top can leave it unchanged - pair it with tp@10fp/tp@100fp.
+  precision, recall, tp/fp/fn over the whole list
+  tp@kfp         true positives above the k-th false positive, k in 1..500
   tp/fp/prec@topN at fixed depths N in 100..2000
-  recall         tp_all / answer_len over the whole ranked list
   ap             average precision: for every rank i holding a true positive,
                  accumulate precision@i, then divide by the size of the FULL
-                 answer set. Answers that never appear in the result therefore
-                 contribute zero, which makes AP comparable between two
-                 configurations that return different numbers of hits.
+                 answer set. Kept because it is rank-aware and stable, but it is
+                 not a metric this project uses.
+
+Absolute values depend on the answer set as much as on the search - the same
+ranked lists score F1 0.93 against one zinc-finger set and 0.59 against another,
+with opposite signs between configurations - so always name the answer set with
+the number.
 
 Usage:
   python3 scripts/eval_metrics.py <result.tsv> <answer.tsv> <index.lookup>
 
-Reproduce a documented row (serine triad, --nonrigid, AP 0.8947):
+Reproduce a documented row (matched 4-residue zinc query, --nonrigid, F1 0.9641):
 
   IDX=index/h_sapiens_folddisco
-  folddisco query -i $IDX -p query/4CHA.pdb -q B57,B102,C195 -t 8 --nonrigid \
-    --skip-match --per-structure --format-output tid > result.tsv
-  python3 scripts/eval_metrics.py result.tsv data/serine_answer.tsv $IDX.lookup
+  folddisco query -i $IDX -p query/1G2F.pdb -q F207,F212,F225,F229 -t 12 \
+    --covered-node 3 --max-node 4 --rmsd 1.0 --per-structure --nonrigid > result.tsv
+  python3 scripts/eval_metrics.py result.tsv <zinc answers>.tsv $IDX.lookup
 """
 import sys, json
 
@@ -56,21 +64,32 @@ def read_col(path, col=0):
                 seen.add(v); out.append(v)
     return out
 
+def tp_at_kfp(result, answer, k):
+    tp = fp = 0
+    for t in result:
+        if t in answer: tp += 1
+        else:
+            fp += 1
+            if fp >= k: break
+    return tp
+
 def main(res, ans, lookup):
     result = read_col(res)
     answer = set(read_col(ans))
     allids = set(read_col(lookup, 1))
     n_ans = len(answer)
-    o = {'hits_raw': sum(1 for _ in open(res)), 'result_len': len(result),
+    # the two metrics of record first
+    tp_1fp = tp_at_kfp(result, answer, 1)
+    tp_all = sum(1 for t in result if t in answer)
+    prec = tp_all/len(result) if result else 0.0
+    rec = tp_all/n_ans if n_ans else 0.0
+    o = {'sens@1fp': round(tp_1fp/n_ans, 4) if n_ans else None,
+         'f1': round(2*prec*rec/(prec+rec), 4) if prec+rec else 0.0,
+         'hits_raw': sum(1 for _ in open(res)), 'result_len': len(result),
          'answer_len': n_ans, 'total_ids': len(allids)}
     # TP@kFP
     for k in (1,2,5,10,20,50,100,200,500):
-        tp = fp = 0
-        for t in result:
-            if t in answer: tp += 1
-            else: fp += 1
-            if fp >= k: break
-        o[f'tp@{k}fp'] = tp
+        o[f'tp@{k}fp'] = tp_at_kfp(result, answer, k)
     # precision@N / FP@N
     for n in (100,200,500,1000,2000):
         head = result[:n]
@@ -78,10 +97,9 @@ def main(res, ans, lookup):
         o[f'tp@top{n}'] = tp
         o[f'fp@top{n}'] = len(head)-tp
         o[f'prec@top{n}'] = round(tp/len(head), 4) if head else None
-    tp_all = sum(1 for t in result if t in answer)
     o['tp_all'] = tp_all; o['fp_all'] = len(result)-tp_all
-    o['precision'] = round(tp_all/len(result),4) if result else None
-    o['recall'] = round(tp_all/n_ans,4)
+    o['fn_all'] = n_ans - tp_all
+    o['precision'] = round(prec,4); o['recall'] = round(rec,4)
     # average precision over the ranked list (AP wrt full answer set)
     tp = 0; ap = 0.0
     for i,t in enumerate(result,1):
