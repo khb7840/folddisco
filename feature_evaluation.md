@@ -53,16 +53,22 @@ IDX=index/h_sapiens_folddisco
 folddisco query -i $IDX -p query/1G2F.pdb -q F207,F212,F225,F229 \
   -t 8 --skip-match --per-structure --format-output tid > result.tsv
 
-# TP at k false positives; with --fp, the recall column is TP@kFP / answer_len
-folddisco benchmark -r result.tsv -a data/zinc_answer.tsv -i $IDX --afdb-to-uniprot --fp 100
+# every column of the tables below, AP included
+python3 scripts/eval_metrics.py result.tsv data/zinc_answer.tsv $IDX.lookup
 
-# deep recall needs a second run WITHOUT --fp
+# the same TP@kFP and recall from the shipped binary. Note that with --fp the
+# recall column is TP@kFP / answer_len, so deep recall needs a second run without it
+folddisco benchmark -r result.tsv -a data/zinc_answer.tsv -i $IDX --afdb-to-uniprot --fp 100
 folddisco benchmark -r result.tsv -a data/zinc_answer.tsv -i $IDX --afdb-to-uniprot
 ```
 
-`folddisco benchmark` does not compute average precision; the AP columns below were
-computed from the same ranked result files by a separate script (standard average
-precision: mean of the precision at each rank holding a true positive).
+`folddisco benchmark` does not compute average precision, so `scripts/eval_metrics.py`
+does: it replicates `--afdb-to-uniprot`'s identifier parsing and deduplication exactly
+and adds AP, TP@kFP and precision at fixed depths. AP is the standard one — accumulate
+precision@i at every rank holding a true positive, divide by the size of the full answer
+set, so answers that never appear contribute zero and two configurations returning
+different numbers of hits stay comparable. Six rows of the tables below were recomputed
+with the committed script as a check, and all six agree to four decimals.
 
 ## 1. Non-rigid search — `--nonrigid`, `--expand-radius`
 
