@@ -13,6 +13,7 @@ use super::expand::{FeatureExpander, ToleranceConfig};
 use super::feature::get_single_feature;
 use super::io::read_compact_structure;
 use crate::structure::core::CompactStructure;
+use crate::structure::nma::{ENSEMBLE_CONFORMERS, ENSEMBLE_TORSION_MODES};
 
 /// Ceiling on the hashes generated for a single residue pair.
 ///
@@ -176,8 +177,7 @@ pub fn make_query_map_with_ensemble(
     nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
     tolerance: &ToleranceConfig,
     amino_acid_substitutions: &Vec<Option<Vec<u8>>>, distance_cutoff: f32, serial_query: bool,
-    index: &Option<&FolddiscoIndex>, total_structures: f32,
-    num_confs: usize, target_rmsd: f32, nma_modes: usize,
+    index: &Option<&FolddiscoIndex>, total_structures: f32, target_rmsd: f32,
 ) -> (HashMap<GeometricHash, ((usize, usize), bool, f32)>, Vec<usize>, HashMap<(u8, u8), Vec<(f32, usize)>>) {
     let (compact, _) = read_compact_structure(path).expect("Failed to read compact structure");
 
@@ -186,10 +186,6 @@ pub fn make_query_map_with_ensemble(
         tolerance, amino_acid_substitutions, distance_cutoff, serial_query,
         index, total_structures,
     );
-    if num_confs == 0 {
-        return (hash_collection, indices, observed_distance_map);
-    }
-
     // Primary IDF per residue pair, for the hashes the conformers add
     let mut primary_idf: HashMap<(usize, usize), f32> = HashMap::default();
     for (edge, is_primary, idf) in hash_collection.values() {
@@ -199,7 +195,7 @@ pub fn make_query_map_with_ensemble(
     }
 
     let ensemble = match crate::structure::nma::generate_ensemble(
-        &compact, num_confs, target_rmsd, nma_modes
+        &compact, ENSEMBLE_CONFORMERS, target_rmsd, ENSEMBLE_TORSION_MODES
     ) {
         Ok(ensemble) => ensemble,
         Err(err) => {
@@ -452,21 +448,16 @@ mod tests {
     fn wider_tolerance_only_adds_hashes() {
         let no_substitution = vec![None; 3];
         let tight = zinc_finger_query_map(
-            &ToleranceConfig::new(vec![0.5], vec![5.0], 0.0, 1), no_substitution.clone()
+            &ToleranceConfig::new(vec![0.5], vec![5.0], 1), no_substitution.clone()
         );
         let loose = zinc_finger_query_map(
-            &ToleranceConfig::new(vec![0.5], vec![5.0], 0.0, 2), no_substitution.clone()
+            &ToleranceConfig::new(vec![0.5], vec![5.0], 2), no_substitution
         );
-        let elastic = zinc_finger_query_map(
-            &ToleranceConfig::new(vec![0.5], vec![5.0], 0.1, 1), no_substitution
-        );
-        // Both knobs are pure additions: every hash of the tight query survives
+        // A wider radius is a pure addition: every hash of the tight query survives
         for hash in tight.keys() {
             assert!(loose.contains_key(hash), "radius 2 lost a hash of radius 1");
-            assert!(elastic.contains_key(hash), "elastic tolerance lost a hash");
         }
         assert!(loose.len() > tight.len());
-        assert!(elastic.len() > tight.len());
     }
 
     #[test]
@@ -474,7 +465,7 @@ mod tests {
         // His at 207 as an alternative. Every hash of the unsubstituted query has to
         // stay, and the His variants have to appear at the tolerance neighbourhood
         // too and not only at the observed geometry.
-        let tolerance = ToleranceConfig::new(vec![0.5], vec![5.0], 0.0, 1);
+        let tolerance = ToleranceConfig::new(vec![0.5], vec![5.0], 1);
         let plain = zinc_finger_query_map(&tolerance, vec![None; 3]);
         let substituted = zinc_finger_query_map(
             &tolerance, vec![Some(vec![8]), None, None] // 8 = HIS

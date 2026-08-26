@@ -49,16 +49,6 @@ pub fn res_vec_as_string(res_vec: &Vec<((u8, u8), (u64, u64))>) -> String {
     output
 }
 
-/// Tolerance on the C-alpha distance of a candidate pair.
-///
-/// The absolute part is a flat allowance; the ratio part grows with the distance of
-/// the query pair, which is what an elastic (non-rigid) deformation does: two
-/// residues 16 A apart drift much further than two 5 A apart.
-#[inline]
-fn ca_distance_tolerance(query_dist: f32, cutoff: f32, ratio: f32) -> f32 {
-    cutoff + ratio * query_dist.abs()
-}
-
 pub fn retrieve_with_prefilter(
     compact: &CompactStructure,
     hash_set: &HashSet<GeometricHash>,
@@ -68,7 +58,6 @@ pub fn retrieve_with_prefilter(
     multiple_bin: &Option<Vec<(usize, usize)>>,
     dist_cutoff: f32,
     ca_distance_cutoff: f32,
-    ca_distance_ratio: f32,
     query_aa_dist_map: &HashMap<(u8, u8), Vec<(f32, usize)>>,
 ) -> (
     Vec<(usize, usize, GeometricHash)>,
@@ -114,7 +103,7 @@ pub fn retrieve_with_prefilter(
         
         // Check distances and buffer candidates
         for (dist, qi) in dists {
-            if (curr_dist - dist).abs() < ca_distance_tolerance(*dist, ca_distance_cutoff, ca_distance_ratio) {
+            if (curr_dist - dist).abs() < ca_distance_cutoff {
                 temp_candidates.push((*qi, (i, j)));
                 is_valid_dist_for_query = true;
             }
@@ -182,7 +171,7 @@ pub fn retrieval_wrapper_for_foldcompdb(
     query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
     query_structure: &CompactStructure, all_query_indices: &Vec<usize>,
     aa_dist_map: &HashMap<(u8, u8), Vec<(f32, usize)>>,
-    ca_distance_cutoff: f32, ca_distance_ratio: f32, partial_fit: bool,
+    ca_distance_cutoff: f32, partial_fit: bool,
     foldcomp_db_reader: &FoldcompDbReader,
 ) -> (Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
       Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
@@ -207,7 +196,7 @@ pub fn retrieval_wrapper_for_foldcompdb(
     // let aa_filter = CombinationVecIterator::new_from_btreesets(&index_set1, &index_set2);
     let (indices_found , candidate_pairs) = retrieve_with_prefilter(
         &compact, &query_set, aa_filter, _nbin_dist, _nbin_angle, multiple_bin,
-        dist_cutoff, ca_distance_cutoff, ca_distance_ratio, aa_dist_map
+        dist_cutoff, ca_distance_cutoff, aa_dist_map
     );
 
     let candidate_pair_map: HashMap<usize, Vec<(usize, usize)>> = candidate_pairs.into_iter().fold(
@@ -370,7 +359,7 @@ pub fn retrieval_wrapper(
     query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
     query_structure: &CompactStructure, all_query_indices: &Vec<usize>,
     aa_dist_map: &HashMap<(u8, u8), Vec<(f32, usize)>>,
-    ca_distance_cutoff: f32, ca_distance_ratio: f32, partial_fit: bool,
+    ca_distance_cutoff: f32, partial_fit: bool,
 ) -> (Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
       Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
       usize, f32, f32) {
@@ -395,7 +384,7 @@ pub fn retrieval_wrapper(
 
     let (indices_found , candidate_pairs) = retrieve_with_prefilter(
         &compact, &query_set, aa_filter, _nbin_dist, _nbin_angle,
-        multiple_bin, dist_cutoff, ca_distance_cutoff, ca_distance_ratio, aa_dist_map
+        multiple_bin, dist_cutoff, ca_distance_cutoff, aa_dist_map
     );
 
     let candidate_pair_map: HashMap<usize, Vec<(usize, usize)>> = candidate_pairs.into_iter().fold(
@@ -867,7 +856,7 @@ mod tests {
         let hash_type = HashType::PDBTrRosetta;
         let nbin_dist = 16;
         let nbin_angle = 4;
-        let tolerance = ToleranceConfig::new(vec![0.5, 1.0], vec![5.0, 10.0], 0.0, 1);
+        let tolerance = ToleranceConfig::new(vec![0.5, 1.0], vec![5.0, 10.0], 1);
         let dist_cutoff = 20.0;
         let (query_map, query_indices, aa_dist_map ) = make_query_map(
             &path, &query_residues, hash_type, nbin_dist, nbin_angle, &None,
@@ -880,7 +869,7 @@ mod tests {
         let new_path = String::from("data/serine_peptidases/4cha.pdb");
         let output = measure_time!(retrieval_wrapper(
             &new_path, query_residues.len(), &queries, hash_type, nbin_dist, nbin_angle, &None,
-            dist_cutoff, &query_map, &compact, &query_indices, &aa_dist_map, 1.5, 0.0, false,
+            dist_cutoff, &query_map, &compact, &query_indices, &aa_dist_map, 1.5, false,
         ));
         println!("{:?}", output);
     }
@@ -905,7 +894,12 @@ mod tests {
 
     #[test]
     fn deformation_metrics_ignore_rigid_motion_but_not_bending() {
-        use crate::structure::metrics::{distance_matrix_rmsd, max_internal_distance_deviation};
+        let stats = |a: &[[f32; 3]], b: &[[f32; 3]]| {
+            let dist = |p: [f32; 3], q: [f32; 3]| {
+                ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+            };
+            deformation_stats_indexed(a.len(), |i, j| dist(a[i], a[j]), |i, j| dist(b[i], b[j]))
+        };
         let reference = [
             [0.0f32, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 5.0, 0.0], [0.0, 5.0, 0.0],
         ];
@@ -913,13 +907,14 @@ mod tests {
         let moved = [
             [10.0f32, 0.0, 3.0], [10.0, 5.0, 3.0], [5.0, 5.0, 3.0], [5.0, 0.0, 3.0],
         ];
-        assert!(distance_matrix_rmsd(&reference, &moved) < 1e-3);
-        assert!(max_internal_distance_deviation(&reference, &moved) < 1e-3);
+        let (drmsd, worst) = stats(&reference, &moved);
+        assert!(drmsd < 1e-3 && worst < 1e-3, "rigid motion showed up: {} {}", drmsd, worst);
         // Pull one point away: the deformation now shows up
         let bent = [
             [0.0f32, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 5.0, 0.0], [0.0, 8.0, 0.0],
         ];
-        assert!(distance_matrix_rmsd(&reference, &bent) > 1.0);
-        assert!(max_internal_distance_deviation(&reference, &bent) >= 3.0 - 1e-3);
+        let (drmsd, worst) = stats(&reference, &bent);
+        assert!(drmsd > 1.0, "drmsd {}", drmsd);
+        assert!(worst >= 3.0 - 1e-3, "worst {}", worst);
     }
 }

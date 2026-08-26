@@ -10,17 +10,14 @@
 // on the other side of a bin boundary, so the query has to be expanded into the
 // neighbourhood of the observed geometry.
 //
-// The expansion here differs from a plain per-dimension offset in four ways:
+// The expansion here differs from a plain per-dimension offset in three ways:
 //
 // 1. Dimensions are combined. Two features straddling a boundary at the same time
 //    is common, and a query that only ever moves one dimension misses it. The
 //    number of dimensions allowed to deviate at once is the `radius`.
 // 2. A tolerance wider than one bin is sub-stepped, so it reaches every bin in the
 //    interval instead of only the two at its ends.
-// 3. Distance tolerance can grow with the distance itself (`dist_ratio`), which is
-//    what a non-rigid deformation does to a motif: a 16 A pair drifts much further
-//    than a 5 A one.
-// 4. Perturbed angles are pulled back into their domain (torsions wrap, bounded
+// 3. Perturbed angles are pulled back into their domain (torsions wrap, bounded
 //    angles reflect) instead of running off the end of their bit field or asking for
 //    a `sin` sign no real structure can produce. Distances stay untouched so the
 //    query keeps mirroring the encoding the index was built with.
@@ -42,9 +39,6 @@ pub struct ToleranceConfig {
     pub dist_thresholds: Vec<f32>,
     /// Angle offsets in degrees, as given on the command line.
     pub angle_thresholds: Vec<f32>,
-    /// Extra distance tolerance as a fraction of the pair distance. Models elastic
-    /// (non-rigid) deformation, where longer pairs move further.
-    pub dist_ratio: f32,
     /// Number of feature dimensions allowed to deviate from the observed bin at
     /// the same time. 1 reproduces the classic one-dimension-at-a-time expansion.
     pub radius: usize,
@@ -52,40 +46,29 @@ pub struct ToleranceConfig {
 
 impl ToleranceConfig {
     pub fn new(
-        dist_thresholds: Vec<f32>, angle_thresholds: Vec<f32>,
-        dist_ratio: f32, radius: usize,
+        dist_thresholds: Vec<f32>, angle_thresholds: Vec<f32>, radius: usize,
     ) -> Self {
-        Self { dist_thresholds, angle_thresholds, dist_ratio, radius }
+        Self { dist_thresholds, angle_thresholds, radius }
     }
 
     /// Tolerances used by `folddisco query` when nothing is given.
     pub fn default_query() -> Self {
-        Self::new(vec![0.5], vec![5.0], 0.0, 1)
+        Self::new(vec![0.5], vec![5.0], 1)
     }
 
     /// No expansion at all: only the observed geometry is queried.
     pub fn none() -> Self {
-        Self::new(Vec::new(), Vec::new(), 0.0, 0)
+        Self::new(Vec::new(), Vec::new(), 0)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum DimKind {
-    Distance,
-    Angle,
 }
 
 #[derive(Debug, Clone)]
 struct TolerantDim {
     /// Position of this dimension inside the feature vector
     index: usize,
-    kind: DimKind,
-    /// Widest tolerance for this dimension, in the unit the feature uses. Only the
-    /// widest one is needed: sub-stepping it reaches a contiguous run of bins that
+    /// Offsets covering this dimension's tolerance, nearest first. Only the widest
+    /// tolerance is expanded: sub-stepping it reaches a contiguous run of bins that
     /// already contains every bin a smaller tolerance could reach.
-    tolerance: f32,
-    /// Offsets for a fixed tolerance, nearest first. Distance dimensions rebuild
-    /// theirs per residue pair when `dist_ratio` is in play.
     offsets: Vec<f32>,
 }
 
@@ -97,14 +80,10 @@ pub struct FeatureExpander {
     hash_type: HashType,
     dims: Vec<TolerantDim>,
     radius: usize,
-    dist_ratio: f32,
-    dist_bin_width: f32,
     /// Feature vector with offsets applied, before domain fix-up
     raw: Vec<f32>,
     /// `raw` pulled back into the valid domain; this is what callers see
     fixed: Vec<f32>,
-    /// Per-dimension offsets for the pair currently being expanded
-    active: Vec<Vec<f32>>,
 }
 
 impl FeatureExpander {
@@ -113,17 +92,14 @@ impl FeatureExpander {
     ) -> Self {
         let dist_bin_width = hash_type.dist_bin_width(nbin_dist);
         let angle_bin_width = hash_type.angle_bin_width(nbin_angle);
-        let dist_ratio = tolerance.dist_ratio.max(0.0);
         let mut dims: Vec<TolerantDim> = Vec::new();
 
         if let Some(dist_indices) = hash_type.dist_index() {
             let widest = widest_tolerance(&tolerance.dist_thresholds);
-            if widest > 0.0 || dist_ratio > 0.0 {
+            if widest > 0.0 {
                 let offsets = substep_offsets(widest, dist_bin_width);
                 for index in dist_indices {
-                    dims.push(TolerantDim {
-                        index, kind: DimKind::Distance, tolerance: widest, offsets: offsets.clone(),
-                    });
+                    dims.push(TolerantDim { index, offsets: offsets.clone() });
                 }
             }
         }
@@ -136,23 +112,17 @@ impl FeatureExpander {
             if widest > 0.0 {
                 let offsets = substep_offsets(widest, angle_bin_width);
                 for index in angle_indices {
-                    dims.push(TolerantDim {
-                        index, kind: DimKind::Angle, tolerance: widest, offsets: offsets.clone(),
-                    });
+                    dims.push(TolerantDim { index, offsets: offsets.clone() });
                 }
             }
         }
 
-        let active = vec![Vec::new(); dims.len()];
         Self {
             hash_type,
             dims,
             radius: tolerance.radius,
-            dist_ratio,
-            dist_bin_width,
             raw: vec![0.0; 9],
             fixed: vec![0.0; 9],
-            active,
         }
     }
 
@@ -160,7 +130,7 @@ impl FeatureExpander {
     pub fn is_noop(&self) -> bool {
         self.radius == 0
             || self.dims.is_empty()
-            || (self.dist_ratio == 0.0 && self.dims.iter().all(|d| d.offsets.is_empty()))
+            || self.dims.iter().all(|d| d.offsets.is_empty())
     }
 
     /// Number of feature dimensions that carry a tolerance.
@@ -181,25 +151,6 @@ impl FeatureExpander {
         if self.is_noop() {
             return;
         }
-        // Offsets for this pair. Distance dimensions pick up the proportional part,
-        // which depends on the observed distance; angles reuse the fixed offsets
-        // computed at construction.
-        for i in 0..self.dims.len() {
-            let elastic = match self.dims[i].kind {
-                DimKind::Distance => self.dist_ratio * feature[self.dims[i].index].abs(),
-                DimKind::Angle => 0.0,
-            };
-            self.active[i].clear();
-            if elastic > 0.0 {
-                let widened = substep_offsets(
-                    self.dims[i].tolerance + elastic, self.dist_bin_width
-                );
-                self.active[i].extend_from_slice(&widened);
-            } else {
-                self.active[i].extend_from_slice(&self.dims[i].offsets);
-            }
-        }
-
         let radius = self.radius.min(self.dims.len());
         self.raw[..feature.len()].copy_from_slice(feature);
         for level in 1..=radius {
@@ -226,8 +177,8 @@ impl FeatureExpander {
         for dim in start..=last {
             let index = self.dims[dim].index;
             let original = self.raw[index];
-            for offset_pos in 0..self.active[dim].len() {
-                self.raw[index] = original + self.active[dim][offset_pos];
+            for offset_pos in 0..self.dims[dim].offsets.len() {
+                self.raw[index] = original + self.dims[dim].offsets[offset_pos];
                 if !self.visit_level(level - 1, dim + 1, feature, visit) {
                     self.raw[index] = original;
                     return false;
@@ -297,7 +248,7 @@ mod tests {
 
     #[test]
     fn radius_one_moves_one_dimension_at_a_time() {
-        let tolerance = ToleranceConfig::new(vec![0.5], vec![5.0], 0.0, 1);
+        let tolerance = ToleranceConfig::new(vec![0.5], vec![5.0], 1);
         let mut expander = FeatureExpander::new(HashType::PDBTrRosetta, 16, 4, &tolerance);
         // 2 distance + 3 angle dimensions, two signs each
         assert_eq!(expander.dim_count(), 5);
@@ -314,7 +265,7 @@ mod tests {
         let feature = pdbtr_feature();
         let mut hashes = Vec::new();
         for radius in [1usize, 2] {
-            let tolerance = ToleranceConfig::new(vec![0.5], vec![5.0], 0.0, radius);
+            let tolerance = ToleranceConfig::new(vec![0.5], vec![5.0], radius);
             let mut found = HashSet::default();
             FeatureExpander::new(HashType::PDBTrRosetta, 16, 4, &tolerance)
                 .for_each_neighbor(&feature, |variant| {
@@ -333,7 +284,7 @@ mod tests {
     fn wide_tolerance_is_substepped_and_leaves_no_gap() {
         // 16 distance bins over [2, 20] give a 1.2 A bin, so a 3.0 A tolerance has
         // to reach the bins in between and not only the ones at +-3.0 A.
-        let tolerance = ToleranceConfig::new(vec![3.0], vec![], 0.0, 1);
+        let tolerance = ToleranceConfig::new(vec![3.0], vec![], 1);
         let mut expander = FeatureExpander::new(HashType::PDBTrRosetta, 16, 4, &tolerance);
         let feature = pdbtr_feature();
         let mut values: Vec<f32> = vec![feature[2]];
@@ -359,7 +310,7 @@ mod tests {
         let feature = pdbtr_feature();
         let mut sets = Vec::new();
         for thresholds in [vec![0.5, 1.0], vec![1.0]] {
-            let tolerance = ToleranceConfig::new(thresholds, vec![], 0.0, 2);
+            let tolerance = ToleranceConfig::new(thresholds, vec![], 2);
             let mut found = HashSet::default();
             FeatureExpander::new(HashType::PDBTrRosetta, 16, 4, &tolerance)
                 .for_each_neighbor(&feature, |variant| {
@@ -372,35 +323,12 @@ mod tests {
     }
 
     #[test]
-    fn elastic_tolerance_scales_with_distance() {
-        let tolerance = ToleranceConfig::new(vec![0.5], vec![], 0.1, 1);
-        let mut expander = FeatureExpander::new(HashType::PDBTrRosetta, 16, 4, &tolerance);
-
-        let mut widest = |ca_dist: f32| {
-            let mut feature = pdbtr_feature();
-            feature[2] = ca_dist;
-            feature[3] = ca_dist;
-            let mut reach = 0.0f32;
-            expander.for_each_neighbor(&feature, |variant| {
-                reach = reach.max((variant[2] - ca_dist).abs());
-                true
-            });
-            reach
-        };
-        // 0.5 + 0.1 * 5 = 1.0 against 0.5 + 0.1 * 15 = 2.0
-        let short = widest(5.0);
-        let long = widest(15.0);
-        assert!((short - 1.0).abs() < 1e-3, "short: {}", short);
-        assert!((long - 2.0).abs() < 1e-3, "long: {}", long);
-    }
-
-    #[test]
     fn torsion_offsets_wrap_around_pi() {
         // A query torsion at 179 degrees has to be able to reach -179 degrees,
         // which is 2 degrees away and not 358.
         let mut feature = pdbtr_feature();
         feature[5] = 179.0_f32.to_radians();
-        let tolerance = ToleranceConfig::new(vec![], vec![5.0], 0.0, 1);
+        let tolerance = ToleranceConfig::new(vec![], vec![5.0], 1);
         let mut expander = FeatureExpander::new(HashType::FolddiscoDist, 32, 16, &tolerance);
         let mut wrapped = false;
         expander.for_each_neighbor(&feature, |variant| {
@@ -420,7 +348,7 @@ mod tests {
         // into 3. A wide angle tolerance used to push a bin index past its field and
         // corrupt the neighbouring one; wrapping and reflecting keep every value in
         // the domain the encoding was sized for.
-        let tolerance = ToleranceConfig::new(vec![], vec![60.0], 0.0, 3);
+        let tolerance = ToleranceConfig::new(vec![], vec![60.0], 3);
         let mut expander = FeatureExpander::new(HashType::FolddiscoDist, 32, 16, &tolerance);
         for &(ca_cb, theta1, theta2) in &[
             (0.0f32, PI, -PI), (PI, -PI, PI), (0.05, 3.10, -3.10),
@@ -481,53 +409,14 @@ mod tests {
 
         let radius_one = reachable_hashes(
             &query, HashType::PDBTrRosetta, 16, 4,
-            &ToleranceConfig::new(vec![0.5], vec![5.0], 0.0, 1),
+            &ToleranceConfig::new(vec![0.5], vec![5.0], 1),
         );
         let radius_two = reachable_hashes(
             &query, HashType::PDBTrRosetta, 16, 4,
-            &ToleranceConfig::new(vec![0.5], vec![5.0], 0.0, 2),
+            &ToleranceConfig::new(vec![0.5], vec![5.0], 2),
         );
         assert!(!radius_one.contains(&target_hash), "radius 1 should not reach a joint shift");
         assert!(radius_two.contains(&target_hash), "radius 2 missed the joint shift");
-    }
-
-    #[test]
-    fn elastic_tolerance_finds_a_stretched_long_range_pair() {
-        // A 16.9 A pair stretched to 18.6 A: 1.7 A of drift is far outside a flat
-        // 0.5 A tolerance, but well inside 0.5 + 10% of the pair distance.
-        let mut query = pdbtr_feature();
-        query[2] = 16.9;
-        query[3] = 16.9;
-        let mut target = query.clone();
-        target[2] = 18.6;
-        target[3] = 18.6;
-        let target_hash = hash_of(&target, HashType::PDBTrRosetta, 16, 4);
-
-        let flat = reachable_hashes(
-            &query, HashType::PDBTrRosetta, 16, 4,
-            &ToleranceConfig::new(vec![0.5], vec![5.0], 0.0, 2),
-        );
-        let elastic = reachable_hashes(
-            &query, HashType::PDBTrRosetta, 16, 4,
-            &ToleranceConfig::new(vec![0.5], vec![5.0], 0.1, 2),
-        );
-        assert!(!flat.contains(&target_hash), "a flat 0.5 A tolerance should not reach 1.7 A");
-        assert!(elastic.contains(&target_hash), "elastic tolerance missed the stretched pair");
-        // Short pairs must stay tight: the same 10% is only 0.5 A at 5 A
-        let mut short_query = pdbtr_feature();
-        short_query[2] = 5.0;
-        short_query[3] = 5.0;
-        let mut short_target = short_query.clone();
-        short_target[2] = 6.7;
-        short_target[3] = 6.7;
-        let short_elastic = reachable_hashes(
-            &short_query, HashType::PDBTrRosetta, 16, 4,
-            &ToleranceConfig::new(vec![0.5], vec![5.0], 0.1, 2),
-        );
-        assert!(
-            !short_elastic.contains(&hash_of(&short_target, HashType::PDBTrRosetta, 16, 4)),
-            "elastic tolerance must not loosen short pairs by the same absolute amount"
-        );
     }
 
     #[test]
@@ -543,14 +432,14 @@ mod tests {
 
         let reachable = reachable_hashes(
             &query, HashType::FolddiscoDist, 32, 16,
-            &ToleranceConfig::new(vec![0.5], vec![5.0], 0.0, 1),
+            &ToleranceConfig::new(vec![0.5], vec![5.0], 1),
         );
         assert!(reachable.contains(&target_hash), "wrapped torsion neighbour not reached");
     }
 
     #[test]
     fn visit_can_stop_early() {
-        let tolerance = ToleranceConfig::new(vec![0.5], vec![5.0], 0.0, 3);
+        let tolerance = ToleranceConfig::new(vec![0.5], vec![5.0], 3);
         let mut expander = FeatureExpander::new(HashType::PDBTrRosetta, 16, 4, &tolerance);
         let mut count = 0;
         expander.for_each_neighbor(&pdbtr_feature(), |_| {
@@ -587,7 +476,7 @@ mod tests {
         // tolerance does to a feature, the packed hash stays inside the declared
         // width. Distances are kept mid-range on purpose — those mirror the index
         // encoding out of the window as well, so they are not bounded here.
-        let tolerance = ToleranceConfig::new(vec![1.0], vec![60.0], 0.05, 2);
+        let tolerance = ToleranceConfig::new(vec![1.0], vec![60.0], 2);
         for hash_type in [
             HashType::PDBMotif, HashType::PDBMotifSinCos, HashType::TrRosetta,
             HashType::PDBTrRosetta, HashType::PointPairFeature,

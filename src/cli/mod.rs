@@ -41,14 +41,11 @@ pub enum AppArgs {
         angle_threshold: String,
         ca_dist_threshold: f32,
         // Non-rigid / sensitivity knobs
-        dist_ratio: f32,      // distance tolerance proportional to the pair distance
         expand_radius: usize, // feature dimensions allowed to deviate at once
         nonrigid: bool,       // preset that raises the expansion radius
         // Torsion-angle ENM query sampling
         enm_sample: bool,     // wiggle the query along its torsional normal modes
-        num_confs: usize,
         nma_rmsd: f32,
-        nma_modes: usize,
         // filtering parameters
         // These are for filtering StructQueryResult only
         total_match_count: usize, 

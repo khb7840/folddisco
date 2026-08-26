@@ -57,13 +57,10 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             angle_threshold: args.value_from_str(["-a", "--angle"]).unwrap_or("5".into()),
             ca_dist_threshold: args.value_from_str("--ca-distance").unwrap_or(1.0),
             // Non-rigid / sensitivity knobs
-            dist_ratio: args.value_from_str("--dist-ratio").unwrap_or(0.0),
             expand_radius: args.value_from_str("--expand-radius").unwrap_or(1),
             nonrigid: args.contains("--nonrigid"),
             enm_sample: args.contains("--enm-sample"),
-            num_confs: args.value_from_str("--num-confs").unwrap_or(5),
             nma_rmsd: args.value_from_str("--nma-rmsd").unwrap_or(0.5),
-            nma_modes: args.value_from_str("--nma-modes").unwrap_or(3),
             total_match_count: args.value_from_str("--total-match").unwrap_or(0),
             covered_node_count: args.value_from_str("--covered-node").unwrap_or(0),
             covered_node_ratio: args.value_from_str("--covered-node-ratio").unwrap_or(0.0),

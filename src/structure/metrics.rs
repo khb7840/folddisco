@@ -273,10 +273,11 @@ pub fn rmsd(distances: &PrecomputedDistances) -> f32 {
 }
 
 
-/// Distance-matrix RMSD (dRMSD) between two equal-length point sets.
+/// Distance-matrix RMSD (dRMSD) and the largest single internal-distance deviation,
+/// in one pass over the internal distances.
 ///
-/// dRMSD compares the *internal* distances of the two sets instead of the positions
-/// after superposition:
+/// dRMSD compares the *internal* distances of the two point sets instead of the
+/// positions after superposition:
 ///
 /// ```text
 /// dRMSD = sqrt( mean over i<j of ( |a_i - a_j| - |b_i - b_j| )^2 )
@@ -286,37 +287,14 @@ pub fn rmsd(distances: &PrecomputedDistances) -> f32 {
 /// has to find one rotation that fits every residue at once, so a motif whose halves
 /// swung apart on a hinge scores badly even when both halves are individually
 /// perfect. dRMSD only asks whether the residues kept their mutual distances, and
-/// needs neither a rotation matrix nor a translation.
+/// needs neither a rotation matrix nor a translation. The largest single deviation is
+/// its companion: dRMSD averages the deformation while this reports the worst pair,
+/// which separates a motif that stretched everywhere a little from one where a single
+/// residue moved a lot.
 ///
-/// Returns 0.0 when there are fewer than two points, where the metric is undefined.
-pub fn distance_matrix_rmsd(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> f32 {
-    deformation_stats(reference_coords, coords).0
-}
-
-/// Largest single internal-distance deviation between two point sets, in Angstroms.
-///
-/// The companion of `distance_matrix_rmsd`: dRMSD averages the deformation while
-/// this reports the worst pair, which separates a motif that stretched everywhere a
-/// little from one where a single residue moved a lot.
-pub fn max_internal_distance_deviation(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> f32 {
-    deformation_stats(reference_coords, coords).1
-}
-
-/// Both superposition-free deformation numbers in one pass over the internal
-/// distances: `(dRMSD, largest single deviation)`.
-fn deformation_stats(reference_coords: &[[f32; 3]], coords: &[[f32; 3]]) -> (f32, f32) {
-    if reference_coords.len() != coords.len() {
-        return (0.0, 0.0);
-    }
-    deformation_stats_indexed(
-        reference_coords.len(),
-        |i, j| dist(reference_coords[i], reference_coords[j]),
-        |i, j| dist(coords[i], coords[j]),
-    )
-}
-
-/// Same as `deformation_stats`, reading the two point sets through distance closures
-/// so callers holding another coordinate layout do not have to copy into `[f32; 3]`.
+/// The two point sets are read through distance closures so callers holding another
+/// coordinate layout do not have to copy into `[f32; 3]`. Returns `(0.0, 0.0)` for
+/// fewer than two points, where both metrics are undefined.
 pub fn deformation_stats_indexed(
     n: usize,
     reference_distance: impl Fn(usize, usize) -> f32,
@@ -410,19 +388,6 @@ impl StructureSimilarityMetrics {
         self.gdt_ha = self.calculate_gdt_ha(precomputed);
         self.chamfer_distance = self.calculate_chamfer_distance(precomputed);
         self.hausdorff_distance = self.calculate_hausdorff_distance(precomputed);
-    }
-
-    /// Fill in the superposition-free metrics from the raw, unaligned coordinates.
-    ///
-    /// Kept apart from `calculate_all` on purpose: those metrics read a cross
-    /// distance matrix of already superposed points, while these two compare the
-    /// internal distances of the two sets and must see the original coordinates.
-    pub fn calculate_deformation(
-        &mut self, reference_coords: &[[f32; 3]], coords: &[[f32; 3]]
-    ) {
-        let (drmsd, max_dist_deviation) = deformation_stats(reference_coords, coords);
-        self.drmsd = drmsd;
-        self.max_dist_deviation = max_dist_deviation;
     }
 
     /// Print metrics in a formatted way

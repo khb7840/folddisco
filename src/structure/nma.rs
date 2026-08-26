@@ -8,24 +8,54 @@ use nalgebra::{DMatrix, DVector, SymmetricEigen};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use rayon::prelude::*;
-use std::fs::File;
-use std::io::Write;
 
-use crate::structure::coordinate::{approx_cb, calc_torsion_radian, Coordinate};
+use crate::structure::coordinate::{approx_cb, Coordinate};
 use crate::structure::core::CompactStructure;
 
+// Provenance of the tuned values below. Only two of them have a source outside this
+// module; the rest were carried over from the branch that introduced the torsion ENM
+// and were never swept, so treat them as arbitrary-but-working starting points. Saying
+// so is the point: a constant nobody can re-derive is a constant nobody can change.
+
+/// Contact cutoff of the elastic network, in Angstroms. Matches the conventional
+/// anisotropic-network-model cutoff (Atilgan et al. 2001 use 12-15 A between C-alphas).
+/// Not swept here.
 const TORSION_ENM_CUTOFF_ANGSTROM: f32 = 12.0;
+/// Eigenvalues at or below this count as the trivial (zero-frequency) modes. Chosen as
+/// a round float-noise floor for a matrix of this size; not swept.
 const EIGENVALUE_EPS: f64 = 1e-8;
+/// Smoothing of the sampled torsion field: passes and the weight each neighbour gets.
+/// Keeps a single mode from putting all of its displacement on one torsion. Arbitrary,
+/// never swept.
+const TORSION_SMOOTHING_PASSES: usize = 2;
+const TORSION_SMOOTHING_NEIGHBOR_WEIGHT: f32 = 0.2;
+/// Spring constants of the two coupling terms in the torsion Hessian: sequence
+/// neighbours (bonded, stiffer) against spatial contacts. The 1.5:1 ratio is arbitrary
+/// and was never swept; only their ratio matters, since the mode shapes are scale free.
+const SEQUENCE_COUPLING_WEIGHT: f64 = 1.5;
+const SPATIAL_COUPLING_WEIGHT: f64 = 1.0;
+/// Added to the diagonal so the Hessian of a structure with an isolated residue is
+/// still positive definite. Small enough not to move the low-frequency modes; arbitrary.
+const DIAGONAL_REGULARIZATION: f64 = 1e-5;
+/// Local phi/psi coupling of the same residue: a self term and the off-diagonal that
+/// makes the pair prefer to rotate in opposite directions (a crankshaft, which moves
+/// the downstream chain least). Both arbitrary, never swept.
+const LOCAL_TORSION_SELF_WEIGHT: f64 = 0.25;
+const LOCAL_PHI_PSI_COUPLING: f64 = 0.10;
+
+/// Ensemble shape used by `--enm-sample`: how many conformers to sample and how many
+/// low-frequency modes to draw them from. The benchmark on this branch varied the
+/// conformer count (5 against 10) and never varied the mode count.
+pub const ENSEMBLE_CONFORMERS: usize = 5;
+pub const ENSEMBLE_TORSION_MODES: usize = 3;
+
 const TORSION_RADIANS_PER_ANGSTROM: f32 = 0.06;
 const MAX_TORSION_STEP_RAD: f32 = 0.12;
 const MAX_TARGET_RMSD_FOR_WIGGLE: f32 = 0.75;
 const MIN_TARGET_RMSD_FOR_WIGGLE: f32 = 0.05;
-const TORSION_SMOOTHING_PASSES: usize = 2;
-const TORSION_SMOOTHING_NEIGHBOR_WEIGHT: f32 = 0.2;
-const SEQUENCE_COUPLING_WEIGHT: f64 = 1.5;
-const SPATIAL_COUPLING_WEIGHT: f64 = 1.0;
-const DIAGONAL_REGULARIZATION: f64 = 1e-5;
 
+// Plausibility limits of a backbone, in Angstroms: bonded distances and the widest
+// adjacent C-alpha separation a peptide can show. Physical ranges, deliberately loose.
 const MIN_N_CA_BOND: f32 = 0.7;
 const MAX_N_CA_BOND: f32 = 2.6;
 const MIN_CA_C_BOND: f32 = 0.7;
@@ -58,28 +88,6 @@ fn build_backbone_arrays(
     }
 
     Ok((n_vec, ca_vec, c_vec))
-}
-
-fn extract_backbone_torsions(
-    n_vec: &[Coordinate],
-    ca_vec: &[Coordinate],
-    c_vec: &[Coordinate],
-) -> TorsionField {
-    let n_res = ca_vec.len();
-    let mut torsions = vec![[0.0f32, 0.0f32]; n_res];
-
-    for i in 0..n_res {
-        // phi(i) = C(i-1)-N(i)-CA(i)-C(i)
-        if i > 0 {
-            torsions[i][0] = calc_torsion_radian(&c_vec[i - 1], &n_vec[i], &ca_vec[i], &c_vec[i]);
-        }
-        // psi(i) = N(i)-CA(i)-C(i)-N(i+1)
-        if i + 1 < n_res {
-            torsions[i][1] = calc_torsion_radian(&n_vec[i], &ca_vec[i], &c_vec[i], &n_vec[i + 1]);
-        }
-    }
-
-    torsions
 }
 
 fn add_laplacian_coupling(h: &mut DMatrix<f64>, i: usize, j: usize, weight: f64) {
@@ -120,10 +128,10 @@ fn build_torsion_hessian(ca_vec: &[Coordinate]) -> DMatrix<f64> {
     for i in 0..n {
         let phi = 2 * i;
         let psi = phi + 1;
-        h[(phi, phi)] += DIAGONAL_REGULARIZATION + 0.25;
-        h[(psi, psi)] += DIAGONAL_REGULARIZATION + 0.25;
-        h[(phi, psi)] -= 0.10;
-        h[(psi, phi)] -= 0.10;
+        h[(phi, phi)] += DIAGONAL_REGULARIZATION + LOCAL_TORSION_SELF_WEIGHT;
+        h[(psi, psi)] += DIAGONAL_REGULARIZATION + LOCAL_TORSION_SELF_WEIGHT;
+        h[(phi, psi)] -= LOCAL_PHI_PSI_COUPLING;
+        h[(psi, phi)] -= LOCAL_PHI_PSI_COUPLING;
     }
 
     h
@@ -418,7 +426,6 @@ pub fn generate_ensemble(
         .clamp(MIN_TARGET_RMSD_FOR_WIGGLE, MAX_TARGET_RMSD_FOR_WIGGLE);
 
     let (n_vec, ca_vec, c_vec) = build_backbone_arrays(query_structure)?;
-    let _base_torsions = extract_backbone_torsions(&n_vec, &ca_vec, &c_vec);
     let hessian = build_torsion_hessian(&ca_vec);
     let modes = select_nontrivial_modes(hessian, nma_modes);
 
@@ -458,68 +465,4 @@ pub fn generate_ensemble(
 
     ensemble.extend(sampled);
     Ok(ensemble)
-}
-
-fn atom_line(
-    serial: usize,
-    atom_name: &str,
-    res_name: &[u8; 3],
-    chain: u8,
-    res_seq: u64,
-    coord: &Coordinate,
-) -> String {
-    let residue = std::str::from_utf8(res_name).unwrap_or("UNK");
-    let element = atom_name.trim().chars().next().unwrap_or('C');
-    format!(
-        "ATOM  {:>5} {:<4} {:>3} {:>1}{:>4}    {:>8.3}{:>8.3}{:>8.3}  1.00  0.00           {:>2}",
-        serial, atom_name, residue, chain as char, res_seq, coord.x, coord.y, coord.z, element
-    )
-}
-
-pub fn write_conformer_as_pdb(structure: &CompactStructure, path: &str) -> Result<(), String> {
-    let mut file = File::create(path).map_err(|e| format!("Failed to create {}: {}", path, e))?;
-    let mut serial = 1usize;
-    for i in 0..structure.num_residues {
-        let chain = structure.chain_per_residue[i];
-        let res_seq = structure.residue_serial[i];
-        let res_name = &structure.residue_name[i];
-        if let Some(n) = structure.n_vector.get_coord(i) {
-            writeln!(
-                file,
-                "{}",
-                atom_line(serial, "N", res_name, chain, res_seq, &n)
-            )
-            .map_err(|e| format!("Failed to write {}: {}", path, e))?;
-            serial += 1;
-        }
-        if let Some(ca) = structure.ca_vector.get_coord(i) {
-            writeln!(
-                file,
-                "{}",
-                atom_line(serial, "CA", res_name, chain, res_seq, &ca)
-            )
-            .map_err(|e| format!("Failed to write {}: {}", path, e))?;
-            serial += 1;
-        }
-        if let Some(c) = structure.c_vector.get_coord(i) {
-            writeln!(
-                file,
-                "{}",
-                atom_line(serial, "C", res_name, chain, res_seq, &c)
-            )
-            .map_err(|e| format!("Failed to write {}: {}", path, e))?;
-            serial += 1;
-        }
-        if let Some(cb) = structure.cb_vector.get_coord(i) {
-            writeln!(
-                file,
-                "{}",
-                atom_line(serial, "CB", res_name, chain, res_seq, &cb)
-            )
-            .map_err(|e| format!("Failed to write {}: {}", path, e))?;
-            serial += 1;
-        }
-    }
-    writeln!(file, "END").map_err(|e| format!("Failed to finalize {}: {}", path, e))?;
-    Ok(())
 }
