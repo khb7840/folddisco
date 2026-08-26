@@ -20,31 +20,55 @@ use crate::utils::log::{log_msg, print_log_msg, FAIL, WARN};
 // like the mmap + par_lines text path; a serial reader would be slower than
 // text parsing whenever more than a couple of threads are available.
 // Layout (little-endian):
-//   magic [u8; 8] | version u32 | count u64 | count * 40 byte records | names blob
+//   magic [u8; 8] | version u32 | count u64 | source length u64 |
+//   source mtime nanos u64 | names length u64 | count * 40 byte records | names blob
 // Record: id u64 | nres u64 | db_key u64 | plddt f32 | name_len u32 | name_offset u64
 // name_offset is relative to the start of the names blob.
+//
+// The source length and mtime identify the exact lookup file the cache was built
+// from, and are checked on every load: an mtime comparison alone accepts a stale
+// cache whenever the lookup is rewritten inside one filesystem timestamp tick,
+// which serves wrong names, ids and pLDDTs with no signal at all. The names
+// length pins the total size, so a corrupted `count` cannot decode as a
+// short-but-well-formed cache (a zeroed count would otherwise look like an empty
+// index and make the search silently find nothing).
+//
+// There is deliberately no checksum over the record table: it would roughly
+// double the decode cost, which is the entire point of the cache, and after the
+// three size/identity checks no reachable write path leaves a table that is
+// corrupt yet passes. There is also deliberately no temp-file-and-rename: cache
+// content is a pure function of the lookup, so two processes writing the same
+// cache emit identical bytes from offset 0, and a reader that catches a write in
+// progress sees a short file and rejects it. Both of those hold only while the
+// bytes stay deterministic - putting a timestamp or a thread id in the body would
+// break the argument and bring atomicity back into scope.
 const LOOKUP_CACHE_MAGIC: &[u8; 8] = b"FDLOOKUP";
-const LOOKUP_CACHE_VERSION: u32 = 1;
-const LOOKUP_CACHE_HEADER_SIZE: usize = 20;
+const LOOKUP_CACHE_VERSION: u32 = 2;
+const LOOKUP_CACHE_HEADER_SIZE: usize = 44;
 const LOOKUP_CACHE_RECORD_SIZE: usize = 40;
 
 fn lookup_cache_path(path: &str) -> String {
     format!("{}.cache", path)
 }
 
-fn is_cache_fresh(lookup_path: &str, cache_path: &str) -> bool {
-    let lookup_modified = std::fs::metadata(lookup_path).and_then(|meta| meta.modified());
-    let cache_modified = std::fs::metadata(cache_path).and_then(|meta| meta.modified());
-    match (lookup_modified, cache_modified) {
-        (Ok(lookup_time), Ok(cache_time)) => cache_time >= lookup_time,
-        _ => false,
-    }
+/// Length and modification time of the lookup file, as stored in the cache header.
+/// `None` when the file is gone or carries a timestamp outside the range this
+/// encoding covers, in which case no cache is written or trusted.
+fn source_identity(lookup_path: &str) -> Option<(u64, u64)> {
+    let meta = std::fs::metadata(lookup_path).ok()?;
+    let mtime = meta.modified().ok()?
+        .duration_since(std::time::UNIX_EPOCH).ok()?
+        .as_nanos();
+    Some((meta.len(), u64::try_from(mtime).ok()?))
 }
 
 // Decode the cache in parallel. Returns None on anything unexpected (missing,
-// truncated, bad magic or version, out-of-range name) so that the caller falls
-// back to parsing the text lookup instead of returning partial data.
-fn load_lookup_from_cache(path: &str) -> Option<Vec<(String, usize, usize, f32, usize)>> {
+// truncated, bad magic or version, a source that no longer matches, a size that
+// disagrees with the header, an out-of-range or empty name) so that the caller
+// falls back to parsing the text lookup instead of returning partial or stale data.
+fn load_lookup_from_cache(
+    path: &str, lookup_path: &str,
+) -> Option<Vec<(String, usize, usize, f32, usize)>> {
     let file = File::open(path).ok()?;
     let mmap = unsafe { Mmap::map(&file).ok()? };
     if mmap.len() < LOOKUP_CACHE_HEADER_SIZE || &mmap[..8] != LOOKUP_CACHE_MAGIC {
@@ -54,9 +78,15 @@ fn load_lookup_from_cache(path: &str) -> Option<Vec<(String, usize, usize, f32, 
         return None;
     }
     let count = u64::from_le_bytes(mmap[12..20].try_into().unwrap()) as usize;
+    let src_len = u64::from_le_bytes(mmap[20..28].try_into().unwrap());
+    let src_mtime = u64::from_le_bytes(mmap[28..36].try_into().unwrap());
+    let names_len = u64::from_le_bytes(mmap[36..44].try_into().unwrap()) as usize;
+    if source_identity(lookup_path)? != (src_len, src_mtime) {
+        return None;
+    }
     let names_offset = count.checked_mul(LOOKUP_CACHE_RECORD_SIZE)?
         .checked_add(LOOKUP_CACHE_HEADER_SIZE)?;
-    if mmap.len() < names_offset {
+    if mmap.len() != names_offset.checked_add(names_len)? {
         return None;
     }
     let records = &mmap[LOOKUP_CACHE_HEADER_SIZE..names_offset];
@@ -68,17 +98,31 @@ fn load_lookup_from_cache(path: &str) -> Option<Vec<(String, usize, usize, f32, 
         let plddt = f32::from_le_bytes(record[24..28].try_into().unwrap());
         let name_len = u32::from_le_bytes(record[28..32].try_into().unwrap()) as usize;
         let name_offset = u64::from_le_bytes(record[32..40].try_into().unwrap()) as usize;
+        // A lookup entry is a file path, so an empty name is not data: it is what a
+        // zeroed record looks like, and every field of one is in range.
+        if name_len == 0 {
+            return None;
+        }
         let name = names.get(name_offset..name_offset.checked_add(name_len)?)
             .and_then(|bytes| std::str::from_utf8(bytes).ok())?;
         Some((name.to_string(), id, nres, plddt, db_key))
     }).collect::<Option<Vec<_>>>()
 }
 
-fn save_lookup_cache(path: &str, lookup: &[(String, usize, usize, f32, usize)]) -> std::io::Result<()> {
+fn save_lookup_cache(
+    path: &str, lookup_path: &str, lookup: &[(String, usize, usize, f32, usize)],
+) -> std::io::Result<()> {
+    let (src_len, src_mtime) = source_identity(lookup_path).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "Unreadable lookup file metadata")
+    })?;
+    let names_len: usize = lookup.iter().map(|(name, ..)| name.len()).sum();
     let mut writer = BufWriter::new(File::create(path)?);
     writer.write_all(LOOKUP_CACHE_MAGIC)?;
     writer.write_all(&LOOKUP_CACHE_VERSION.to_le_bytes())?;
     writer.write_all(&(lookup.len() as u64).to_le_bytes())?;
+    writer.write_all(&src_len.to_le_bytes())?;
+    writer.write_all(&src_mtime.to_le_bytes())?;
+    writer.write_all(&(names_len as u64).to_le_bytes())?;
     let mut name_offset = 0u64;
     for (name, id, nres, plddt, db_key) in lookup {
         writer.write_all(&(*id as u64).to_le_bytes())?;
@@ -157,10 +201,8 @@ pub fn save_lookup_to_file(
 // }
 pub fn load_lookup_from_file(path: &str) -> Vec<(String, usize, usize, f32, usize)> {
     let cache_path = lookup_cache_path(path);
-    if is_cache_fresh(path, &cache_path) {
-        if let Some(cached_lookup) = load_lookup_from_cache(&cache_path) {
-            return cached_lookup;
-        }
+    if let Some(cached_lookup) = load_lookup_from_cache(&cache_path, path) {
+        return cached_lookup;
     }
     let file = std::fs::File::open(path).expect(&log_msg(FAIL, "Unable to open the lookup file"));
     let mmap = unsafe { Mmap::map(&file).expect(&log_msg(FAIL, "Unable to mmap the lookup file")) };
@@ -176,7 +218,7 @@ pub fn load_lookup_from_file(path: &str) -> Vec<(String, usize, usize, f32, usiz
     }).collect::<Vec<_>>();
     // A read-only index directory is a normal deployment, so a failed cache
     // write must not fail the load.
-    if let Err(err) = save_lookup_cache(&cache_path, &loaded_lookup) {
+    if let Err(err) = save_lookup_cache(&cache_path, path, &loaded_lookup) {
         print_log_msg(WARN, &format!("Unable to write the lookup cache {}: {}", &cache_path, err));
     }
     loaded_lookup
@@ -244,7 +286,7 @@ mod tests {
         assert!(std::path::Path::new(&cache_path).is_file());
 
         // The cache decodes into exactly what the text path returned
-        let from_cache = load_lookup_from_cache(&cache_path).expect("cache should decode");
+        let from_cache = load_lookup_from_cache(&cache_path, &path).expect("cache should decode");
         assert_eq!(from_cache, from_text);
         assert_eq!(load_lookup_from_file(&path), from_text);
 
@@ -264,14 +306,88 @@ mod tests {
         let cache = std::fs::OpenOptions::new().write(true).open(&cache_path).unwrap();
         cache.set_len(LOOKUP_CACHE_HEADER_SIZE as u64 + 10).unwrap();
         drop(cache);
-        assert!(load_lookup_from_cache(&cache_path).is_none());
+        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
         assert_eq!(load_lookup_from_file(&path), expected);
 
         // Bad magic
         let mut cache = std::fs::OpenOptions::new().write(true).open(&cache_path).unwrap();
         cache.write_all(b"NOTACACH").unwrap();
         drop(cache);
-        assert!(load_lookup_from_cache(&cache_path).is_none());
+        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
+        assert_eq!(load_lookup_from_file(&path), expected);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    /// Overwrite `count` bytes of the cache in place.
+    fn patch_cache(cache_path: &str, offset: u64, bytes: &[u8]) {
+        use std::io::{Seek, SeekFrom};
+        let mut cache = std::fs::OpenOptions::new().write(true).open(cache_path).unwrap();
+        cache.seek(SeekFrom::Start(offset)).unwrap();
+        cache.write_all(bytes).unwrap();
+    }
+
+    #[test]
+    fn test_lookup_rewritten_within_one_mtime_tick_is_not_served_from_cache() {
+        // A lookup rewritten inside one filesystem timestamp tick (1 s on ext3, HFS+,
+        // most NFS servers) leaves the cache with an mtime that is not older. The
+        // cache then has to be rejected on the file's identity, not on its clock:
+        // serving it would report every hit under the wrong name and pLDDT.
+        let (path, cache_path) = temp_lookup_path("cache_sametick");
+        write_test_lookup(&path, &vec!["a.pdb".to_string()], &vec![0]);
+        load_lookup_from_file(&path);
+        let cache_modified = std::fs::metadata(&cache_path).unwrap().modified().unwrap();
+
+        write_test_lookup(&path, &vec!["totally_different.pdb".to_string()], &vec![1]);
+        let lookup = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        lookup.set_times(std::fs::FileTimes::new().set_modified(cache_modified)).unwrap();
+        drop(lookup);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(), cache_modified,
+            "the test needs both mtimes equal to mean anything"
+        );
+
+        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
+        assert_eq!(
+            load_lookup_from_file(&path),
+            vec![("totally_different.pdb".to_string(), 1, 107, 51.0, 1001)]
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    #[test]
+    fn test_lookup_cache_with_zeroed_count_is_rejected() {
+        // A zeroed count passes magic, version and the minimum length check, and
+        // would decode as an empty index: the search then silently finds nothing.
+        let (path, cache_path) = temp_lookup_path("cache_count0");
+        let names = (0..5).map(|i| format!("prot_{}.pdb", i)).collect::<Vec<_>>();
+        write_test_lookup(&path, &names, &(0..5).collect());
+        let expected = load_lookup_from_file(&path);
+        assert_eq!(expected.len(), 5);
+
+        patch_cache(&cache_path, 12, &0u64.to_le_bytes());
+        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
+        assert_eq!(load_lookup_from_file(&path), expected);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    #[test]
+    fn test_lookup_cache_with_a_zeroed_record_is_rejected() {
+        // Every field of an all-zero record is in range, and its empty name decodes
+        // as a real entry ("", 0, 0, 0.0, 0). That is what a torn write leaves.
+        let (path, cache_path) = temp_lookup_path("cache_zerohole");
+        let names = (0..5).map(|i| format!("prot_{}.pdb", i)).collect::<Vec<_>>();
+        write_test_lookup(&path, &names, &(0..5).collect());
+        let expected = load_lookup_from_file(&path);
+
+        let record_2 = LOOKUP_CACHE_HEADER_SIZE + 2 * LOOKUP_CACHE_RECORD_SIZE;
+        patch_cache(&cache_path, record_2 as u64, &[0u8; LOOKUP_CACHE_RECORD_SIZE]);
+        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
         assert_eq!(load_lookup_from_file(&path), expected);
 
         let _ = std::fs::remove_file(&path);
@@ -294,7 +410,7 @@ mod tests {
             lookup_modified - std::time::Duration::from_secs(10)
         )).unwrap();
         drop(cache);
-        assert!(!is_cache_fresh(&path, &cache_path));
+        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
         assert_eq!(load_lookup_from_file(&path), vec![("b.pdb".to_string(), 1, 107, 51.0, 1001)]);
 
         let _ = std::fs::remove_file(&path);
