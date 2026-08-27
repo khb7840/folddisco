@@ -321,8 +321,8 @@ pub fn read_compact_structure(path: &str) -> Result<(CompactStructure, bool), ()
         let mut split = path.split(':');
         let db_path = split.next().unwrap();
         let name = split.next().unwrap();
-        let mut foldcomp_db_reader = FoldcompDbReader::new(db_path);
-        foldcomp_db_reader.sort_lookup_by_name();
+        // No re-sorting: the mapped lookup serves both name and key access.
+        let foldcomp_db_reader = FoldcompDbReader::new(db_path);
         let structure_io_result = foldcomp_db_reader.read_single_structure(name);
         if let Ok(structure) = structure_io_result {
             structure.to_compact()

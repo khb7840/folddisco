@@ -21,9 +21,8 @@ fn three_to_one(r: &[u8; 3]) -> char {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let mut reader = FoldcompDbReader::new(&args[1]);
+    let reader = FoldcompDbReader::new(&args[1]);
     let paths = reader.get_paths();          // needs the db-key sort new() applies
-    reader.sort_lookup_by_name();            // name lookup binary-searches by name
     for name in paths.iter() {
         match reader.read_single_structure(name) {
             Ok(s) => {

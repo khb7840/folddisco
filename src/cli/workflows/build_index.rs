@@ -23,7 +23,6 @@ use std::path::PathBuf;
 use crate::structure::io::fcz::*;
 
 #[cfg(feature = "foldcomp")]
-use rayon::prelude::ParallelSliceMut;
 
 pub const HELP_INDEX: &str = "\
 usage: folddisco index -p <i:PDB_DIR>|<i:FOLDCOMP_DB> -i <o:INDEX_PATH> [OPTIONS]
@@ -111,16 +110,16 @@ pub fn build_index(env: AppArgs) {
                     if is_dir {
                         load_path(&pdb_container, recursive)
                     } else {
-                        let mut lookup_vec = read_foldcomp_db_lookup(&pdb_container).expect(
+                        // Both come back mapped and key-sorted; the first build
+                        // writes the caches that every later query then maps.
+                        let lookup = FoldcompLookup::load(&pdb_container).expect(
                             &log_msg(FAIL, "Failed to read Foldcomp DB lookup")
                         );
-                        lookup_vec.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                        let mut index_vec = read_foldcomp_db_index(&pdb_container).expect(
+                        let index = FoldcompIndex::load(&pdb_container).expect(
                             &log_msg(FAIL, "Failed to read Foldcomp DB index")
                         );
-                        index_vec.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
                         input_format = StructureFileFormat::FCZDB;
-                        get_path_vector_out_of_lookup_and_index(&lookup_vec, &index_vec)
+                        get_path_vector_out_of_lookup_and_index(&lookup, &index)
                     }
                 }
             } else {
