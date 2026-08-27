@@ -101,6 +101,11 @@ folddisco query -i index/serine_peptidases_folddisco -p query/4CHA.pdb -q B57,B1
 We allow to customize the query motif using some motif syntax.
 * **Residues:** `B57` = chain `B`, residue number `57`. Ranges are inclusive: `1-10`.
 * **Lists:** comma-separated: `B57,B102,C195`.
+* **Multi-character and numeric chain IDs:** large mmCIF entries use chain IDs
+  such as `AA` or `10`, which cannot be pasted straight onto a residue number
+  (`AA250` and `10250` are unreadable). Separate them with `_`:
+  `-q 10_250,AA_312,AA_318`. The separator is optional for ordinary
+  single-letter chains, so `B57` and `B_57` mean the same thing.
 * **Substitutions:** `:<ALT>` allows alternatives:
   * Single amino acid: `164:H`
   * Set: `247:ND` (Asp or Asn)
@@ -229,6 +234,12 @@ data/serine_peptidases/1azw.pdb	2	4.6439	0.9234	A179,_,B176	B57,B102,C195
 - `rmsd`: Root mean square deviation
 - `matching_residues`: Residue indices in the match (comma-separated, _ for no match)
 - `query_residues`: Residue indices in the query (comma-separated)
+
+Residues are written as chain + residue number (`B57`), which is what the `-q`
+grammar accepts. When a chain ID would make that unreadable -- a multi-character
+`AA` or a numeric `10` -- the whole field switches to `AA_250` / `10_250`
+instead, which `-q` also accepts. Pass `--chain-sep` to get the separated form
+for every structure, if you would rather parse one fixed format.
 
 ### Structure Result
 Output with one structure per line (`--per-structure`)

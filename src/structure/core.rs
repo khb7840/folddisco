@@ -1,4 +1,5 @@
 use crate::structure::atom::{Atom, AtomVector};
+use crate::structure::chain_id::ChainId;
 use crate::structure::coordinate::{approx_cb, CarbonCoordinateVector, Coordinate};
 use crate::structure::feature::{Torsion, TorsionType};
 use crate::utils::convert::map_aa_to_u8;
@@ -9,7 +10,7 @@ use super::coordinate::{calc_torsion_radian, calc_angle_radian};
 #[derive(Debug)]
 pub struct Structure {
     pub num_chains: usize,
-    pub chains: Vec<u8>,
+    pub chains: Vec<ChainId>,
     pub atom_vector: AtomVector,
     pub num_atoms: usize,
     pub num_residues: usize,
@@ -26,12 +27,20 @@ impl Structure {
         }
     }
 
-    pub fn update(&mut self, atom: Atom, record: &mut (u8, u64)) {
+    /// Add an atom whose chain ID fits in one byte (PDB records, Foldcomp).
+    pub fn update(&mut self, atom: Atom, record: &mut (ChainId, u64)) {
+        let chain = ChainId::from_byte(atom.chain);
+        self.update_with_chain(atom, chain, record)
+    }
+
+    /// Add an atom together with its full chain ID, for mmCIF `auth_asym_id`
+    /// values that do not fit in `Atom::chain`.
+    pub fn update_with_chain(&mut self, atom: Atom, chain: ChainId, record: &mut (ChainId, u64)) {
         // record store previous chain ID and residue serial
-        if record.0 != atom.chain {
-            self.chains.push(atom.chain);
+        if record.0 != chain {
+            self.chains.push(chain);
             self.num_chains += 1;
-            record.0 = atom.chain;
+            record.0 = chain;
         }
         if record.1 != atom.res_serial {
             self.num_residues += 1;
@@ -39,7 +48,7 @@ impl Structure {
         }
         self.num_atoms += 1;
 
-        self.atom_vector.push_atom(atom);
+        self.atom_vector.push_atom_with_chain(atom, chain);
     }
 
     pub fn to_compact(&self) -> CompactStructure {
@@ -55,8 +64,8 @@ impl Structure {
 #[derive(Debug, Clone)]
 pub struct CompactStructure {
     pub num_chains: usize,
-    pub chains: Vec<u8>,
-    pub chain_per_residue: Vec<u8>,
+    pub chains: Vec<ChainId>,
+    pub chain_per_residue: Vec<ChainId>,
     pub num_residues: usize,
     pub residue_serial: Vec<u64>,
     pub residue_name: Vec<[u8; 3]>,
@@ -89,7 +98,7 @@ impl CompactStructure {
         let mut cb_vec_z: Vec<f32> = Vec::with_capacity(origin.num_residues);
         
 
-        let mut chain_per_residue: Vec<u8> = Vec::with_capacity(origin.num_residues);
+        let mut chain_per_residue: Vec<ChainId> = Vec::with_capacity(origin.num_residues);
         let mut prev_res_serial: Option<u64> = None;
         let mut prev_res_name: Option<&[u8; 3]> = None;
         let mut n: Option<Coordinate> = None;
@@ -213,7 +222,7 @@ impl CompactStructure {
         }
     }
     #[inline(always)]
-    pub fn get_index(&self, chain: &u8, res_serial: &u64) -> Option<usize> {
+    pub fn get_index(&self, chain: &ChainId, res_serial: &u64) -> Option<usize> {
         for i in 0..self.num_residues {
             if self.chain_per_residue[i] == *chain && self.residue_serial[i] == *res_serial {
                 return Some(i);

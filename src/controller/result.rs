@@ -5,6 +5,7 @@ use rayon::slice::ParallelSliceMut;
 
 use crate::measure_time;
 use crate::prelude::{log_msg, print_log_msg, FAIL, INFO};
+use crate::structure::chain_id::{format_chain_residue, residue_list_needs_separator};
 use crate::structure::coordinate::Coordinate;
 use crate::structure::metrics::StructureSimilarityMetrics;
 use crate::utils::formatter::{Column, TsvFormatter, Value, DEFAULT_FLOAT_PRECISION};
@@ -12,6 +13,32 @@ use rustc_hash::FxHashMap as HashMap;
 
 use super::ResidueMatch;
 use super::sort::{MatchSortStrategy, StructureSortStrategy};
+
+/// Placeholder printed for a query residue that the target did not match.
+const UNMATCHED: &str = "_";
+
+/// Render one `matching_residues` field.
+///
+/// The legacy spelling `A21,A23` is kept whenever it can be read back
+/// unambiguously, which is the case exactly when every chain in the list is a
+/// single letter. A multi-character chain (`AA`) or a numeric one (`10`) would
+/// make `AA250` / `10250` impossible to split, so the whole field switches to
+/// `AA_250` / `10_250`. `force_separator` (the `--chain-sep` flag) asks for the
+/// separated spelling even when the legacy one would have worked, for callers
+/// that want one stable format across every structure they query.
+///
+/// The decision is taken once per field rather than per residue, so a reader
+/// never has to cope with a field that is half in each spelling.
+pub fn format_residue_matches(residues: &[ResidueMatch], force_separator: bool) -> String {
+    let separator = force_separator
+        || residue_list_needs_separator(residues.iter().filter_map(|r| r.as_ref()).map(|(c, _)| c));
+    residues.iter().map(|residue| {
+        match residue {
+            Some((chain, res_ind)) => format_chain_residue(chain, *res_ind, separator),
+            None => UNMATCHED.to_string(),
+        }
+    }).collect::<Vec<String>>().join(",")
+}
 
 pub struct StructureResult<'a> {
     pub tid: &'a str,
@@ -89,12 +116,7 @@ impl<'a> fmt::Display for StructureResult<'a> {
             "NA".to_string()
         } else {
             self.matching_residues_processed.iter().map(
-                |(x, y, _, _, _, _, _)| format!("{}:{:.4}", x.iter().map(|x| {
-                    match x {
-                        Some((a, b)) => format!("{}{}", *a as char, b),
-                        None => "_".to_string()
-                    }
-                }).collect::<Vec<String>>().join(","), y)
+                |(x, y, _, _, _, _, _)| format!("{}:{:.4}", format_residue_matches(x, false), y)
             ).collect::<Vec<String>>().join(";")
         };
         write!(
@@ -161,12 +183,7 @@ impl<'a> MatchResult<'a> {
     }
     
     pub fn to_string(&self, superpose: bool) -> String {
-        let matching_residues = self.matching_residues.iter().map(|x| {
-            match x {
-                Some((a, b)) => format!("{}{}", *a as char, b),
-                None => "_".to_string()
-            }
-        }).collect::<Vec<String>>().join(",");
+        let matching_residues = format_residue_matches(&self.matching_residues, false);
         if superpose {
             // print u_matrix by flattening it
             let u_string = self.u_matrix.iter().flat_map(
@@ -200,12 +217,7 @@ impl<'a> fmt::Display for MatchResult<'a> {
         write!(
             f, "{}\t{}\t{:.4}\t{:.4}\t{}\t{}\t{}",
             self.tid, self.node_count, self.idf, self.rmsd, self.evalue,
-            self.matching_residues.iter().map(|x| {
-                match x {
-                    Some((a, b)) => format!("{}{}", *a as char, b),
-                    None => "_".to_string()
-                }
-            }).collect::<Vec<String>>().join(","),
+            format_residue_matches(&self.matching_residues, false),
             self.db_key
         )
     }
@@ -223,7 +235,9 @@ impl<'a> fmt::Debug for MatchResult<'a> {
 
 
 /// Build all available columns for StructureResult
-fn build_structure_result_columns<'a>(qid: String, query_residues: String) -> HashMap<&'static str, Column<StructureResult<'a>>> {
+fn build_structure_result_columns<'a>(
+    qid: String, query_residues: String, chain_sep: bool
+) -> HashMap<&'static str, Column<StructureResult<'a>>> {
     vec![
         Column::new("qid", "Query structure ID", move |_r: &StructureResult| qid.clone().into()),
         Column::new("tid", "Target structure ID", |r: &StructureResult| r.tid.into()),
@@ -237,17 +251,12 @@ fn build_structure_result_columns<'a>(qid: String, query_residues: String) -> Ha
         Column::new("plddt", "pLDDT score", |r: &StructureResult| Value::Float(r.plddt, 2)),
         Column::new("max_node_cov", "Max node coverage", |r: &StructureResult| (r.max_matching_node_count as u64).into()),
         Column::new("min_rmsd", "Min RMSD", |r: &StructureResult| Value::Float(r.min_rmsd_with_max_match, DEFAULT_FLOAT_PRECISION)),
-        Column::new("matching_residues", "Matching residues with RMSD", |r: &StructureResult| {
+        Column::new("matching_residues", "Matching residues with RMSD", move |r: &StructureResult| {
             if r.matching_residues_processed.is_empty() {
                 "NA".into()
             } else {
                 r.matching_residues_processed.iter().map(
-                    |(x, y, _, _, _, _, _)| format!("{}:{:.4}", x.iter().map(|x| {
-                        match x {
-                            Some((a, b)) => format!("{}{}", *a as char, b),
-                            None => "_".to_string()
-                        }
-                    }).collect::<Vec<String>>().join(","), y)
+                    |(x, y, _, _, _, _, _)| format!("{}:{:.4}", format_residue_matches(x, chain_sep), y)
                 ).collect::<Vec<String>>().join(";").into()
             }
         }),
@@ -258,7 +267,9 @@ fn build_structure_result_columns<'a>(qid: String, query_residues: String) -> Ha
 }
 
 /// Build all available columns for MatchResult
-fn build_match_result_columns<'a>(qid: String, query_residues: String) -> HashMap<&'static str, Column<MatchResult<'a>>> {
+fn build_match_result_columns<'a>(
+    qid: String, query_residues: String, chain_sep: bool
+) -> HashMap<&'static str, Column<MatchResult<'a>>> {
     vec![
         Column::new("qid", "Query structure ID", move |_r: &MatchResult| qid.clone().into()),
         Column::new("tid", "Target structure ID", |r: &MatchResult| r.tid.into()),
@@ -270,13 +281,8 @@ fn build_match_result_columns<'a>(qid: String, query_residues: String) -> HashMa
         Column::new("e_value", "E-value", |r: &MatchResult| Value::ScientificFloat(r.evalue, 4)),
         Column::new("u_matrix", "Rotation matrix", |r: &MatchResult| Value::Float3DMatrix(r.u_matrix, DEFAULT_FLOAT_PRECISION, ",")),
         Column::new("t_vector", "Translation vector", |r: &MatchResult| Value::Float3DVector(r.t_matrix, DEFAULT_FLOAT_PRECISION, ",")),
-        Column::new("matching_residues", "Matching residues", |r: &MatchResult| {
-            r.matching_residues.iter().map(|x| {
-                match x {
-                    Some((a, b)) => format!("{}{}", *a as char, b),
-                    None => "_".to_string()
-                }
-            }).collect::<Vec<String>>().join(",").into()
+        Column::new("matching_residues", "Matching residues", move |r: &MatchResult| {
+            format_residue_matches(&r.matching_residues, chain_sep).into()
         }),
         Column::new("matching_coordinates", "Matching C-alpha coordinates", |r: &MatchResult| {
             Value::FloatVector(
@@ -314,8 +320,10 @@ pub const STRUCTURE_RESULT_DEFAULT_COLUMNS: &[&str] = &[
 ];
 
 /// Create a TsvFormatter for StructureResult with specified column keys
-pub fn structure_result_formatter<'a>(column_keys: &[&str], qid: &str, query_residues: &str) -> TsvFormatter<StructureResult<'a>> {
-    let registry = build_structure_result_columns(qid.to_string(), query_residues.to_string());
+pub fn structure_result_formatter<'a>(
+    column_keys: &[&str], qid: &str, query_residues: &str, chain_sep: bool
+) -> TsvFormatter<StructureResult<'a>> {
+    let registry = build_structure_result_columns(qid.to_string(), query_residues.to_string(), chain_sep);
     let columns: Vec<Column<StructureResult>> = column_keys.iter()
         .filter_map(|&key| registry.get(key).cloned())
         .collect();
@@ -323,8 +331,10 @@ pub fn structure_result_formatter<'a>(column_keys: &[&str], qid: &str, query_res
 }
 
 /// Create a TsvFormatter for StructureResult with default columns
-pub fn structure_result_default_formatter<'a>(qid: &str, query_residues: &str) -> TsvFormatter<StructureResult<'a>> {
-    structure_result_formatter(STRUCTURE_RESULT_DEFAULT_COLUMNS, qid, query_residues)
+pub fn structure_result_default_formatter<'a>(
+    qid: &str, query_residues: &str, chain_sep: bool
+) -> TsvFormatter<StructureResult<'a>> {
+    structure_result_formatter(STRUCTURE_RESULT_DEFAULT_COLUMNS, qid, query_residues, chain_sep)
 }
 
 /// Default column keys for MatchResult output
@@ -379,8 +389,10 @@ pub fn evalue_fitting(x: f32, m: f32, l: f32) -> f64 {
 }
 
 /// Create a TsvFormatter for MatchResult with specified column keys
-pub fn match_result_formatter<'a>(column_keys: &[&str], qid: &str, query_residues: &str) -> TsvFormatter<MatchResult<'a>> {
-    let registry = build_match_result_columns(qid.to_string(), query_residues.to_string());
+pub fn match_result_formatter<'a>(
+    column_keys: &[&str], qid: &str, query_residues: &str, chain_sep: bool
+) -> TsvFormatter<MatchResult<'a>> {
+    let registry = build_match_result_columns(qid.to_string(), query_residues.to_string(), chain_sep);
     let columns: Vec<Column<MatchResult>> = column_keys.iter()
         .filter_map(|&key| registry.get(key).cloned())
         .collect();
@@ -388,19 +400,23 @@ pub fn match_result_formatter<'a>(column_keys: &[&str], qid: &str, query_residue
 }
 
 /// Create a TsvFormatter for MatchResult with default columns
-pub fn match_result_default_formatter<'a>(qid: &str, query_residues: &str) -> TsvFormatter<MatchResult<'a>> {
-    match_result_formatter(MATCH_RESULT_DEFAULT_COLUMNS, qid, query_residues)
+pub fn match_result_default_formatter<'a>(
+    qid: &str, query_residues: &str, chain_sep: bool
+) -> TsvFormatter<MatchResult<'a>> {
+    match_result_formatter(MATCH_RESULT_DEFAULT_COLUMNS, qid, query_residues, chain_sep)
 }
 
 /// Create a TsvFormatter for MatchResult with superpose columns
-pub fn match_result_superpose_formatter<'a>(qid: &str, query_residues: &str) -> TsvFormatter<MatchResult<'a>> {
-    match_result_formatter(MATCH_RESULT_SUPERPOSE_COLUMNS, qid, query_residues)
+pub fn match_result_superpose_formatter<'a>(
+    qid: &str, query_residues: &str, chain_sep: bool
+) -> TsvFormatter<MatchResult<'a>> {
+    match_result_formatter(MATCH_RESULT_SUPERPOSE_COLUMNS, qid, query_residues, chain_sep)
 }
 
 pub fn sort_and_print_structure_query_result(
     results: &mut Vec<(usize, StructureResult)>, 
     output_path: &str, qid: &str, query_residues: &str, columns: Option<&[&str]>, header: bool, verbose: bool,
-    sort_strategy: StructureSortStrategy,
+    sort_strategy: StructureSortStrategy, chain_sep: bool,
 ) {
     // Sort using the strategy
     if verbose {
@@ -414,8 +430,8 @@ pub fn sort_and_print_structure_query_result(
     }
 
     let formatter = match columns {
-        Some(cols) => structure_result_formatter(cols, qid, query_residues),
-        None => structure_result_default_formatter(qid, query_residues),
+        Some(cols) => structure_result_formatter(cols, qid, query_residues, chain_sep),
+        None => structure_result_default_formatter(qid, query_residues, chain_sep),
     };
 
     // If output path is not empty, write to file
@@ -450,7 +466,7 @@ pub fn sort_and_print_structure_query_result(
 pub fn sort_and_print_match_query_result(
     results: &mut Vec<(usize, MatchResult)>, top_n: usize, 
     output_path: &str, qid: &str, query_residues: &str, columns: Option<&[&str]>, superpose: bool, header: bool, verbose: bool,
-    sort_strategy: MatchSortStrategy,
+    sort_strategy: MatchSortStrategy, chain_sep: bool,
 ) {
     // Sort using the strategy
     if verbose {
@@ -471,12 +487,12 @@ pub fn sort_and_print_match_query_result(
     }
 
     let formatter = match columns {
-        Some(cols) => match_result_formatter(cols, qid, query_residues),
+        Some(cols) => match_result_formatter(cols, qid, query_residues, chain_sep),
         None => {
             if superpose {
-                match_result_superpose_formatter(qid, query_residues)
+                match_result_superpose_formatter(qid, query_residues, chain_sep)
             } else {
-                match_result_default_formatter(qid, query_residues)
+                match_result_default_formatter(qid, query_residues, chain_sep)
             }
         }
     };
@@ -511,3 +527,77 @@ pub fn sort_and_print_match_query_result(
 }
 
 // TODO: Need testing
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::structure::chain_id::ChainId;
+
+    fn residue(chain: &str, index: u64) -> ResidueMatch {
+        Some((ChainId::from_str(chain), index))
+    }
+
+    /// The default output has to stay byte-identical to what folddisco printed
+    /// before chain IDs were widened, so that existing parsers and the query
+    /// grammar keep working.
+    #[test]
+    fn single_letter_chains_keep_the_legacy_spelling() {
+        let residues = vec![
+            residue("A", 21), residue("A", 23), residue("A", 25),
+            residue("A", 27), residue("A", 32),
+        ];
+        assert_eq!(format_residue_matches(&residues, false), "A21,A23,A25,A27,A32");
+        let mixed = vec![residue("B", 57), residue("B", 102), residue("C", 195)];
+        assert_eq!(format_residue_matches(&mixed, false), "B57,B102,C195");
+    }
+
+    #[test]
+    fn unmatched_residues_stay_a_bare_underscore() {
+        let residues = vec![residue("A", 21), None, residue("A", 25)];
+        assert_eq!(format_residue_matches(&residues, false), "A21,_,A25");
+    }
+
+    /// A chain ID that would make `chain + index` unreadable switches the whole
+    /// field over, so one field is never half in each spelling.
+    #[test]
+    fn ambiguous_chains_switch_the_whole_field() {
+        let multi_char = vec![residue("AA", 250), residue("AB", 232)];
+        assert_eq!(format_residue_matches(&multi_char, false), "AA_250,AB_232");
+
+        let numeric = vec![residue("10", 250), residue("10", 252)];
+        assert_eq!(format_residue_matches(&numeric, false), "10_250,10_252");
+
+        // One ambiguous chain is enough: `A` is separated too, rather than
+        // leaving the reader to guess per element.
+        let mixed = vec![residue("A", 21), residue("10", 250)];
+        assert_eq!(format_residue_matches(&mixed, false), "A_21,10_250");
+    }
+
+    #[test]
+    fn chain_sep_forces_the_separated_spelling() {
+        let residues = vec![residue("A", 21), None, residue("A", 23)];
+        assert_eq!(format_residue_matches(&residues, true), "A_21,_,A_23");
+    }
+
+    /// Every spelling this function emits has to be readable by the query
+    /// parser, in both directions.
+    #[test]
+    fn output_round_trips_through_the_query_parser() {
+        use crate::controller::query::parse_query_string;
+        let cases: Vec<Vec<ResidueMatch>> = vec![
+            vec![residue("A", 21), residue("A", 23), residue("A", 32)],
+            vec![residue("B", 57), residue("C", 195)],
+            vec![residue("AA", 250), residue("AB", 232)],
+            vec![residue("10", 250), residue("1", 3)],
+        ];
+        for residues in cases {
+            let expected: Vec<(ChainId, u64)> = residues.iter()
+                .map(|r| r.unwrap()).collect();
+            for forced in [false, true] {
+                let printed = format_residue_matches(&residues, forced);
+                let (parsed, _) = parse_query_string(&printed, ChainId::from_byte(b'A'));
+                assert_eq!(parsed, expected, "round trip of {printed:?}");
+            }
+        }
+    }
+}

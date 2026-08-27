@@ -7,6 +7,7 @@ use std::path::Path;
 use flate2::read::GzDecoder;
 
 use crate::structure::atom::Atom;
+use crate::structure::chain_id::ChainId;
 
 use super::super::core::*;
 use super::*;
@@ -97,7 +98,7 @@ impl Reader<File> {
 
 fn parse_mmcif_block_into_structure(input: &DataBlock, structure: &mut Structure) {
     let mut errors: Vec<PDBError> = Vec::new();
-    let mut record = (b' ', 0);
+    let mut record = (ChainId::from_byte(b' '), 0);
     for item in &input.items {
         let result = match item {
             Item::DataItem(di) => match di {
@@ -135,7 +136,7 @@ fn flatten_result<T, E>(value: Result<Result<T, E>, E>) -> Result<T, E> {
 
 /// Parse a loop containing atomic data
 fn parse_atoms(
-    input: &Loop, structure: &mut Structure, record: &mut (u8, u64)
+    input: &Loop, structure: &mut Structure, record: &mut (ChainId, u64)
 ) -> Option<Vec<PDBError>> {
     #[derive(Eq, PartialEq)]
     /// The mode of a column
@@ -256,8 +257,8 @@ fn parse_atoms(
             parse_column!(get_isize, ATOM_SEQ_ID)
                 .expect("Residue number should be provided")
         }) as u64;
-        let chain_name = parse_column!(get_one_char, ATOM_AUTH_ASYM_ID).unwrap_or_else(|| {
-            parse_column!(get_one_char, ATOM_ASYM_ID).expect("Chain name should be provided")
+        let chain_name = parse_column!(get_chain_id, ATOM_AUTH_ASYM_ID).unwrap_or_else(|| {
+            parse_column!(get_chain_id, ATOM_ASYM_ID).expect("Chain name should be provided")
         });
         let pos_x = parse_column!(get_f32, ATOM_X).expect("Atom X position should be provided");
         let pos_y = parse_column!(get_f32, ATOM_Y).expect("Atom Y position should be provided");
@@ -277,10 +278,10 @@ fn parse_atoms(
 
         let atom = Atom::new(
             pos_x, pos_y, pos_z, name, id,
-            chain_name, residue_name, residue_number, b_factor
+            chain_name.first_byte(), residue_name, residue_number, b_factor
         );
-        
-        structure.update(atom, record);
+
+        structure.update_with_chain(atom, chain_name, record);
     }
 
     if !errors.is_empty() {
@@ -335,23 +336,24 @@ fn get_three_char_array(
     }
 }
 
-fn get_one_char(
+/// Read a chain identifier of any length, e.g. `A`, `AA` or the numeric `10`
+/// that large cryo-EM entries such as PDB 9A1O use for `auth_asym_id`.
+fn get_chain_id(
     value: &Value,
     _context: &Context,
     _column: Option<&str>,
-) -> Result<Option<u8>, PDBError> {
+) -> Result<Option<ChainId>, PDBError> {
     let text = match value {
         Value::Text(t) => t.clone(),
         Value::Numeric(n) => format!("{n}"),
         _ => return Ok(None),
     };
-    match text.as_bytes().len() {
-        1 => Ok(Some(text.as_bytes()[0])),
-        // Multi-character chain IDs (e.g. "10" in PDB 9A1O) can't be
-        // represented as a single byte. Return None so the caller can
-        // fall back to label_asym_id (which is typically single-char).
-        _ => Ok(None),
+    if text.is_empty() {
+        // An absent chain ID is not an error here: the caller falls back to
+        // label_asym_id.
+        return Ok(None);
     }
+    Ok(Some(ChainId::from_str(&text)))
 }
 
 // fn get_text(
@@ -521,23 +523,76 @@ mod tests {
         assert_eq!(result, Some([b' ', b'1', b'0', b' ']));
     }
 
+    /// Multi-character and numeric `auth_asym_id` values are kept in full, and
+    /// change nothing but the chain labels.
+    ///
+    /// `1G2F_multichain.cif` is `1G2F.cif` with every `auth_asym_id` rewritten
+    /// (A->AA, B->BB, C->10, D->DD, E->EE, F->FF) and the coordinates left
+    /// alone, so the two files have to agree residue for residue.
     #[test]
-    fn test_get_one_char_numeric() {
-        let ctx = Context::show("test");
-        // Single-digit chain ID
-        let val = Value::Numeric(1.0);
-        let result = get_one_char(&val, &ctx, None).unwrap();
-        assert_eq!(result, Some(b'1'));
+    fn test_read_cif_with_multi_char_chain_ids() {
+        let read = |path: &str| {
+            let file = File::open(Path::new(path)).unwrap();
+            Reader::new(file).read_structure().unwrap().to_compact()
+        };
+        let single = read("data/io_test/cif/1G2F.cif");
+        let multi = read("data/io_test/cif/1G2F_multichain.cif");
+
+        assert_eq!(single.num_residues, multi.num_residues);
+        assert_eq!(single.residue_serial, multi.residue_serial);
+
+        let expected = |chain: &ChainId| -> ChainId {
+            ChainId::from_str(match chain.as_str() {
+                "A" => "AA", "B" => "BB", "C" => "10",
+                "D" => "DD", "E" => "EE", "F" => "FF",
+                other => panic!("unexpected chain {other}"),
+            })
+        };
+        for i in 0..single.num_residues {
+            assert_eq!(multi.chain_per_residue[i], expected(&single.chain_per_residue[i]));
+        }
+
+        // The zinc-finger motif this file is used for is on chain F, which is
+        // now FF. Looking it up by its full ID has to land on the same residue.
+        for res in [207u64, 212, 225, 229] {
+            assert_eq!(
+                multi.get_index(&ChainId::from_str("FF"), &res),
+                single.get_index(&ChainId::from_str("F"), &res),
+                "residue {res}"
+            );
+            // The truncated ID must not match anything any more.
+            assert_eq!(multi.get_index(&ChainId::from_str("F"), &res), None);
+        }
+        // A numeric chain ID survives too.
+        assert!(multi.get_index(&ChainId::from_str("10"), &1).is_some()
+            || multi.chain_per_residue.contains(&ChainId::from_str("10")));
     }
 
     #[test]
-    fn test_get_one_char_numeric_multi_digit() {
+    fn test_get_chain_id_numeric() {
         let ctx = Context::show("test");
-        // Multi-digit chain ID like "10" (PDB 9A1O) can't be represented
-        // as a single byte — returns None so caller falls back to label_asym_id
+        // Single-digit chain ID
+        let val = Value::Numeric(1.0);
+        let result = get_chain_id(&val, &ctx, None).unwrap();
+        assert_eq!(result, Some(ChainId::from_str("1")));
+    }
+
+    #[test]
+    fn test_get_chain_id_numeric_multi_digit() {
+        let ctx = Context::show("test");
+        // Multi-digit chain ID like "10" (PDB 9A1O) is now kept in full
+        // instead of forcing a fallback to label_asym_id.
         let val = Value::Numeric(10.0);
-        let result = get_one_char(&val, &ctx, None).unwrap();
-        assert_eq!(result, None);
+        let result = get_chain_id(&val, &ctx, None).unwrap();
+        assert_eq!(result, Some(ChainId::from_str("10")));
+    }
+
+    #[test]
+    fn test_get_chain_id_multi_char_text() {
+        let ctx = Context::show("test");
+        let val = Value::Text("AA".to_string());
+        let result = get_chain_id(&val, &ctx, None).unwrap();
+        assert_eq!(result, Some(ChainId::from_str("AA")));
     }
 }
 

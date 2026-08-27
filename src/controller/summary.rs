@@ -8,6 +8,8 @@ use crate::controller::DEFAULT_DIST_CUTOFF;
 use crate::controller::Folddisco;
 use crate::controller::feature::get_single_feature;
 use crate::controller::io::read_structure_from_path;
+use crate::controller::retrieve::res_index_to_char;
+use crate::structure::chain_id::split_chain_and_rest;
 use crate::geometry::core::HashType;
 use crate::geometry::core::GeometricHash;
 use crate::index::indextable::FolddiscoIndex;
@@ -457,12 +459,14 @@ pub fn analyze_enrichment(
             .map(|(pos, _)| pos.clone())
             .collect();
         final_positions.sort_by(|a, b| {
-            // Extract chain id (first char) and residue index (remaining chars)
-            let a_chain = a.chars().next().unwrap_or(' ');
-            let b_chain = b.chars().next().unwrap_or(' ');
-            let a_idx: i32 = a.chars().skip(1).collect::<String>().parse().unwrap_or(0);
-            let b_idx: i32 = b.chars().skip(1).collect::<String>().parse().unwrap_or(0);
-            
+            // Split chain id from residue index. `split_chain_and_rest` reads
+            // both `A21` and the separated `AA_21` / `10_21` spellings, so a
+            // multi-character chain sorts as a chain and not as a residue.
+            let (a_chain, a_rest) = split_chain_and_rest(a);
+            let (b_chain, b_rest) = split_chain_and_rest(b);
+            let a_idx: i32 = a_rest.parse().unwrap_or(0);
+            let b_idx: i32 = b_rest.parse().unwrap_or(0);
+
             a_chain.cmp(&b_chain).then_with(|| a_idx.cmp(&b_idx))
         });
         
@@ -676,15 +680,15 @@ impl Folddisco {
                         if has_feature {
                             if self.num_bin_dist == 0 || self.num_bin_angle == 0 {
                                 let hash = GeometricHash::perfect_hash_default_as_u32(&feature, self.hash_type);
-                                let pos1 = format!("{}{}", compact.chain_per_residue[i] as char, compact.residue_serial[i]);
-                                let pos2 = format!("{}{}", compact.chain_per_residue[j] as char, compact.residue_serial[j]);
+                                let pos1 = res_index_to_char(&compact.chain_per_residue[i], compact.residue_serial[i]);
+                                let pos2 = res_index_to_char(&compact.chain_per_residue[j], compact.residue_serial[j]);
                                 output_map.entry(hash).or_default().push((pdb_pos, pos1, pos2));
                             } else {
                                 let hash = GeometricHash::perfect_hash_as_u32(
                                     &feature, self.hash_type, self.num_bin_dist, self.num_bin_angle
                                 );
-                                let pos1 = format!("{}{}", compact.chain_per_residue[i] as char, compact.residue_serial[i]);
-                                let pos2 = format!("{}{}", compact.chain_per_residue[j] as char, compact.residue_serial[j]);
+                                let pos1 = res_index_to_char(&compact.chain_per_residue[i], compact.residue_serial[i]);
+                                let pos2 = res_index_to_char(&compact.chain_per_residue[j], compact.residue_serial[j]);
                                 output_map.entry(hash).or_default().push((pdb_pos, pos1, pos2));
                             }
                         }

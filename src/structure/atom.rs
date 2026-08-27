@@ -1,5 +1,11 @@
+use crate::structure::chain_id::ChainId;
 use crate::structure::coordinate::{Coordinate, CoordinateVector};
 
+/// A single atom.
+///
+/// The layout is pinned: `Atom::from_c` transmutes Foldcomp's C `atom_t` into
+/// this struct, so `chain` stays a single byte here. Multi-character chain IDs
+/// live in [`AtomVector::chain`], which the CIF parser fills in directly.
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct Atom {
@@ -77,7 +83,7 @@ pub struct AtomVector {
     pub atom_serial: Vec<u64>,
     pub res_name: Vec<[u8; 3]>,
     pub res_serial: Vec<u64>,
-    pub chain: Vec<u8>,
+    pub chain: Vec<ChainId>,
     pub b_factor: Vec<f32>,
 }
 
@@ -103,7 +109,7 @@ impl AtomVector {
         atom_serial: u64,
         res_name: [u8; 3],
         res_serial: u64,
-        chain: u8,
+        chain: ChainId,
         b_factor: f32,
     ) {
         self.atom_name.push(atom_name);
@@ -118,7 +124,15 @@ impl AtomVector {
         self.b_factor.push(b_factor);
     }
 
+    /// Push an atom whose chain ID fits in one byte (PDB records, Foldcomp).
     pub fn push_atom(&mut self, atom: Atom) {
+        let chain = ChainId::from_byte(atom.chain);
+        self.push_atom_with_chain(atom, chain);
+    }
+
+    /// Push an atom together with a chain ID that `Atom::chain` cannot hold,
+    /// as parsed from an mmCIF `auth_asym_id` / `label_asym_id`.
+    pub fn push_atom_with_chain(&mut self, atom: Atom, chain: ChainId) {
         self.atom_name.push(atom.atom_name);
         self.coordinates.x.push(atom.x);
         self.coordinates.y.push(atom.y);
@@ -127,7 +141,7 @@ impl AtomVector {
         self.atom_serial.push(atom.atom_serial);
         self.res_name.push(atom.res_name);
         self.res_serial.push(atom.res_serial);
-        self.chain.push(atom.chain);
+        self.chain.push(chain);
         self.b_factor.push(atom.b_factor);
     }
 
@@ -142,7 +156,8 @@ impl AtomVector {
             // res_name: self.res_name[index].clone(),
             res_name: self.res_name[index],
             res_serial: self.res_serial[index],
-            chain: self.chain[index],
+            // Narrows a multi-character chain ID; `Atom` is the FFI-shaped view.
+            chain: self.chain[index].first_byte(),
             b_factor: self.b_factor[index],
         }
     }
@@ -194,7 +209,7 @@ impl AtomVector {
         let mut nth_vector = AtomVector::new();
         for i in 0..self.len() {
             if self.get_res_serial(i) as usize == n + 1 {
-                nth_vector.push_atom(self.get(i));
+                nth_vector.push_atom_with_chain(self.get(i), self.chain[i]);
             }
         }
         nth_vector
