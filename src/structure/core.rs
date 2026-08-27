@@ -101,6 +101,10 @@ impl CompactStructure {
         let mut chain_per_residue: Vec<ChainId> = Vec::with_capacity(origin.num_residues);
         let mut prev_res_serial: Option<u64> = None;
         let mut prev_res_name: Option<&[u8; 3]> = None;
+        // Tracked like prev_res_serial / prev_res_name: a residue is flushed
+        // when the *next* one starts, so `origin.atom_vector.chain[idx]` at that
+        // point is the chain of the next residue, not of the one being written.
+        let mut prev_chain: Option<ChainId> = None;
         let mut n: Option<Coordinate> = None;
         let mut ca: Option<Coordinate> = None;
         let mut cb: Option<Coordinate> = None;
@@ -122,7 +126,7 @@ impl CompactStructure {
                         cb_vec.push(&cb);
                         res_serial_vec.push(resi);
                         res_name_vec.push(*resn);
-                        chain_per_residue.push(origin.atom_vector.chain[idx]);
+                        chain_per_residue.push(prev_chain.expect("expected chain id"));
                         b_factors.push(origin.atom_vector.b_factor[idx]);
                         n_vec_x.push(n.x);
                         n_vec_y.push(n.y);
@@ -142,7 +146,7 @@ impl CompactStructure {
                         ca_vec.push(&ca);
                         res_serial_vec.push(resi);
                         res_name_vec.push(*resn);
-                        chain_per_residue.push(origin.atom_vector.chain[idx]);
+                        chain_per_residue.push(prev_chain.expect("expected chain id"));
                         b_factors.push(origin.atom_vector.b_factor[idx]);
                         if let (Some(b"GLY"), Some(gly_n), Some(gly_c)) =
                             (prev_res_name, &gly_n, &gly_c)
@@ -183,6 +187,7 @@ impl CompactStructure {
                 n = None;
                 prev_res_serial = Some(model.get_res_serial(idx));
                 prev_res_name = model.res_name.get(idx);
+                prev_chain = Some(origin.atom_vector.chain[idx]);
             }
 
             if model.is_ca(idx) {
@@ -489,6 +494,9 @@ impl CompactStructure {
 
 #[cfg(test)]
 mod structure_tests {
+    use crate::structure::chain_id::ChainId;
+    use crate::structure::io::pdb::Reader as PdbReader;
+
     #[test]
     fn test_gly_integration() {
         let data = crate::structure::io::pdb::Reader::from_file("data/homeobox/1akha-.pdb")
@@ -516,6 +524,36 @@ mod structure_tests {
         assert_eq!(compact.num_residues, structure.num_residues);
     }
     
+    /// A residue that ends a chain belongs to that chain.
+    ///
+    /// `CompactStructure::build` writes a residue out when the *following* one
+    /// starts, so it used to take the chain ID from the first atom of the next
+    /// residue. That put the last residue of every chain into the next chain.
+    ///
+    /// Ground truth from `data/serine_peptidases/4cha.pdb`: chain A holds
+    /// residues 1-11, and chain B starts at residue 16, so nothing in chain B
+    /// is numbered 11.
+    #[test]
+    fn last_residue_of_a_chain_keeps_its_own_chain() {
+        let compact = PdbReader::from_file("data/serine_peptidases/4cha.pdb")
+            .unwrap().read_structure().unwrap().to_compact();
+
+        let chain_a = ChainId::from_byte(b'A');
+        let chain_b = ChainId::from_byte(b'B');
+
+        let a_residues: Vec<u64> = (0..compact.num_residues)
+            .filter(|&i| compact.chain_per_residue[i] == chain_a)
+            .map(|i| compact.residue_serial[i])
+            .collect();
+        assert_eq!(a_residues, (1..=11).collect::<Vec<u64>>());
+
+        // Residue 11 is the last of chain A and must be reachable as such...
+        assert!(compact.get_index(&chain_a, &11).is_some());
+        // ...and must not have leaked into chain B, which starts at 16.
+        assert_eq!(compact.get_index(&chain_b, &11), None);
+        assert!(compact.get_index(&chain_b, &16).is_some());
+    }
+
     #[test]
     fn test_avg_bfactor() {
         let data = crate::structure::io::pdb::Reader::from_file("data/homeobox/1akha-.pdb")
