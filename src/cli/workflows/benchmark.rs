@@ -110,7 +110,9 @@ pub fn benchmark(env: AppArgs) {
             let config_path = format!("{}.type", index_path);
             let format = format.as_str();
             let raw_lookup = load_lookup_from_file(&lookup_path);
-            let mut lookup = raw_lookup.into_iter().map(|(id, _, _, _, _)| parse_path(&id, afdb_to_uniprot).to_string()).collect::<Vec<_>>();
+            let mut lookup = raw_lookup.names()
+                .map(|name| parse_path(name, afdb_to_uniprot).to_string())
+                .collect::<Vec<_>>();
             lookup.sort();
             lookup.dedup();
             let config = read_index_config_from_file(&config_path);

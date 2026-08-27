@@ -9,134 +9,183 @@ use std::fs::File;
 use std::io::BufWriter;
 
 use memmap2::Mmap;
-use rayon::iter::ParallelIterator;
-use rayon::slice::ParallelSlice;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rayon::str::ParallelString;
 
-use crate::utils::log::{log_msg, print_log_msg, FAIL, WARN};
+use crate::utils::log::{log_msg, FAIL};
+use crate::utils::pod_cache::{store_and_map, CacheRecord, PodCache};
 
-// Binary cache of a parsed lookup file, saved next to it as <lookup>.cache.
-// The record table has a fixed stride so the cache is decoded with rayon just
-// like the mmap + par_lines text path; a serial reader would be slower than
-// text parsing whenever more than a couple of threads are available.
-// Layout (little-endian):
-//   magic [u8; 8] | version u32 | count u64 | source length u64 |
-//   source mtime nanos u64 | names length u64 | count * 40 byte records | names blob
-// Record: id u64 | nres u64 | db_key u64 | plddt f32 | name_len u32 | name_offset u64
-// name_offset is relative to the start of the names blob.
-//
-// The source length and mtime identify the exact lookup file the cache was built
-// from, and are checked on every load: an mtime comparison alone accepts a stale
-// cache whenever the lookup is rewritten inside one filesystem timestamp tick,
-// which serves wrong names, ids and pLDDTs with no signal at all. The names
-// length pins the total size, so a corrupted `count` cannot decode as a
-// short-but-well-formed cache (a zeroed count would otherwise look like an empty
-// index and make the search silently find nothing).
-//
-// There is deliberately no checksum over the record table: it would roughly
-// double the decode cost, which is the entire point of the cache, and after the
-// three size/identity checks no reachable write path leaves a table that is
-// corrupt yet passes. There is also deliberately no temp-file-and-rename: cache
-// content is a pure function of the lookup, so two processes writing the same
-// cache emit identical bytes from offset 0, and a reader that catches a write in
-// progress sees a short file and rejects it. Both of those hold only while the
-// bytes stay deterministic - putting a timestamp or a thread id in the body would
-// break the argument and bring atomicity back into scope.
-const LOOKUP_CACHE_MAGIC: &[u8; 8] = b"FDLOOKUP";
-const LOOKUP_CACHE_VERSION: u32 = 2;
-const LOOKUP_CACHE_HEADER_SIZE: usize = 44;
-const LOOKUP_CACHE_RECORD_SIZE: usize = 40;
+/// One lookup entry, in the fixed layout the cache is mapped as.
+///
+/// `#[repr(C)]`, 40 bytes, no padding: the field order puts the four 8-byte
+/// fields first and pairs the three 4-byte ones, so the bytes on disk are
+/// exactly the value and the table can be cast straight out of the mapping.
+/// `name_offset` is relative to the start of the name blob.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct LookupRecord {
+    pub id: u64,
+    pub nres: u64,
+    pub db_key: u64,
+    pub name_offset: u64,
+    pub plddt: f32,
+    pub name_len: u32,
+}
+
+// SAFETY: `#[repr(C)]`, four u64s followed by an f32 and a u32, so 40 bytes with
+// no padding and 8-byte alignment; every field is an integer or a float, so
+// every bit pattern is a valid value.
+unsafe impl CacheRecord for LookupRecord {
+    const MAGIC: &'static [u8; 8] = b"FDLOOKUP";
+    // v1/v2 were the parse-on-load text and record formats; v3 is mapped and
+    // cast, with a padded header so the record table is 8-aligned.
+    const VERSION: u32 = 3;
+}
+
+/// One lookup entry as its consumers want it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct LookupEntry<'a> {
+    pub name: &'a str,
+    pub id: usize,
+    pub nres: usize,
+    pub plddt: f32,
+    pub db_key: usize,
+}
+
+/// The lookup table of an index, held as a mapping rather than as parsed data.
+///
+/// Loading one is an `mmap`, a header check and a scan of the record table --
+/// no per-entry allocation, no text parsing, no sorting. Names are `&str`
+/// slices of the mapping, resolved when a caller asks for them, so the entries
+/// a query never reports are never touched.
+///
+/// The previous representation was a `Vec<(String, usize, usize, f32, usize)>`,
+/// which on a 53.7 M-entry lookup meant 53.7 M simultaneously live `String`s:
+/// 8.1 GB of live heap for 1.3 GB of names, and roughly three quarters of the
+/// load time spent in the allocator rather than on the data.
+pub struct LookupTable {
+    cache: PodCache<LookupRecord>,
+}
+
+impl LookupTable {
+    /// Map a cache and check it describes the current lookup file.
+    ///
+    /// Returns `None` for anything the mapping layer rejects, and additionally
+    /// for a record table that is not structurally sound. That second check
+    /// costs one parallel pass over the records -- tens of milliseconds even at
+    /// 50 M entries -- and is not optional: a torn write leaves all-zero
+    /// records, whose every field is individually in range, and an `id` of 0
+    /// would then quietly attribute those hits to the first structure in the
+    /// index. Anything rejected here falls back to parsing the text.
+    fn open(cache_path: &str, lookup_path: &str) -> Option<Self> {
+        let cache = PodCache::<LookupRecord>::map(cache_path, lookup_path)?;
+        let count = cache.len();
+        let names_len = cache.names_blob().len() as u64;
+        let sound = cache.records().par_iter().all(|record| {
+            // An empty name is not data: a lookup entry is a file path. And an
+            // id at or past the entry count is used to index a vector of
+            // exactly that length.
+            record.name_len > 0
+                && record.id < count as u64
+                && record.name_offset.saturating_add(record.name_len as u64) <= names_len
+        });
+        if !sound {
+            return None;
+        }
+        Some(LookupTable { cache })
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+
+    #[inline]
+    pub fn records(&self) -> &[LookupRecord] {
+        self.cache.records()
+    }
+
+    /// The name of entry `index`, borrowed from the mapping.
+    #[inline]
+    pub fn name(&self, index: usize) -> &str {
+        let record = &self.records()[index];
+        self.cache.name_at(record.name_offset, record.name_len)
+    }
+
+    /// Entry `index`, with its name resolved.
+    #[inline]
+    pub fn entry(&self, index: usize) -> LookupEntry<'_> {
+        let record = &self.records()[index];
+        LookupEntry {
+            name: self.cache.name_at(record.name_offset, record.name_len),
+            id: record.id as usize,
+            nres: record.nres as usize,
+            plddt: record.plddt,
+            db_key: record.db_key as usize,
+        }
+    }
+
+    /// Every name, in entry order.
+    pub fn names(&self) -> impl Iterator<Item = &str> + '_ {
+        (0..self.len()).map(move |i| self.name(i))
+    }
+
+    /// The owned tuples the previous representation handed out. For callers
+    /// that genuinely need to own the data, and for tests; a query path should
+    /// use `entry` and leave the names in the mapping.
+    pub fn to_owned_vec(&self) -> Vec<(String, usize, usize, f32, usize)> {
+        (0..self.len()).map(|i| {
+            let e = self.entry(i);
+            (e.name.to_string(), e.id, e.nres, e.plddt, e.db_key)
+        }).collect()
+    }
+}
 
 fn lookup_cache_path(path: &str) -> String {
     format!("{}.cache", path)
 }
 
-/// Length and modification time of the lookup file, as stored in the cache header.
-/// `None` when the file is gone or carries a timestamp outside the range this
-/// encoding covers, in which case no cache is written or trusted.
-fn source_identity(lookup_path: &str) -> Option<(u64, u64)> {
-    let meta = std::fs::metadata(lookup_path).ok()?;
-    let mtime = meta.modified().ok()?
-        .duration_since(std::time::UNIX_EPOCH).ok()?
-        .as_nanos();
-    Some((meta.len(), u64::try_from(mtime).ok()?))
-}
+/// Parse the text lookup into cache records, with the names copied into one
+/// contiguous blob.
+///
+/// The parse itself is parallel; the blob is assembled in a second serial pass
+/// because each name's offset depends on the lengths of all the names before
+/// it. Neither pass allocates per entry.
+fn parse_lookup_text(content: &str) -> (Vec<LookupRecord>, Vec<u8>) {
+    // (id, nres, plddt, db_key, name offset within `content`, name length)
+    let parsed: Vec<(u64, u64, f32, u64, u64, u32)> = content.par_lines().map(|line| {
+        let mut split = line.split('\t');
+        let id = split.next().unwrap().parse::<u64>().unwrap();
+        let name = split.next().unwrap();
+        let nres = split.next().unwrap().parse::<u64>().unwrap();
+        let plddt = split.next().unwrap().parse::<f32>().unwrap();
+        // The fifth column was added later; an older lookup reuses the id.
+        let db_key = match split.next() {
+            Some(text) => text.parse::<u64>().unwrap(),
+            None => id,
+        };
+        let name_offset = name.as_ptr() as usize - content.as_ptr() as usize;
+        (id, nres, plddt, db_key, name_offset as u64, name.len() as u32)
+    }).collect();
 
-// Decode the cache in parallel. Returns None on anything unexpected (missing,
-// truncated, bad magic or version, a source that no longer matches, a size that
-// disagrees with the header, an out-of-range or empty name) so that the caller
-// falls back to parsing the text lookup instead of returning partial or stale data.
-fn load_lookup_from_cache(
-    path: &str, lookup_path: &str,
-) -> Option<Vec<(String, usize, usize, f32, usize)>> {
-    let file = File::open(path).ok()?;
-    let mmap = unsafe { Mmap::map(&file).ok()? };
-    if mmap.len() < LOOKUP_CACHE_HEADER_SIZE || &mmap[..8] != LOOKUP_CACHE_MAGIC {
-        return None;
+    let names_len: usize = parsed.iter().map(|p| p.5 as usize).sum();
+    let mut names = Vec::with_capacity(names_len);
+    let mut records = Vec::with_capacity(parsed.len());
+    let source = content.as_bytes();
+    for (id, nres, plddt, db_key, text_offset, name_len) in parsed {
+        let start = text_offset as usize;
+        let name_offset = names.len() as u64;
+        names.extend_from_slice(&source[start..start + name_len as usize]);
+        records.push(LookupRecord {
+            id, nres, db_key, name_offset, plddt, name_len,
+        });
     }
-    if u32::from_le_bytes(mmap[8..12].try_into().unwrap()) != LOOKUP_CACHE_VERSION {
-        return None;
-    }
-    let count = u64::from_le_bytes(mmap[12..20].try_into().unwrap()) as usize;
-    let src_len = u64::from_le_bytes(mmap[20..28].try_into().unwrap());
-    let src_mtime = u64::from_le_bytes(mmap[28..36].try_into().unwrap());
-    let names_len = u64::from_le_bytes(mmap[36..44].try_into().unwrap()) as usize;
-    if source_identity(lookup_path)? != (src_len, src_mtime) {
-        return None;
-    }
-    let names_offset = count.checked_mul(LOOKUP_CACHE_RECORD_SIZE)?
-        .checked_add(LOOKUP_CACHE_HEADER_SIZE)?;
-    if mmap.len() != names_offset.checked_add(names_len)? {
-        return None;
-    }
-    let records = &mmap[LOOKUP_CACHE_HEADER_SIZE..names_offset];
-    let names = &mmap[names_offset..];
-    records.par_chunks_exact(LOOKUP_CACHE_RECORD_SIZE).map(|record| {
-        let id = u64::from_le_bytes(record[0..8].try_into().unwrap()) as usize;
-        let nres = u64::from_le_bytes(record[8..16].try_into().unwrap()) as usize;
-        let db_key = u64::from_le_bytes(record[16..24].try_into().unwrap()) as usize;
-        let plddt = f32::from_le_bytes(record[24..28].try_into().unwrap());
-        let name_len = u32::from_le_bytes(record[28..32].try_into().unwrap()) as usize;
-        let name_offset = u64::from_le_bytes(record[32..40].try_into().unwrap()) as usize;
-        // A lookup entry is a file path, so an empty name is not data: it is what a
-        // zeroed record looks like, and every field of one is in range.
-        if name_len == 0 {
-            return None;
-        }
-        let name = names.get(name_offset..name_offset.checked_add(name_len)?)
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())?;
-        Some((name.to_string(), id, nres, plddt, db_key))
-    }).collect::<Option<Vec<_>>>()
-}
-
-fn save_lookup_cache(
-    path: &str, lookup_path: &str, lookup: &[(String, usize, usize, f32, usize)],
-) -> std::io::Result<()> {
-    let (src_len, src_mtime) = source_identity(lookup_path).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::Other, "Unreadable lookup file metadata")
-    })?;
-    let names_len: usize = lookup.iter().map(|(name, ..)| name.len()).sum();
-    let mut writer = BufWriter::new(File::create(path)?);
-    writer.write_all(LOOKUP_CACHE_MAGIC)?;
-    writer.write_all(&LOOKUP_CACHE_VERSION.to_le_bytes())?;
-    writer.write_all(&(lookup.len() as u64).to_le_bytes())?;
-    writer.write_all(&src_len.to_le_bytes())?;
-    writer.write_all(&src_mtime.to_le_bytes())?;
-    writer.write_all(&(names_len as u64).to_le_bytes())?;
-    let mut name_offset = 0u64;
-    for (name, id, nres, plddt, db_key) in lookup {
-        writer.write_all(&(*id as u64).to_le_bytes())?;
-        writer.write_all(&(*nres as u64).to_le_bytes())?;
-        writer.write_all(&(*db_key as u64).to_le_bytes())?;
-        writer.write_all(&plddt.to_le_bytes())?;
-        writer.write_all(&(name.len() as u32).to_le_bytes())?;
-        writer.write_all(&name_offset.to_le_bytes())?;
-        name_offset += name.len() as u64;
-    }
-    for (name, _, _, _, _) in lookup {
-        writer.write_all(name.as_bytes())?;
-    }
-    writer.flush()
+    (records, names)
 }
 
 pub fn save_lookup_to_file(
@@ -182,52 +231,45 @@ pub fn save_lookup_to_file(
     }
 }
 
-// pub fn load_lookup_from_file(path: &str) -> (Vec<String>, Vec<usize>, Vec<usize>, Vec<f32>) {
-//     let mut path_vec: Vec<String> = Vec::new();
-//     let mut numeric_id_vec: Vec<usize> = Vec::new();
-//     let mut integer_vec: Vec<usize> = Vec::new();
-//     let mut float_vec: Vec<f32> = Vec::new();
-//     let file = std::fs::File::open(path).expect(&log_msg(FAIL, "Unable to open the lookup file"));
-//     let reader = std::io::BufReader::new(file);
-//     for line in reader.lines() {
-//         let line = line.expect(&log_msg(FAIL, "Unable to read the lookup file"));
-//         let line_vec: Vec<&str> = line.split("\t").collect();
-//         numeric_id_vec.push(line_vec[0].parse::<usize>().unwrap());
-//         path_vec.push(line_vec[1].to_string());
-//         integer_vec.push(line_vec[2].parse::<usize>().unwrap());
-//         float_vec.push(line_vec[3].parse::<f32>().unwrap());
-//     }
-//     (path_vec, numeric_id_vec, integer_vec, float_vec)
-// }
-pub fn load_lookup_from_file(path: &str) -> Vec<(String, usize, usize, f32, usize)> {
+/// Load the lookup table of an index.
+///
+/// A valid cache next to the lookup file is mapped and used as-is. Otherwise
+/// the text is parsed once, the cache is written, and the result is served from
+/// that same mapping -- so every reader takes exactly one code path and there
+/// is no second representation to keep in step.
+pub fn load_lookup_from_file(path: &str) -> LookupTable {
     let cache_path = lookup_cache_path(path);
-    if let Some(cached_lookup) = load_lookup_from_cache(&cache_path, path) {
-        return cached_lookup;
+    if let Some(table) = LookupTable::open(&cache_path, path) {
+        return table;
     }
     let file = std::fs::File::open(path).expect(&log_msg(FAIL, "Unable to open the lookup file"));
-    let mmap = unsafe { Mmap::map(&file).expect(&log_msg(FAIL, "Unable to mmap the lookup file")) };
+    let mmap = unsafe {
+        Mmap::map(&file).expect(&log_msg(FAIL, "Unable to mmap the lookup file"))
+    };
     let content = unsafe { std::str::from_utf8_unchecked(&mmap) };
-    let loaded_lookup = content.par_lines().map(|line| {
-        let mut split = line.split("\t");
-        let id = split.next().unwrap().parse::<usize>().unwrap();
-        let name = split.next().unwrap().to_string();
-        let nres = split.next().unwrap().parse::<usize>().unwrap();
-        let plddt = split.next().unwrap().parse::<f32>().unwrap();
-        let db_key = split.next().unwrap_or(&id.to_string()).parse::<usize>().unwrap();
-        (name, id, nres, plddt, db_key)
-    }).collect::<Vec<_>>();
-    // A read-only index directory is a normal deployment, so a failed cache
-    // write must not fail the load.
-    if let Err(err) = save_lookup_cache(&cache_path, path, &loaded_lookup) {
-        print_log_msg(WARN, &format!("Unable to write the lookup cache {}: {}", &cache_path, err));
-    }
-    loaded_lookup
+    let (records, names) = parse_lookup_text(content);
+    let cache = store_and_map(&cache_path, path, &records, &names).expect(
+        &log_msg(FAIL, "Unable to build the lookup cache")
+    );
+    let table = LookupTable { cache };
+    // The freshly built cache has to pass the same checks a mapped one does; if
+    // it does not, the parse produced something this loader would refuse, and
+    // saying so beats serving it.
+    debug_assert!(
+        table.records().iter().all(|r| r.name_len > 0 && r.id < table.len() as u64),
+        "the lookup text produced records the cache loader would reject"
+    );
+    table
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::pod_cache::HEADER_SIZE;
+    use std::mem::size_of;
+
+    /// Offsets of the header fields this module's tests patch.
+    const COUNT_OFFSET: u64 = 16;
 
     // Unique lookup path in a temporary directory, so that tests running in
     // parallel never share a cache.
@@ -248,9 +290,25 @@ mod tests {
         save_lookup_to_file(path, names, ids, Some(&nres), Some(&plddt), Some(&db_key));
     }
 
+    /// Overwrite bytes of the cache in place.
+    fn patch_cache(cache_path: &str, offset: u64, bytes: &[u8]) {
+        use std::io::{Seek, SeekFrom};
+        let mut cache = std::fs::OpenOptions::new().write(true).open(cache_path).unwrap();
+        cache.seek(SeekFrom::Start(offset)).unwrap();
+        cache.write_all(bytes).unwrap();
+    }
+
+    /// The layout promises `LookupRecord` makes to `CacheRecord`.
+    #[test]
+    fn test_record_layout() {
+        assert_eq!(size_of::<LookupRecord>(), 40);
+        assert_eq!(size_of::<LookupRecord>() % 8, 0);
+        assert_eq!(HEADER_SIZE % 8, 0);
+    }
+
     #[test]
     fn test_save_and_load_lookup() {
-        let path = "data/lookup_test.lookup";
+        let (path, cache_path) = temp_lookup_path("save_and_load");
         let path_vec = vec!["path1.pdb".to_string(), "path2.pdb".to_string(), "path3.pdb".to_string()];
         let numeric_id_vec = vec![0, 1, 2];
         let nres_vec = Some(vec![100, 200, 5000]);
@@ -261,16 +319,17 @@ mod tests {
             ("path2.pdb".to_string(), 1, 200, 60.0, 110),
             ("path3.pdb".to_string(), 2, 5000, 70.0, 200)
         ];
-        // Save the data to a file
-        save_lookup_to_file(path, &path_vec, &numeric_id_vec, nres_vec.as_ref(), plddt_vec.as_ref(), numeric_db_key_vec.as_ref());
+        save_lookup_to_file(&path, &path_vec, &numeric_id_vec, nres_vec.as_ref(), plddt_vec.as_ref(), numeric_db_key_vec.as_ref());
 
-        // Load the data from the file
-        let loaded_lookup = load_lookup_from_file(path);
-        // Check that the loaded data is the same as the original data
-        assert_eq!(loaded_lookup, expected_lookup);
+        let loaded = load_lookup_from_file(&path);
+        assert_eq!(loaded.to_owned_vec(), expected_lookup);
+        // Field accessors agree with the tuples.
+        assert_eq!(loaded.name(2), "path3.pdb");
+        assert_eq!(loaded.entry(1).db_key, 110);
+        assert_eq!(loaded.names().collect::<Vec<_>>(), vec!["path1.pdb", "path2.pdb", "path3.pdb"]);
 
-        // Clean up the test file
-        // std::fs::remove_file(path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cache_path);
     }
 
     #[test]
@@ -280,16 +339,29 @@ mod tests {
         let ids = (0..1000).collect::<Vec<_>>();
         write_test_lookup(&path, &names, &ids);
 
-        // First load parses the text file and writes the cache
-        let from_text = load_lookup_from_file(&path);
+        // First load parses the text and writes the cache
+        let from_text = load_lookup_from_file(&path).to_owned_vec();
         assert_eq!(from_text.len(), 1000);
         assert!(std::path::Path::new(&cache_path).is_file());
 
-        // The cache decodes into exactly what the text path returned
-        let from_cache = load_lookup_from_cache(&cache_path, &path).expect("cache should decode");
-        assert_eq!(from_cache, from_text);
-        assert_eq!(load_lookup_from_file(&path), from_text);
+        // The mapped cache decodes into exactly what the text path returned
+        let from_cache = LookupTable::open(&cache_path, &path).expect("cache should map");
+        assert_eq!(from_cache.to_owned_vec(), from_text);
+        assert_eq!(load_lookup_from_file(&path).to_owned_vec(), from_text);
 
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    /// A lookup without the fifth column, as older indices have.
+    #[test]
+    fn test_lookup_without_db_key_column_reuses_the_id() {
+        let (path, cache_path) = temp_lookup_path("four_column");
+        std::fs::write(&path, "0\ta.pdb\t100\t50.0\n7\tb.pdb\t200\t60.0\n").unwrap();
+        let loaded = load_lookup_from_file(&path);
+        assert_eq!(loaded.entry(0).db_key, 0);
+        assert_eq!(loaded.entry(1).db_key, 7);
+        assert_eq!(loaded.entry(1).id, 7);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&cache_path);
     }
@@ -300,32 +372,24 @@ mod tests {
         let names = vec!["a.pdb".to_string(), "b.pdb".to_string()];
         let ids = vec![0, 1];
         write_test_lookup(&path, &names, &ids);
-        let expected = load_lookup_from_file(&path);
+        let expected = load_lookup_from_file(&path).to_owned_vec();
 
         // Truncated in the middle of the record table
         let cache = std::fs::OpenOptions::new().write(true).open(&cache_path).unwrap();
-        cache.set_len(LOOKUP_CACHE_HEADER_SIZE as u64 + 10).unwrap();
+        cache.set_len(HEADER_SIZE as u64 + 10).unwrap();
         drop(cache);
-        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
-        assert_eq!(load_lookup_from_file(&path), expected);
+        assert!(LookupTable::open(&cache_path, &path).is_none());
+        assert_eq!(load_lookup_from_file(&path).to_owned_vec(), expected);
 
         // Bad magic
         let mut cache = std::fs::OpenOptions::new().write(true).open(&cache_path).unwrap();
         cache.write_all(b"NOTACACH").unwrap();
         drop(cache);
-        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
-        assert_eq!(load_lookup_from_file(&path), expected);
+        assert!(LookupTable::open(&cache_path, &path).is_none());
+        assert_eq!(load_lookup_from_file(&path).to_owned_vec(), expected);
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&cache_path);
-    }
-
-    /// Overwrite `count` bytes of the cache in place.
-    fn patch_cache(cache_path: &str, offset: u64, bytes: &[u8]) {
-        use std::io::{Seek, SeekFrom};
-        let mut cache = std::fs::OpenOptions::new().write(true).open(cache_path).unwrap();
-        cache.seek(SeekFrom::Start(offset)).unwrap();
-        cache.write_all(bytes).unwrap();
     }
 
     #[test]
@@ -348,9 +412,9 @@ mod tests {
             "the test needs both mtimes equal to mean anything"
         );
 
-        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
+        assert!(LookupTable::open(&cache_path, &path).is_none());
         assert_eq!(
-            load_lookup_from_file(&path),
+            load_lookup_from_file(&path).to_owned_vec(),
             vec![("totally_different.pdb".to_string(), 1, 107, 51.0, 1001)]
         );
 
@@ -365,30 +429,50 @@ mod tests {
         let (path, cache_path) = temp_lookup_path("cache_count0");
         let names = (0..5).map(|i| format!("prot_{}.pdb", i)).collect::<Vec<_>>();
         write_test_lookup(&path, &names, &(0..5).collect());
-        let expected = load_lookup_from_file(&path);
+        let expected = load_lookup_from_file(&path).to_owned_vec();
         assert_eq!(expected.len(), 5);
 
-        patch_cache(&cache_path, 12, &0u64.to_le_bytes());
-        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
-        assert_eq!(load_lookup_from_file(&path), expected);
+        patch_cache(&cache_path, COUNT_OFFSET, &0u64.to_le_bytes());
+        assert!(LookupTable::open(&cache_path, &path).is_none());
+        assert_eq!(load_lookup_from_file(&path).to_owned_vec(), expected);
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&cache_path);
     }
 
+    /// This is why the load does a pass over the records rather than only
+    /// casting them: every field of an all-zero record is individually in
+    /// range, and an `id` of 0 would attribute those hits to entry 0.
     #[test]
     fn test_lookup_cache_with_a_zeroed_record_is_rejected() {
-        // Every field of an all-zero record is in range, and its empty name decodes
-        // as a real entry ("", 0, 0, 0.0, 0). That is what a torn write leaves.
         let (path, cache_path) = temp_lookup_path("cache_zerohole");
         let names = (0..5).map(|i| format!("prot_{}.pdb", i)).collect::<Vec<_>>();
         write_test_lookup(&path, &names, &(0..5).collect());
-        let expected = load_lookup_from_file(&path);
+        let expected = load_lookup_from_file(&path).to_owned_vec();
 
-        let record_2 = LOOKUP_CACHE_HEADER_SIZE + 2 * LOOKUP_CACHE_RECORD_SIZE;
-        patch_cache(&cache_path, record_2 as u64, &[0u8; LOOKUP_CACHE_RECORD_SIZE]);
-        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
-        assert_eq!(load_lookup_from_file(&path), expected);
+        let record_2 = HEADER_SIZE + 2 * size_of::<LookupRecord>();
+        patch_cache(&cache_path, record_2 as u64, &[0u8; size_of::<LookupRecord>()]);
+        assert!(LookupTable::open(&cache_path, &path).is_none());
+        assert_eq!(load_lookup_from_file(&path).to_owned_vec(), expected);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    /// `id` is used to index a vector of exactly `len()` entries, so one past
+    /// the end has to be caught at load rather than panicking mid-search.
+    #[test]
+    fn test_lookup_cache_with_an_out_of_range_id_is_rejected() {
+        let (path, cache_path) = temp_lookup_path("cache_badid");
+        let names = (0..5).map(|i| format!("prot_{}.pdb", i)).collect::<Vec<_>>();
+        write_test_lookup(&path, &names, &(0..5).collect());
+        let expected = load_lookup_from_file(&path).to_owned_vec();
+
+        // Record 3's id field is the first 8 bytes of the record.
+        let record_3_id = HEADER_SIZE + 3 * size_of::<LookupRecord>();
+        patch_cache(&cache_path, record_3_id as u64, &99u64.to_le_bytes());
+        assert!(LookupTable::open(&cache_path, &path).is_none());
+        assert_eq!(load_lookup_from_file(&path).to_owned_vec(), expected);
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&cache_path);
@@ -410,8 +494,11 @@ mod tests {
             lookup_modified - std::time::Duration::from_secs(10)
         )).unwrap();
         drop(cache);
-        assert!(load_lookup_from_cache(&cache_path, &path).is_none());
-        assert_eq!(load_lookup_from_file(&path), vec![("b.pdb".to_string(), 1, 107, 51.0, 1001)]);
+        assert!(LookupTable::open(&cache_path, &path).is_none());
+        assert_eq!(
+            load_lookup_from_file(&path).to_owned_vec(),
+            vec![("b.pdb".to_string(), 1, 107, 51.0, 1001)]
+        );
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&cache_path);

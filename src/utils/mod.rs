@@ -8,4 +8,5 @@ pub mod convert;
 pub mod formatter;
 pub mod loader;
 pub mod log;
+pub mod pod_cache;
 pub mod traits;

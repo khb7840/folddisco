@@ -6,6 +6,7 @@ use rayon::prelude::*;  // Import rayon for parallel iterators
 use rustc_hash::FxHashMap as HashMap;
 
 use crate::index::indextable::FolddiscoIndex;
+use crate::index::lookup::LookupTable;
 use crate::prelude::GeometricHash;
 
 use super::result::StructureResult;
@@ -82,7 +83,7 @@ impl Default for CompactEntry {
 pub fn count_query<'a>(
     queries: &Vec<GeometricHash>, query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
     index: &FolddiscoIndex,
-    lookup: &'a Vec<(String, usize, usize, f32, usize)>, 
+    lookup: &'a LookupTable, 
     sampling_ratio: Option<f32>, sampling_count: Option<usize>,
     freq_filter: Option<f32>, length_penalty_power: Option<f32>,
 ) -> Vec<(usize, StructureResult<'a>)> {
@@ -138,8 +139,7 @@ pub fn count_query<'a>(
                         continue;  // Skip invalid values
                     }
                 
-                    let lookup_entry = &lookup[value];
-                    let nid = lookup_entry.1;
+                    let nid = lookup.records()[value].id as usize;
                     let entry = &mut local_results[nid];
 
                     // Initialize entry if not already initialized
@@ -198,20 +198,20 @@ pub fn count_query<'a>(
             }
             
             if found_data && merged_entry.match_count > 0 {
-                let lookup_entry = &lookup[nid];
+                let lookup_entry = lookup.entry(nid);
                 // Apply length penalty to the final IDF score
-                merged_entry.idf_sum *= (lookup_entry.2 as f32).powf(-lp);
-                
+                merged_entry.idf_sum *= (lookup_entry.nres as f32).powf(-lp);
+
                 let sr = StructureResult::new(
-                    &lookup_entry.0,
+                    lookup_entry.name,
                     nid,
                     merged_entry.match_count as usize,
                     merged_entry.node_count as usize,
                     merged_entry.edge_count as usize,  // Use actual edge count instead of node count
                     merged_entry.idf_sum,
-                    lookup_entry.2,
-                    lookup_entry.3,
-                    lookup_entry.4,
+                    lookup_entry.nres,
+                    lookup_entry.plddt,
+                    lookup_entry.db_key,
                 );
                 Some((nid, sr))
             } else {
