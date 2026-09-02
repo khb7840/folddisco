@@ -5,6 +5,8 @@ use std::path::Path;
 use flate2::read::GzDecoder;
 
 
+use crate::structure::chain_id::ChainId;
+
 use super::super::core::*;
 use super::parser::*;
 use super::*;
@@ -37,7 +39,7 @@ impl Reader<File> {
     pub fn read_structure(&self) -> Result<Structure, &str> {
         let reader = BufReader::new(&self.reader);
         let mut structure = Structure::new(); // revise
-        let mut record = (b' ', 0);
+        let mut record = (ChainId::from_byte(b' '), 0);
         let mut model = 0;
         // Reading each line of PDB, parse and build atomvector.
         for (_idx, line) in reader.lines().enumerate() {
@@ -87,7 +89,7 @@ impl Reader<File> {
 
         // Create a new Structure
         let mut structure = Structure::new();
-        let mut record = (b' ', 0);
+        let mut record = (ChainId::from_byte(b' '), 0);
         
         // Read binary as a string. Conver
         let reader = BufReader::new(&binary[..]);

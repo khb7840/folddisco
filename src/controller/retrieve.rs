@@ -7,6 +7,7 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use petgraph::Graph;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
+use crate::structure::chain_id::{format_chain_residue, ChainId};
 use crate::structure::lms_qcp::LmsQcpSuperimposer;
 use crate::structure::metrics::{deformation_stats_indexed, PrecomputedDistances, StructureSimilarityMetrics};
 use crate::utils::convert::{map_aa_to_u8, map_u8_to_aa}; 
@@ -156,11 +157,11 @@ pub fn retrieve_with_prefilter(
 }
 
 
-pub fn get_chain_and_res_ind(compact: &CompactStructure, i: usize) -> (u8, u64) {
+pub fn get_chain_and_res_ind(compact: &CompactStructure, i: usize) -> (ChainId, u64) {
     (compact.chain_per_residue[i], compact.residue_serial[i])
 }
-pub fn res_index_to_char(chain: u8, res_ind: u64) -> String {
-    format!("{}{}", chain as char, res_ind)
+pub fn res_index_to_char(chain: &ChainId, res_ind: u64) -> String {
+    format_chain_residue(chain, res_ind, chain.needs_separator())
 }
 
 #[cfg(feature = "foldcomp")]
@@ -852,7 +853,7 @@ mod tests {
     fn test_retrieval_wrapper() {
         let path = String::from("data/serine_peptidases/4cha.pdb");
         let query_string = "B57,B102,C195";
-        let (query_residues, aa_substitutions) = parse_query_string(query_string, b'A');
+        let (query_residues, aa_substitutions) = parse_query_string(query_string, ChainId::from_byte(b'A'));
         let hash_type = HashType::PDBTrRosetta;
         let nbin_dist = 16;
         let nbin_angle = 4;

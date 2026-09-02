@@ -85,6 +85,8 @@ pub enum AppArgs {
         partial_fit: bool, // Enable LMS based superposition.
         header: bool,
         serial_query: bool,
+        // Always separate chain ID and residue index with `_` in the output
+        chain_separator: bool,
         output: String,
         // novelty output mode: replace the result listing with a one-line verdict
         novelty_mode: bool,

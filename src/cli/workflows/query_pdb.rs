@@ -33,6 +33,7 @@ use crate::controller::retrieve::retrieval_wrapper;
 use crate::index::indextable::load_folddisco_index;
 use crate::index::lookup::load_lookup_from_file;
 use crate::prelude::*;
+use crate::structure::chain_id::{format_chain_residue, residue_list_needs_separator, ChainId};
 
 #[cfg(feature = "foldcomp")]
 use crate::controller::retrieve::retrieval_wrapper_for_foldcompdb;
@@ -122,6 +123,11 @@ display options:
                                     drmsd, max_dist_deviation
                                   - Per-structure: max_node_count, node_count, idf, min_rmsd, min_drmsd, total_match_count, edge_count, nres, plddt
                                   - Example: --sort-by tm_score,rmsd or --sort-by idf:desc
+ --chain-sep                      Always write matching_residues and query_residues as CHAIN_RESIDUE
+                                  (A_21). Off by default: chains are written as CHAIN+RESIDUE (A21)
+                                  and only switch to CHAIN_RESIDUE when a chain ID would make that
+                                  ambiguous, i.e. when it is multi-character (AA) or numeric (10).
+                                  Both spellings are accepted by -q either way.
  --skip-ca-match                  Print matching residues before C-alpha distance check
  --partial-fit                    Superposition will find the best aligning substructure using LMS (Least Median of Squares)
  --superpose                      Print U, T, CA of matching residues
@@ -180,6 +186,10 @@ folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco 
 
 # Print per-structure results sorted by IDF only
 folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --per-structure --sort-by idf
+
+# Query a multi-character or numeric chain ID (large cryo-EM entries).
+# CHAIN_RESIDUE is required here, because AA250 and 10250 cannot be split back up.
+folddisco query -p query/9A1O.cif -q 10_250,AA_312,AA_318 -i index/pdb_folddisco -t 6
 
 # Query file given as separate text file
 folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 -d 0.5 -a 5
@@ -276,6 +286,7 @@ pub fn query_pdb(env: AppArgs) {
             partial_fit,
             header,
             serial_query,
+            chain_separator,
             output,
             novelty_mode,
             novelty_coverage_threshold,
@@ -489,7 +500,7 @@ pub fn query_pdb(env: AppArgs) {
                 } else {
                     let query_residues = query_residues.clone();
                     // query_residues.sort();
-                    res_chain_to_string(&query_residues)
+                    res_chain_to_string(&query_residues, chain_separator)
                 };
 
                 // Get query map for the index
@@ -645,7 +656,7 @@ pub fn query_pdb(env: AppArgs) {
                                 &mut match_results, top_n, 
                                 &output_path, &pdb_path, &query_string, 
                                 column_refs.as_deref(), output_with_superpose, header, verbose,
-                                match_sort_strategy.clone(),
+                                match_sort_strategy.clone(), chain_separator,
                             );
                         }
                     }
@@ -660,7 +671,7 @@ pub fn query_pdb(env: AppArgs) {
                             &mut match_results, MAX_NUM_LINES_FOR_WEB,
                             &output_path, &pdb_path, &query_string, 
                             column_refs.as_deref(), true, header, verbose,
-                            match_sort_strategy.clone(),
+                            match_sort_strategy.clone(), chain_separator,
                         );
                     }
                     QueryMode::PerStructure | QueryMode::SkipMatch => {
@@ -689,7 +700,7 @@ pub fn query_pdb(env: AppArgs) {
                         } else {
                             sort_and_print_structure_query_result(
                                 &mut queried_from_indices, &output_path, 
-                                &pdb_path, &query_string, column_refs.as_deref(), header, verbose, structure_sort_strategy.clone()
+                                &pdb_path, &query_string, column_refs.as_deref(), header, verbose, structure_sort_strategy.clone(), chain_separator,
                             );
                         }
                     }
@@ -825,9 +836,17 @@ fn print_novelty_verdict(line: &str, output_path: &str) {
 }
 
 pub fn res_chain_to_string(res_chain: &Vec<(u8, u64)>) -> String {
+/// Render the `query_residues` column.
+///
+/// Uses the same rule as `matching_residues`: the legacy `A21,A23` spelling
+/// unless a chain in the list would make it ambiguous, or `--chain-sep` asks
+/// for the separated spelling outright.
+pub fn res_chain_to_string(res_chain: &Vec<(ChainId, u64)>, chain_sep: bool) -> String {
+    let separator = chain_sep
+        || residue_list_needs_separator(res_chain.iter().map(|(chain, _)| chain));
     let mut output = String::new();
     for (i, (chain, res)) in res_chain.iter().enumerate() {
-        output.push_str(&format!("{}{}", *chain as char, res));
+        output.push_str(&format_chain_residue(chain, *res, separator));
         if i < res_chain.len() - 1 {
             output.push(',');
         }
@@ -888,6 +907,7 @@ mod tests {
             partial_fit: false,
             header: true,
             serial_query: false,
+            chain_separator: false,
             output: String::from(""),
             novelty_mode: false,
             novelty_coverage_threshold: 0.8,
@@ -947,6 +967,7 @@ mod tests {
                 skip_ca_match: false,
                 header: true,
                 serial_query: false,
+                chain_separator: false,
                 output: String::from(""),
                 novelty_mode: false,
                 novelty_coverage_threshold: 0.8,
@@ -1008,6 +1029,7 @@ mod tests {
             partial_fit: false,
             header: true,
             serial_query: false,
+            chain_separator: false,
             output: String::from(""),
             novelty_mode: false,
             novelty_coverage_threshold: 0.8,

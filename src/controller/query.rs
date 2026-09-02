@@ -6,6 +6,7 @@
 use rustc_hash::FxHashMap as HashMap;
 use crate::geometry::core::{GeometricHash, HashType};
 use crate::index::indextable::FolddiscoIndex;
+use crate::structure::chain_id::{split_chain_and_rest, ChainId};
 use crate::utils::convert::{is_aa_group_char, map_one_letter_to_u8_vec};
 use crate::utils::combination::CombinationIterator;
 use crate::utils::log::{log_msg, print_log_msg, FAIL, WARN};
@@ -151,7 +152,7 @@ fn substitution_variants(
 }
 
 pub fn make_query_map(
-    path: &String, query_residues: &Vec<(u8, u64)>, hash_type: HashType,
+    path: &String, query_residues: &Vec<(ChainId, u64)>, hash_type: HashType, 
     nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
     tolerance: &ToleranceConfig,
     amino_acid_substitutions: &Vec<Option<Vec<u8>>>, distance_cutoff: f32, serial_query: bool,
@@ -338,7 +339,7 @@ fn parse_residue_number(token: &str, chain: u8, segment: &str) -> Result<u64, St
 /// This **terminates the process** on a malformed query, which is right for a command
 /// line and wrong for anything else. Library consumers should call
 /// `parse_query_string_checked` and handle the `Err`.
-pub fn parse_query_string(query_string: &str, default_chain: u8) -> (Vec<(u8, u64)>, Vec<Option<Vec<u8>>>) {
+pub fn parse_query_string(query_string: &str, default_chain: ChainId) -> (Vec<(ChainId, u64)>, Vec<Option<Vec<ChainId>>>) {
     match parse_query_string_checked(query_string, default_chain) {
         Ok((query_residues, amino_acid_substitutions)) => {
             warn_on_duplicate_residues(query_string, &query_residues);
@@ -358,7 +359,7 @@ pub fn parse_query_string(query_string: &str, default_chain: u8) -> (Vec<(u8, u6
 /// `--covered-node-ratio`, `--max-node-ratio` and the novelty coverage, so dropping
 /// repeats changes filtering on the default path - which is the one path this branch
 /// keeps byte-identical to upstream. It waits for a benchmark run that can clear it.
-fn warn_on_duplicate_residues(query_string: &str, query_residues: &[(u8, u64)]) {
+fn warn_on_duplicate_residues(query_string: &str, query_residues: &[(ChainId, u64)]) {
     let mut distinct = query_residues.to_vec();
     distinct.sort_unstable();
     distinct.dedup();
@@ -374,31 +375,43 @@ fn warn_on_duplicate_residues(query_string: &str, query_residues: &[(u8, u64)]) 
 
 /// Parse a query string into its residues and their allowed substitutions, returning the
 /// diagnostic instead of acting on it. This is the entry point for library use.
+/// Parse a `-q` motif string into `(chain, residue)` pairs.
+///
+/// Both spellings of a residue are accepted, so that any `matching_residues`
+/// field this tool prints can be pasted straight back in as a query:
+///
+///   `A250`     legacy, single-letter chain
+///   `A_250`    same residue, explicit separator
+///   `AA_250`   multi-character chain, separator required
+///   `10_250`   numeric chain, separator required
+///   `250`      no chain, `default_chain` applies
+///
+/// Ranges (`A250-252`) and substitutions (`A250:R`) work with either spelling.
 pub fn parse_query_string_checked(
-    query_string: &str, mut default_chain: u8,
-) -> Result<(Vec<(u8, u64)>, Vec<Option<Vec<u8>>>), String> {
+    query_string: &str, default_chain: ChainId
+)-> Result<(Vec<(ChainId, u64)>, Vec<Option<Vec<ChainId>>>) , String> {
     let mut query_residues = Vec::new();
     let mut amino_acid_substitutions = Vec::new();
 
     if query_string.is_empty() {
         return Ok((query_residues, amino_acid_substitutions));
     }
-    if !default_chain.is_ascii_alphabetic() {
-        default_chain = b'A';
-    }
+    // A blank chain ID is no use as an implicit default; fall back to A as
+    // before. A multi-character or numeric one is fine here, because the
+    // default is supplied rather than parsed out of the query string.
+    let default_chain = if default_chain.is_empty()
+        || (default_chain.len() == 1 && !default_chain.first_byte().is_ascii_alphanumeric())
+    {
+        ChainId::from_byte(b'A')
+    } else {
+        default_chain
+    };
     // Remove whitespace
     let query_string = query_string.replace(" ", "");
     for segment in query_string.split(',') {
-        let (chain, rest) = if let Some(first) = segment.chars().next() {
-            // NOTE: 2025-01-15 15:55:19
-            // Current querying doesn't support chain ID with more than 1 character
-            if first.is_ascii_alphabetic() {
-                (first as u8, &segment[1..])
-            } else {
-                (default_chain, segment)
-            }
-        } else {
-            (default_chain, segment)
+        let (chain, rest) = match split_chain_and_rest(segment) {
+            (Some(chain), rest) => (chain, rest),
+            (None, rest) => (default_chain, rest),
         };
 
         let (range_part, subst_part) = match rest.split_once(':') {
@@ -465,9 +478,21 @@ mod tests {
 
     #[test]
     fn test_make_query_map() {
-        let no_substitution = vec![None; 3];
-        let hash_collection = zinc_finger_query_map(
-            &ToleranceConfig::default_query(), no_substitution.clone()
+        let path= String::from("query/1G2F.pdb");
+        let query_residues = vec![
+            (ChainId::from_byte(b'F'), 207), (ChainId::from_byte(b'F'), 212),
+            (ChainId::from_byte(b'F'), 225)
+        ];
+        let amino_acid_substitutions = vec![None; query_residues.len()];
+        // let path = String::from("data/serine_peptidases/1aq2.pdb");
+        // let query_residues = vec![
+        //     (b'A', 250), (b'A', 232), (b'A', 269)
+        // ];
+        let hash_type = HashType::PDBTrRosetta;
+        let (hash_collection, _index_found, _observed_dist_map) = make_query_map(
+            &path, &query_residues, hash_type, 16, 4, &None,
+            &vec![0.0], &vec![0.0], &amino_acid_substitutions, 20.0, false,
+            &None, 1000.0
         );
         let exact = hash_collection.values().filter(|(_, is_primary, _)| *is_primary).count();
         // At most one observed hash per ordered residue pair; two pairs sharing a
@@ -524,36 +549,40 @@ mod tests {
         assert_eq!(plain.len(), bogus.len());
     }
 
+    fn chain(text: &str) -> ChainId {
+        ChainId::from_str(text)
+    }
+
     #[test]
     fn test_parse_query_string() {
         let query_string = "A250,B232,C269";
-        let query_residues = parse_query_string(query_string, b'A');
-        assert_eq!(query_residues, (vec![(b'A', 250), (b'B', 232), (b'C', 269)], vec![None, None, None]));
+        let query_residues = parse_query_string(query_string, chain("A"));
+        assert_eq!(query_residues, (vec![(chain("A"), 250), (chain("B"), 232), (chain("C"), 269)], vec![None, None, None]));
     }
     #[test]
     fn test_parse_query_string_with_space() {
         let query_string = "A250, A232, A269";
-        let query_residues = parse_query_string(query_string, b'A');
-        assert_eq!(query_residues, (vec![(b'A', 250), (b'A', 232), (b'A', 269)], vec![None, None, None]));
+        let query_residues = parse_query_string(query_string, chain("A"));
+        assert_eq!(query_residues, (vec![(chain("A"), 250), (chain("A"), 232), (chain("A"), 269)], vec![None, None, None]));
     }
     
     #[test]
     fn test_parse_query_string_with_space_and_no_chain() {
         let query_string = "250, 232, 269";
-        let query_residues = parse_query_string(query_string, b'A');
-        assert_eq!(query_residues, (vec![(b'A', 250), (b'A', 232), (b'A', 269)], vec![None, None, None]));
+        let query_residues = parse_query_string(query_string, chain("A"));
+        assert_eq!(query_residues, (vec![(chain("A"), 250), (chain("A"), 232), (chain("A"), 269)], vec![None, None, None]));
     }
 
     #[test]
     fn test_parse_query_string_with_aa_substitution() {
         let query_string = "A250:R,B232:K,C269:QK";
-        let query_residues = parse_query_string(query_string, b'A');
+        let query_residues = parse_query_string(query_string, chain("A"));
         // R = 1, K = 11, Q = 5
-        assert_eq!(query_residues, (vec![(b'A', 250), (b'B', 232), (b'C', 269)], vec![Some(vec![1]), Some(vec![11]), Some(vec![5, 11])]));
+        assert_eq!(query_residues, (vec![(chain("A"), 250), (chain("B"), 232), (chain("C"), 269)], vec![Some(vec![1]), Some(vec![11]), Some(vec![5, 11])]));
         let query_string = "250:R,232:K,269:QK";
-        let query_residues = parse_query_string(query_string, b'A');
+        let query_residues = parse_query_string(query_string, chain("A"));
         // R = 1, K = 11, Q = 5
-        assert_eq!(query_residues, (vec![(b'A', 250), (b'A', 232), (b'A', 269)], vec![Some(vec![1]), Some(vec![11]), Some(vec![5, 11])]));
+        assert_eq!(query_residues, (vec![(chain("A"), 250), (chain("A"), 232), (chain("A"), 269)], vec![Some(vec![1]), Some(vec![11]), Some(vec![5, 11])]));
     }
     #[test]
     fn range_end_may_repeat_the_chain() {
@@ -622,11 +651,103 @@ mod tests {
     #[test]
     fn test_parse_query_string_with_range() {
         let query_string = "A250-252,B232-234,C269:Q";
-        let query_residues = parse_query_string(query_string, b'A');
+        let query_residues = parse_query_string(query_string, chain("A"));
         assert_eq!(query_residues, (vec![
-            (b'A', 250), (b'A', 251), (b'A', 252), 
-            (b'B', 232), (b'B', 233), (b'B', 234), 
-            (b'C', 269),
+            (chain("A"), 250), (chain("A"), 251), (chain("A"), 252), 
+            (chain("B"), 232), (chain("B"), 233), (chain("B"), 234), 
+            (chain("C"), 269),
         ], vec![None, None, None, None, None, None, Some(vec![5])]));
+    }
+
+    #[test]
+    fn test_parse_query_string_separator_is_optional_for_single_char_chains() {
+        // The two spellings of the same motif have to agree, so that a printed
+        // `matching_residues` field can be pasted back in as `-q` either way.
+        assert_eq!(
+            parse_query_string("A250,B232,C269", chain("A")),
+            parse_query_string("A_250,B_232,C_269", chain("A"))
+        );
+        assert_eq!(
+            parse_query_string("A250-252,B232-234,C269:Q", chain("A")),
+            parse_query_string("A_250-252,B_232-234,C_269:Q", chain("A"))
+        );
+        assert_eq!(
+            parse_query_string("A250:R,B232:K", chain("A")),
+            parse_query_string("A_250:R,B_232:K", chain("A"))
+        );
+    }
+
+    #[test]
+    fn test_parse_query_string_multi_char_chain() {
+        assert_eq!(
+            parse_query_string("AA_250,AB_232,AC_269", chain("A")),
+            (vec![(chain("AA"), 250), (chain("AB"), 232), (chain("AC"), 269)], vec![None, None, None])
+        );
+        // Ranges and substitutions too
+        assert_eq!(
+            parse_query_string("AA_250-252,AB_232:K", chain("A")),
+            (
+                vec![(chain("AA"), 250), (chain("AA"), 251), (chain("AA"), 252), (chain("AB"), 232)],
+                vec![None, None, None, Some(vec![11])]
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_query_string_numeric_chain() {
+        // `10250` is unreadable, so a numeric chain has to be separated. The
+        // separated spelling must not be mistaken for residue 10250 of the
+        // default chain.
+        assert_eq!(
+            parse_query_string("10_250,10_252", chain("A")),
+            (vec![(chain("10"), 250), (chain("10"), 252)], vec![None, None])
+        );
+        assert_eq!(
+            parse_query_string("1_250", chain("A")),
+            (vec![(chain("1"), 250)], vec![None])
+        );
+    }
+
+    #[test]
+    fn test_parse_query_string_default_chain_may_be_multi_char() {
+        // A bare residue index belongs to the query structure's own first
+        // chain, which can now be multi-character or numeric.
+        assert_eq!(
+            parse_query_string("250,252", chain("AA")),
+            (vec![(chain("AA"), 250), (chain("AA"), 252)], vec![None, None])
+        );
+        assert_eq!(
+            parse_query_string("250", chain("10")),
+            (vec![(chain("10"), 250)], vec![None])
+        );
+        // A blank default still falls back to chain A, as before.
+        assert_eq!(
+            parse_query_string("250", ChainId::from_byte(b' ')),
+            (vec![(chain("A"), 250)], vec![None])
+        );
+        assert_eq!(
+            parse_query_string("250", ChainId::empty()),
+            (vec![(chain("A"), 250)], vec![None])
+        );
+    }
+    
+    #[test]
+    fn test_add_shifted_hashes() {
+        let mut hash_collection = HashMap::default();
+        let feature = vec![1.0, 2.0, 10.5, 15.2, 0.8, 1.2, 2.1, 0.0, 0.0]; // PDBTrRosetta feature
+        let hash_type = HashType::PDBTrRosetta;
+        let idf = 5.0; // Example IDF value
+        
+        // Test that shifted hashes are added for PDBTrRosetta
+        _add_shifted_hashes(&feature, &mut hash_collection, 0, 1, hash_type, idf);
+        
+        // Should have added multiple shifted hash variants
+        assert!(hash_collection.len() > 0);
+        println!("Added {} shifted hash variants", hash_collection.len());
+        
+        // Test that no hashes are added for other hash types
+        let mut hash_collection_other = HashMap::default();
+        _add_shifted_hashes(&feature, &mut hash_collection_other, 0, 1, HashType::TrRosetta, idf);
+        assert_eq!(hash_collection_other.len(), 0);
     }
 }

@@ -96,6 +96,7 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             partial_fit: args.contains("--partial-fit"), // Enable LMS based superposition.
             header: args.contains("--header"),
             serial_query: args.contains("--serial-index"),
+            chain_separator: args.contains("--chain-sep"),
             output: args.value_from_str(["-o", "--output"]).unwrap_or("".into()),
             // Novelty output mode
             novelty_mode: args.contains("--novelty-mode"),
