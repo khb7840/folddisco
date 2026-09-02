@@ -169,7 +169,7 @@ pub fn make_query_map(
 
 /// Same as `make_query_map` for a structure already in memory.
 fn make_query_map_from_structure(
-    compact: &CompactStructure, query_residues: &Vec<(u8, u64)>, hash_type: HashType,
+    compact: &CompactStructure, query_residues: &Vec<(ChainId, u64)>, hash_type: HashType,
     nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
     tolerance: &ToleranceConfig,
     amino_acid_substitutions: &Vec<Option<Vec<u8>>>, distance_cutoff: f32, serial_query: bool,
@@ -305,30 +305,17 @@ fn make_query_map_from_structure(
 /// `--residue` indexing limit is 50,000, i.e. the largest structure folddisco will index
 /// unless told otherwise, and the longest human protein (titin) is about 35,000 residues
 /// - so it cannot reject a range that any default-built index could match. Its purpose is
-/// the other end of the scale: `A204-A2150000000`, one mistyped digit, asks for 2.15e9
+/// the other end of the scale: `A204-2150000000`, one mistyped digit, asks for 2.15e9
 /// residues and roughly 80 GB, and used to be killed by the OOM reaper with no message at
 /// all. At this cap the two vectors stay a few megabytes and a typo gets a diagnostic.
 const MAX_RESIDUE_RANGE_SPAN: u64 = 100_000;
 
 /// Residue number at one end of a range, or a single position.
 ///
-/// A chain letter may be repeated here - `F204-F215` means the same as `F204-215` - but
-/// it has to agree with the chain the segment already declared, because a range cannot
-/// span two chains.
-fn parse_residue_number(token: &str, chain: u8, segment: &str) -> Result<u64, String> {
-    let (token_chain, digits) = match token.chars().next() {
-        Some(first) if first.is_ascii_alphabetic() => (Some(first as u8), &token[1..]),
-        _ => (None, token),
-    };
-    if let Some(token_chain) = token_chain {
-        if token_chain != chain {
-            return Err(format!(
-                "Query '{}' mixes chain '{}' and chain '{}'; a residue range stays in one chain",
-                segment, chain as char, token_chain as char
-            ));
-        }
-    }
-    digits.parse::<u64>().map_err(|_| format!(
+/// The chain is parsed from the segment prefix and applies to the whole range,
+/// so this token is expected to be digits only.
+fn parse_residue_number(token: &str, _chain: ChainId, segment: &str) -> Result<u64, String> {
+    token.parse::<u64>().map_err(|_| format!(
         "Query '{}' has '{}' where a residue number was expected", segment, token
     ))
 }
@@ -339,7 +326,7 @@ fn parse_residue_number(token: &str, chain: u8, segment: &str) -> Result<u64, St
 /// This **terminates the process** on a malformed query, which is right for a command
 /// line and wrong for anything else. Library consumers should call
 /// `parse_query_string_checked` and handle the `Err`.
-pub fn parse_query_string(query_string: &str, default_chain: ChainId) -> (Vec<(ChainId, u64)>, Vec<Option<Vec<ChainId>>>) {
+pub fn parse_query_string(query_string: &str, default_chain: ChainId) -> (Vec<(ChainId, u64)>, Vec<Option<Vec<u8>>>) {
     match parse_query_string_checked(query_string, default_chain) {
         Ok((query_residues, amino_acid_substitutions)) => {
             warn_on_duplicate_residues(query_string, &query_residues);
@@ -389,7 +376,7 @@ fn warn_on_duplicate_residues(query_string: &str, query_residues: &[(ChainId, u6
 /// Ranges (`A250-252`) and substitutions (`A250:R`) work with either spelling.
 pub fn parse_query_string_checked(
     query_string: &str, default_chain: ChainId
-)-> Result<(Vec<(ChainId, u64)>, Vec<Option<Vec<ChainId>>>) , String> {
+)-> Result<(Vec<(ChainId, u64)>, Vec<Option<Vec<u8>>>) , String> {
     let mut query_residues = Vec::new();
     let mut amino_acid_substitutions = Vec::new();
 
@@ -585,33 +572,32 @@ mod tests {
         assert_eq!(query_residues, (vec![(chain("A"), 250), (chain("A"), 232), (chain("A"), 269)], vec![Some(vec![1]), Some(vec![11]), Some(vec![5, 11])]));
     }
     #[test]
-    fn range_end_may_repeat_the_chain() {
-        // The author's benchmark commands write `F204-F215`; queries_used.tsv writes
-        // `F204-215`. Both forms have to mean the same 23 residues, and the first one
-        // used to panic on `"F215".parse::<u64>()`.
-        let bare = parse_query_string_checked("F204-215,F222-232", b'A').unwrap();
-        let prefixed = parse_query_string_checked("F204-F215,F222-F232", b'A').unwrap();
-        assert_eq!(bare, prefixed);
-        assert_eq!(bare.0.len(), 23);
-        assert_eq!(bare.0[0], (b'F', 204));
-        assert_eq!(*bare.0.last().unwrap(), (b'F', 232));
+    fn range_end_uses_declared_chain_only() {
+        let parsed = parse_query_string_checked("F204-215,F222-232", b'A').unwrap();
+        assert_eq!(parsed.0.len(), 23);
+        assert_eq!(parsed.0[0], (b'F', 204));
+        assert_eq!(*parsed.0.last().unwrap(), (b'F', 232));
+
+        // End tokens are numeric only; a repeated chain prefix is rejected.
+        let err = parse_query_string_checked("F204-F215", b'A').unwrap_err();
+        assert!(err.contains("F215"), "{}", err);
     }
 
     #[test]
     fn an_unbounded_range_is_a_diagnostic_not_an_allocation() {
-        // `A204-A2150000000` asks for 2.15e9 residues, about 80 GB, and used to be killed
+        // `A204-2150000000` asks for 2.15e9 residues, about 80 GB, and used to be killed
         // by the OOM reaper with no message. One mistyped digit is exactly the malformed
         // input this parser exists to name.
-        let err = parse_query_string_checked("A204-A2150000000", b'A').unwrap_err();
+        let err = parse_query_string_checked("A204-2150000000", b'A').unwrap_err();
         assert!(err.contains("2150000000") || err.contains("spans"), "{}", err);
         assert!(err.contains("100000"), "the message should name the limit: {}", err);
         // A range that a real index could match is not rejected: the default --residue
         // indexing limit is 50,000, and the cap sits above it
-        let (residues, _) = parse_query_string_checked("A1-A50000", b'A').unwrap();
+        let (residues, _) = parse_query_string_checked("A1-50000", b'A').unwrap();
         assert_eq!(residues.len(), 50_000);
         // Exactly at the cap is allowed, one past it is not
-        assert_eq!(parse_query_string_checked("A1-A100000", b'A').unwrap().0.len(), 100_000);
-        assert!(parse_query_string_checked("A1-A100001", b'A').is_err());
+        assert_eq!(parse_query_string_checked("A1-100000", b'A').unwrap().0.len(), 100_000);
+        assert!(parse_query_string_checked("A1-100001", b'A').is_err());
     }
 
     #[test]
@@ -632,9 +618,9 @@ mod tests {
 
     #[test]
     fn malformed_queries_are_diagnosed_not_panicked() {
-        // A range cannot span two chains
+        // End tokens are numeric only; chain-prefixed ones are malformed.
         let err = parse_query_string_checked("F204-G215", b'A').unwrap_err();
-        assert!(err.contains("chain 'F'") && err.contains("chain 'G'"), "{}", err);
+        assert!(err.contains("G215"), "{}", err);
         // Reversed ranges used to yield an empty residue list silently
         let err = parse_query_string_checked("F215-F204", b'A').unwrap_err();
         assert!(err.contains("ends before it starts"), "{}", err);

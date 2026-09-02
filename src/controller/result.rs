@@ -255,7 +255,7 @@ fn build_structure_result_columns<'a>(
         Column::new("max_node_cov", "Max node coverage", |r: &StructureResult| (r.max_matching_node_count as u64).into()),
         Column::new("min_rmsd", "Min RMSD", |r: &StructureResult| Value::Float(r.min_rmsd_with_max_match, DEFAULT_FLOAT_PRECISION)),
         Column::new("min_drmsd", "Min dRMSD", |r: &StructureResult| Value::Float(r.min_drmsd_with_max_match, DEFAULT_FLOAT_PRECISION)),
-        Column::new("matching_residues", "Matching residues with RMSD", |r: &StructureResult| {
+        Column::new("matching_residues", "Matching residues with RMSD", move |r: &StructureResult| {
             if r.matching_residues_processed.is_empty() {
                 "NA".into()
             } else {
