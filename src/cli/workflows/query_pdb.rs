@@ -835,7 +835,6 @@ fn print_novelty_verdict(line: &str, output_path: &str) {
     );
 }
 
-pub fn res_chain_to_string(res_chain: &Vec<(u8, u64)>) -> String {
 /// Render the `query_residues` column.
 ///
 /// Uses the same rule as `matching_residues`: the legacy `A21,A23` spelling
