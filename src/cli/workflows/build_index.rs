@@ -188,14 +188,16 @@ pub fn build_index(env: AppArgs) {
                 if verbose {
                     print_log_msg(INFO, "Collecting ids of the structures");
                 }
-                measure_time!(folddisco.collect_and_count(), verbose);
+                measure_time!(folddisco.collect_hash_vec(), verbose);
                 if verbose {
                     print_log_msg(INFO, &format!("Hashes collected"));
                 }
-                measure_time!(folddisco.fold_disco_index.allocate_entries(), verbose);
-                measure_time!(folddisco.add_entries(), verbose);
+                measure_time!(folddisco.sort_hash_vec(), verbose);
+                measure_time!(
+                    folddisco.fold_disco_index.build_from_sorted_hash_ids(&folddisco.hash_id_vec),
+                    verbose
+                );
                 measure_time!(folddisco.fold_disco_index.wrapup_offset_and_save_entries(), verbose);
-                measure_time!(folddisco.fold_disco_index.prune_to_sparse(), verbose);
                 measure_time!(folddisco.fold_disco_index.save_offset_to_file(), verbose);
                 
                 if verbose { print_log_msg(INFO,"Hash sorted"); }

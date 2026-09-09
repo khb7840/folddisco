@@ -52,7 +52,7 @@ pub struct Folddisco {
     pub numeric_db_key_vec: Vec<usize>,
     pub nres_vec: Vec<usize>,
     pub plddt_vec: Vec<f32>,
-    pub hash_id_vec: Vec<(u32, usize)>,
+    pub hash_id_vec: Vec<(u32, u32)>,
     pub hash_type: HashType,
     pub num_threads: usize,
     pub num_bin_dist: usize,
@@ -206,7 +206,7 @@ impl Folddisco {
             .expect("Failed to build thread pool for iterating files");
         // For iterating files, apply multi-threading with num_threads_for_file
 
-        let collected: Vec<(u32, usize)> = pool.install(|| {
+        let collected: Vec<(u32, u32)> = pool.install(|| {
             // Preserve locality for multi-threading
             self.path_vec
                 .par_iter()
@@ -262,7 +262,7 @@ impl Folddisco {
                     // If remove_redundancy is true, remove duplicates
                     hash_vec.sort_unstable();
                     hash_vec.dedup();
-                    hash_vec.iter().map(|x| (*x, pdb_pos)).collect()
+                    hash_vec.iter().map(|x| (*x, pdb_pos as u32)).collect()
                 }).flatten().collect()
             });
         self.hash_id_vec = collected;
@@ -446,7 +446,9 @@ impl Folddisco {
             .build()
             .expect(&log_msg(FAIL, "Failed to build thread pool for sorting"));
         pool.install(|| {
-            self.hash_id_vec.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            self.hash_id_vec.par_sort_unstable_by(|a, b| {
+                a.0.cmp(&b.0).then(a.1.cmp(&b.1))
+            });
         });
         drop(pool);
     }

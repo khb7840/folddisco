@@ -21,9 +21,9 @@ unsafe impl Sync for FolddiscoIndex {}
 
 impl FolddiscoIndex {
     pub fn new(total_hashes: usize, path: String, mmap_on_disk: bool) -> Self {
-        let hashes = vec![0u32; total_hashes];
-        let offsets = vec![0usize; total_hashes + 1];
-        let last_id = vec![usize::MAX; total_hashes];
+        let hashes = vec![];
+        let offsets = vec![];
+        let last_id = vec![];
         let entries = MmapMut::map_anon(1024).unwrap();
 
         FolddiscoIndex {
@@ -37,6 +37,23 @@ impl FolddiscoIndex {
             entries: UnsafeCell::new(entries),
             index_path: path,
             mmap_on_disk,
+        }
+    }
+
+    fn ensure_dense_index_storage(&self) {
+        let hashes = unsafe { &mut *self.hashes.get() };
+        if hashes.is_empty() {
+            hashes.resize(self.total_hashes, 0u32);
+        }
+
+        let offsets = unsafe { &mut *self.offsets.get() };
+        if offsets.is_empty() {
+            offsets.resize(self.total_hashes + 1, 0usize);
+        }
+
+        let last_id = unsafe { &mut *self.last_id.get() };
+        if last_id.is_empty() {
+            last_id.resize(self.total_hashes, usize::MAX);
         }
     }
 
@@ -86,6 +103,7 @@ impl FolddiscoIndex {
     }
     
     pub fn count_single_entry(&self, hash: u32, id: usize) {
+        self.ensure_dense_index_storage();
         let last_id = unsafe { &mut *self.last_id.get() };
         // let atomic_offsets = unsafe { &mut *self.atomic_offsets.get() };
         let offsets = unsafe { &mut *self.offsets.get() };
@@ -105,6 +123,7 @@ impl FolddiscoIndex {
     }
     
     pub fn count_entries(&self, hashes: &Vec<u32>, id: usize) {
+        self.ensure_dense_index_storage();
         let last_id = unsafe { &mut *self.last_id.get() };
         // let atomic_offsets = unsafe { &mut *self.atomic_offsets.get() };
         let offsets = unsafe { &mut *self.offsets.get() };
@@ -129,6 +148,7 @@ impl FolddiscoIndex {
     }
 
     pub fn add_entries(&self, hashes: &[u32], id: usize, bit_container: &mut Vec<u8>) {
+        self.ensure_dense_index_storage();
         let last_id = unsafe { &mut *self.last_id.get() };
         // let atomic_offsets = unsafe { &mut *self.atomic_offsets.get() };
         let offsets = unsafe { &mut *self.offsets.get() };
@@ -169,6 +189,7 @@ impl FolddiscoIndex {
     }
     
     pub fn add_single_entry(&self, hash: u32, id: usize, bit_container: &mut Vec<u8>) {
+        self.ensure_dense_index_storage();
         let last_id = unsafe { &mut *self.last_id.get() };
         // let atomic_offsets = unsafe { &mut *self.atomic_offsets.get() };
         let offsets = unsafe { &mut *self.offsets.get() };
@@ -202,6 +223,7 @@ impl FolddiscoIndex {
     }
     
     pub fn allocate_entries(&self) {
+        self.ensure_dense_index_storage();
         let offsets = unsafe { &mut *self.offsets.get() };
         let last_id = unsafe { &mut *self.last_id.get() };
         let entries = unsafe { &mut *self.entries.get() };
@@ -238,11 +260,17 @@ impl FolddiscoIndex {
 
     pub fn wrapup_offset_and_save_entries(&self) {
         let offsets = unsafe { &mut *self.offsets.get() };
+        let hashes = unsafe { &*self.hashes.get() };
         let entries = unsafe { &*self.entries.get() };
-        for i in (1..=self.total_hashes).rev() {
-            offsets[i] = offsets[i - 1];
-        }
-        offsets[0] = 0;
+        let total_entries = if hashes.is_empty() {
+            for i in (1..=self.total_hashes).rev() {
+                offsets[i] = offsets[i - 1];
+            }
+            offsets[0] = 0;
+            offsets[self.total_hashes]
+        } else {
+            *offsets.last().unwrap_or(&0)
+        };
 
         if !self.mmap_on_disk {
             // Copy the data to a file
@@ -253,13 +281,92 @@ impl FolddiscoIndex {
                 .create(true)
                 .open(index_path)
                 .unwrap();
-            let total_entries = offsets[self.total_hashes];
             index_file.set_len(total_entries as u64).unwrap();
             
             // Map the file and copy the data
             let mut file_mmap = unsafe { memmap2::MmapMut::map_mut(&index_file).unwrap() };
             file_mmap.copy_from_slice(&entries[..total_entries]);
             file_mmap.flush().unwrap();
+        } else {
+            entries.flush().unwrap();
+        }
+    }
+
+    pub fn build_from_sorted_hash_ids(&mut self, hash_ids: &[(u32, u32)]) {
+        let unique_hash_count = hash_ids
+            .windows(2)
+            .filter(|pair| pair[0].0 != pair[1].0)
+            .count()
+            + usize::from(!hash_ids.is_empty());
+
+        let mut hashes = Vec::with_capacity(unique_hash_count);
+        let mut offsets = Vec::with_capacity(unique_hash_count + 1);
+        offsets.push(0);
+
+        let mut total_entries = 0usize;
+        let mut current_hash: Option<u32> = None;
+        let mut previous_id = 0u32;
+
+        for &(hash, id) in hash_ids {
+            if current_hash != Some(hash) {
+                if current_hash.is_some() {
+                    offsets.push(total_entries);
+                }
+                hashes.push(hash);
+                current_hash = Some(hash);
+                previous_id = 0;
+                total_entries += encoded_delta_byte_count(id as usize);
+            } else {
+                total_entries += encoded_delta_byte_count((id - previous_id) as usize);
+            }
+            previous_id = id;
+        }
+
+        if current_hash.is_some() {
+            offsets.push(total_entries);
+        }
+
+        let entries = if self.mmap_on_disk {
+            let index_file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&self.index_path)
+                .unwrap();
+            index_file.set_len(total_entries as u64).unwrap();
+            if total_entries > 0 {
+                unsafe { MmapMut::map_mut(&index_file).unwrap() }
+            } else {
+                MmapMut::map_anon(1).unwrap()
+            }
+        } else {
+            MmapMut::map_anon(total_entries.max(1)).unwrap()
+        };
+
+        self.hashes = UnsafeCell::new(hashes);
+        self.offsets = UnsafeCell::new(offsets);
+        self.last_id = UnsafeCell::new(vec![]);
+        self.entries = UnsafeCell::new(entries);
+        self.total_hashes = unique_hash_count;
+
+        let entries = unsafe { &mut *self.entries.get() };
+        let mut write_offset = 0usize;
+        let mut current_hash: Option<u32> = None;
+        let mut previous_id = 0u32;
+        let mut bit_container = Vec::with_capacity(8);
+
+        for &(hash, id) in hash_ids {
+            let id_to_split = if current_hash == Some(hash) {
+                (id - previous_id) as usize
+            } else {
+                current_hash = Some(hash);
+                id as usize
+            };
+            let nbit = split_by_seven_bits(id_to_split, &mut bit_container);
+            entries[write_offset..write_offset + nbit].copy_from_slice(&bit_container[..nbit]);
+            write_offset += nbit;
+            previous_id = id;
         }
     }
 
@@ -407,6 +514,15 @@ fn split_by_seven_bits(mut id: usize, bit_container: &mut Vec<u8>) -> usize {
             bit_container.push(byte); // Last byte, no continuation
             length += 1;
         }
+
+        #[inline(always)]
+        fn encoded_delta_byte_count(id: usize) -> usize {
+            if id == 0 {
+                1
+            } else {
+                (1 + id.ilog2() / 7) as usize
+            }
+        }
     }
 
     if bit_container.is_empty() {
@@ -521,5 +637,29 @@ mod tests {
         std::fs::remove_file("test.index").unwrap();
         std::fs::remove_file("test.index.offset").unwrap();
     }
-}
 
+    #[test]
+    fn test_sparse_build_from_sorted_hash_ids() {
+        let mut index = FolddiscoIndex::new(1024, "test_sparse.index".to_string(), false);
+        let hash_ids = vec![
+            (1, 0),
+            (1, 10),
+            (2, 10),
+            (2, 128),
+            (7, 655345),
+        ];
+
+        index.build_from_sorted_hash_ids(&hash_ids);
+        index.wrapup_offset_and_save_entries();
+        index.save_offset_to_file();
+
+        assert_eq!(index.total_hashes, 3);
+        assert_eq!(index.get_entries(1), vec![0, 10]);
+        assert_eq!(index.get_entries(2), vec![10, 128]);
+        assert_eq!(index.get_entries(7), vec![655345]);
+        assert!(index.get_entries(3).is_empty());
+
+        std::fs::remove_file("test_sparse.index").unwrap();
+        std::fs::remove_file("test_sparse.index.offset").unwrap();
+    }
+}
