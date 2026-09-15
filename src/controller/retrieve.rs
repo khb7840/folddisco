@@ -875,6 +875,43 @@ mod tests {
         println!("{:?}", output);
     }
 
+    /// Max matched node count of the 4CHA catalytic triad query against `target`.
+    fn triad_match_nodes(query_string: &str, target: &str) -> usize {
+        let path = String::from("data/serine_peptidases/4cha.pdb");
+        let query = read_structure_from_path(&path).unwrap().to_compact();
+        let (residues, subs) = parse_query_string(query_string, ChainId::from_byte(b'A'));
+        let (query_map, query_indices, aa_dist_map) = make_query_map(
+            &path, &residues, HashType::PDBTrRosetta, 16, 4, &None,
+            &ToleranceConfig::default_query(), &subs, 20.0, false, &None, 1000.0,
+        );
+        let hashes: Vec<GeometricHash> = query_map.keys().cloned().collect();
+        retrieval_wrapper(
+            target, residues.len(), &hashes, HashType::PDBTrRosetta, 16, 4, &None, 20.0,
+            &query_map, &query, &query_indices, &aa_dist_map, 1.0, false,
+        ).2
+    }
+
+    #[test]
+    fn substituted_residue_is_matched_not_only_looked_up() {
+        // 4CHA (two copies) with Asp102 renamed to Asn: same geometry, different residue
+        let pdb = std::fs::read_to_string("data/serine_peptidases/4cha.pdb").unwrap();
+        let mutated: String = pdb.lines().map(|line| {
+            if line.starts_with("ATOM") && line.len() > 26 && &line[17..20] == "ASP" && &line[22..26] == " 102" {
+                format!("{}ASN{}\n", &line[..17], &line[20..])
+            } else {
+                format!("{}\n", line)
+            }
+        }).collect();
+        let target = std::env::temp_dir().join(format!("folddisco_4cha_d102n_{}.pdb", std::process::id()));
+        std::fs::write(&target, mutated).unwrap();
+        let target = target.to_str().unwrap().to_string();
+
+        assert_eq!(triad_match_nodes("B57,B102,C195", "data/serine_peptidases/4cha.pdb"), 3);
+        assert!(triad_match_nodes("B57,B102,C195", &target) < 3);
+        assert_eq!(triad_match_nodes("B57,B102:N,C195", &target), 3, "explicit substitution");
+        std::fs::remove_file(&target).ok();
+    }
+
     #[test]
     fn self_match_has_zero_deformation() {
         // Matching a motif against its own structure: identical geometry, so both
@@ -882,7 +919,7 @@ mod tests {
         let path = String::from("data/serine_peptidases/4cha.pdb");
         let compact = read_structure_from_path(&path)
             .expect("Error reading structure from path").to_compact();
-        let indices: Vec<usize> = vec![(b'B', 57u64), (b'B', 102), (b'C', 195)].iter()
+        let indices: Vec<usize> = vec![(ChainId::from(b'B'), 57u64), (b'B'.into(), 102), (b'C'.into(), 195)].iter()
             .map(|(chain, res)| compact.get_index(chain, res).expect("residue not found"))
             .collect();
         let (rmsd, _u, _t, _ca, metrics) = rmsd_with_calpha_and_rottran(
