@@ -1,6 +1,6 @@
-// Functions for ranking queried results
+// First-pass scoring: count index hits per target structure before residue matching.
 
-use rayon::prelude::*;  // Import rayon for parallel iterators
+use rayon::prelude::*;
 
 // use std::collections::HashMap;
 use rustc_hash::FxHashMap as HashMap;
@@ -12,7 +12,7 @@ use crate::prelude::GeometricHash;
 use super::result::StructureResult;
 
 
-// Efficient bit vector for tracking sets of IDs
+// Fixed-capacity bit set over structure ids
 #[derive(Debug, Clone)]
 struct BitVector {
     bits: Vec<u64>,
@@ -48,7 +48,6 @@ impl BitVector {
     // fn count_ones(&self) -> u32 {
     //     self.bits.iter().map(|&word| word.count_ones()).sum()
     // }
-    // Clear all bits
     #[inline]
     fn clear(&mut self) {
         self.bits.fill(0);
@@ -56,7 +55,7 @@ impl BitVector {
 }
 
 
-// Optimized: Use compact data structure for HPC with large pre-allocated vectors
+// Per-target counters, one dense vector per query node
 #[derive(Debug, Clone)]
 struct CompactEntry {
     node_count: u16,
@@ -75,11 +74,17 @@ impl Default for CompactEntry {
             match_count: 0,
             idf_sum: 0.0,
             // idf_max_per_edge: 0.0,  // Initialize max IDF per edge
-            initialized: false,  // Track if this entry has been initialized
+            initialized: false,
         }
     }
 }
 
+/// Score every structure hit by `queries`.
+///
+/// Hashes are grouped by the first residue of their query edge (one "node"); per
+/// target, `node_count` is the number of nodes with a hit, `edge_count` the number
+/// of residue pairs with a hit, and `idf` the summed log2(N / hash frequency)
+/// scaled by `nres^-length_penalty` (default 0.5).
 pub fn count_query<'a>(
     queries: &Vec<GeometricHash>, query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
     index: &FolddiscoIndex,
@@ -93,7 +98,7 @@ pub fn count_query<'a>(
     
     let node_grouped = build_node_groups(&queries_to_iter, query_map);
     
-    // Pre-allocate Vec<CompactEntry> for multi-threading
+    // One node group per task; each owns a dense result vector
     let thread_results: Vec<Vec<CompactEntry>> = node_grouped
         .par_iter().map(|(_node, chunk)| {
             let mut local_results: Vec<CompactEntry> = vec![CompactEntry::default(); num_ids];
@@ -102,11 +107,10 @@ pub fn count_query<'a>(
             let mut prev_edge = None;
 
             for (_i, (e, query)) in chunk.iter().enumerate() {
-                // Check if we're starting a new edge
                 let need_edge_update = prev_edge.map_or(true, |prev| prev != *e);
                 
                 if need_edge_update {
-                    // Finalize previous edge's counts
+                    // Close the previous edge
                     if prev_edge.is_some() {
                         for nid in 0..num_ids {
                             if edge_occupancy.is_set(nid) {
@@ -114,7 +118,6 @@ pub fn count_query<'a>(
                             }
                         }
                     }
-                    // Start tracking new edge
                     edge_occupancy.clear();
                     prev_edge = Some(*e);
                 }
@@ -124,7 +127,7 @@ pub fn count_query<'a>(
                 
                 if let Some(freq_filter) = freq_filter {
                     if hash_count as f32 / lookup.len() as f32 > freq_filter {
-                        continue;  // Skip queries that do not pass the frequency filter
+                        continue;
                     }
                 }
 
@@ -136,13 +139,12 @@ pub fn count_query<'a>(
 
                 for &value in single_queried_values.iter() {
                     if value >= lookup.len() {
-                        continue;  // Skip invalid values
+                        continue;
                     }
                 
                     let nid = lookup.records()[value].id as usize;
                     let entry = &mut local_results[nid];
 
-                    // Initialize entry if not already initialized
                     if !entry.initialized {
                         entry.initialized = true;
                         node_occupancy.set(nid);
@@ -150,56 +152,51 @@ pub fn count_query<'a>(
                     entry.match_count += 1;
                     entry.idf_sum += idf;
                     
-                    // Track that this edge hits this target
                     edge_occupancy.set(nid);
                 }
             }
             
-            // Set node count based on occupancy
+            // Each node group contributes at most one node per target
             for nid in 0..num_ids {
                 if node_occupancy.is_set(nid) {
-                    local_results[nid].node_count = 1;  // Initialize node count
+                    local_results[nid].node_count = 1;
                 }
             }
             
-            // Finalize the last edge's counts
+            // Close the last edge
             for nid in 0..num_ids {
                 if edge_occupancy.is_set(nid) {
-                    local_results[nid].edge_count += 1;  // Increment edge count for last edge
+                    local_results[nid].edge_count += 1;
                 }
             }
             local_results
         })
         .collect();
 
-    // Parallel processing with bitmap aggregation
+    // Merge node groups per target
     let results: Vec<(usize, StructureResult<'a>)> = (0..num_ids)
         .into_par_iter()
         .filter_map(|nid| {
             let mut merged_entry = CompactEntry::default();
             let mut found_data = false;
             
-            // Collect all data from threads for this nid
             for thread_array in &thread_results {
                 let entry = &thread_array[nid];
                 if entry.initialized {
                     if !found_data {
-                        // First thread with data - initialize merged entry
                         merged_entry = entry.clone();
                         found_data = true;
                     } else {
-                        // Merge with existing data
                         merged_entry.match_count += entry.match_count;
                         merged_entry.idf_sum += entry.idf_sum;
                         merged_entry.node_count += entry.node_count;
-                        merged_entry.edge_count += entry.edge_count;  // Add edge count merging
+                        merged_entry.edge_count += entry.edge_count;
                     }
                 }
             }
             
             if found_data && merged_entry.match_count > 0 {
                 let lookup_entry = lookup.entry(nid);
-                // Apply length penalty to the final IDF score
                 merged_entry.idf_sum *= (lookup_entry.nres as f32).powf(-lp);
 
                 let sr = StructureResult::new(
@@ -207,7 +204,7 @@ pub fn count_query<'a>(
                     nid,
                     merged_entry.match_count as usize,
                     merged_entry.node_count as usize,
-                    merged_entry.edge_count as usize,  // Use actual edge count instead of node count
+                    merged_entry.edge_count as usize,
                     merged_entry.idf_sum,
                     lookup_entry.nres,
                     lookup_entry.plddt,
@@ -223,6 +220,8 @@ pub fn count_query<'a>(
     results
 }
 
+/// Keep the rarest hashes: a fraction (`sampling_ratio`) or a count (`sampling_count`).
+/// With neither or both set, all hashes are kept.
 fn sample_query(
     queries: &Vec<GeometricHash>, 
     index: &FolddiscoIndex,
@@ -256,7 +255,7 @@ fn sample_query(
     }
 }
 
-// Shared function to build node groups from queries
+/// Group hashes by the first residue of their edge, sorted by edge.
 fn build_node_groups(
     sampled_queries: &[GeometricHash],
     query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
@@ -270,7 +269,6 @@ fn build_node_groups(
         }
     }
     for (_, chunk) in node_groups.iter_mut() {
-        // Sort the chunk by edge.
         chunk.sort_by_key(|(edge, _)| *edge);
     }
     node_groups

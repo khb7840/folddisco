@@ -1,6 +1,4 @@
-// DONE: Need conversion from &[atom_t] to Structure
-// TODO: 
-// Us
+// Foldcomp (FCZ) DB reading through the C bindings, with mapped lookup/index caches.
 // include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 include!("../../../lib/foldcomp/bindings.rs");
@@ -21,22 +19,12 @@ use crate::structure::chain_id::ChainId;
 use crate::structure::core::Structure;
 use crate::structure::io::StructureFileFormat;
 
-// ---------------------------------------------------------------------------
-// Mapped lookup and index tables for a Foldcomp DB
-// ---------------------------------------------------------------------------
+// Mapped lookup and index tables.
 //
-// A Foldcomp DB carries an MMseqs2-style `.lookup` (`key \t name \t file`) and
-// `.index` (`key \t offset \t length`). Both used to be parsed and sorted on
-// every `FoldcompDbReader::new`, which happens on every query: on
-// afdb_uniprot_v6, whose lookup is 241 M entries, that is 241 M `String`s and a
-// parallel sort for 6.1 s and 27.9 GB of resident memory before any structure
-// is read. They are now mapped from caches whose layout is the in-memory
-// layout, built once and sorted by key at build time.
-//
-// The cache files are `<db>.lookup.fdcache` and `<db>.index.fdcache`. They are
-// deliberately *not* `<db>.index.cache`, which is the name Foldcomp's own
-// `save_cache` uses for a different format (a bare `reader_index` array with no
-// header) -- writing ours there would make Foldcomp read our bytes as its own.
+// The MMseqs2-style `.lookup` (`key \t name \t file`) and `.index`
+// (`key \t offset \t length`) are parsed and key-sorted once into
+// `<db>.lookup.fdcache` / `<db>.index.fdcache`, then mapped on every open.
+// Not `<db>.index.cache`: Foldcomp's own `save_cache` uses that name for another format.
 
 /// One `.lookup` entry: a DB key and its name. 24 bytes, no padding.
 #[repr(C)]
@@ -48,8 +36,7 @@ pub struct FoldcompLookupRecord {
     pub _pad: u32,
 }
 
-// SAFETY: `#[repr(C)]`, two u64s then two u32s: 24 bytes, no padding, 8-byte
-// alignment, and every field an integer, so every bit pattern is valid.
+// SAFETY: `#[repr(C)]` u64, u64, u32, u32: 24 bytes, no padding, any bit pattern valid.
 unsafe impl CacheRecord for FoldcompLookupRecord {
     const MAGIC: &'static [u8; 8] = b"FDFCLKUP";
     const VERSION: u32 = 1;
@@ -64,8 +51,7 @@ pub struct FoldcompIndexRecord {
     pub length: u64,
 }
 
-// SAFETY: `#[repr(C)]`, three u64s: 24 bytes, no padding, 8-byte alignment, and
-// every bit pattern is a valid value.
+// SAFETY: `#[repr(C)]` three u64s: 24 bytes, no padding, any bit pattern valid.
 unsafe impl CacheRecord for FoldcompIndexRecord {
     const MAGIC: &'static [u8; 8] = b"FDFCIDXT";
     const VERSION: u32 = 1;
@@ -100,8 +86,7 @@ impl FoldcompLookup {
             let offset = name.as_ptr() as usize - content.as_ptr() as usize;
             (key, offset as u64, name.len() as u32)
         }).collect();
-        // Sorted once here so that no load ever sorts. Readers binary-search by
-        // key, which is what every per-hit access does.
+        // Sorted at build time; per-hit reads binary-search by key.
         parsed.par_sort_unstable_by_key(|entry| entry.0);
 
         let names_len: usize = parsed.iter().map(|entry| entry.2 as usize).sum();
@@ -119,20 +104,13 @@ impl FoldcompLookup {
         Ok(FoldcompLookup { cache })
     }
 
-    /// Map and check. `None` sends the caller back to the text, as in
-    /// `PodCache::map`, plus a structural pass over the records.
+    /// Map and validate the cache; `None` means rebuild from the text.
     fn map(cache_path: &str, source: &str) -> Option<PodCache<FoldcompLookupRecord>> {
         let cache = PodCache::<FoldcompLookupRecord>::map(cache_path, source)?;
         let names_len = cache.names_blob().len() as u64;
         let records = cache.records();
-        // A name is a DB entry name, so never empty; and the keys must be
-        // strictly ascending, both because that is how the cache was built and
-        // because every lookup by key binary-searches them. Together these
-        // reject the all-zero records a torn write leaves behind.
-        //
-        // Both are checked in the same pass over the table: at 241 M records
-        // that table is several GB, and reading it twice would double the only
-        // per-entry work this loader does.
+        // Non-empty names and strictly ascending keys, checked in one pass;
+        // together they reject the all-zero records of a torn write.
         let usable = |record: &FoldcompLookupRecord| {
             record.name_len > 0
                 && record.name_offset.saturating_add(record.name_len as u64) <= names_len
@@ -185,22 +163,15 @@ impl FoldcompLookup {
         Some(self.name(position))
     }
 
-    /// The key a name belongs to.
-    ///
-    /// The records are ordered by key, not by name, so this is a scan rather
-    /// than a search. That is the right trade: a name is resolved at most twice
-    /// per query, when the query structure is given as `db:name`, while keys are
-    /// resolved once per hit. Keeping a name-ordered index instead would add
-    /// almost a gigabyte to the cache and a sort of 241 M names to its build,
-    /// to save microseconds on a per-query operation.
+    /// The key a name belongs to. A linear scan: names are resolved only per query
+    /// (`db:name`), so a name-sorted index would not pay for its size.
     pub fn key_of_name(&self, name: &str) -> Option<usize> {
         self.records().par_iter()
             .find_any(|record| self.cache.name_at(record.name_offset, record.name_len) == name)
             .map(|record| record.key as usize)
     }
 
-    /// The keys of several names, in the order the names were given, skipping
-    /// names that are not in the DB. One pass, however many names are asked for.
+    /// Keys of several names in the given order, skipping unknown names. One pass.
     pub fn keys_of_names(&self, names: &[String]) -> Vec<usize> {
         let wanted: HashMap<&str, usize> = names.iter().enumerate()
             .map(|(i, name)| (name.as_str(), i))
@@ -260,9 +231,7 @@ impl FoldcompIndex {
     fn map(cache_path: &str, source: &str) -> Option<PodCache<FoldcompIndexRecord>> {
         let cache = PodCache::<FoldcompIndexRecord>::map(cache_path, source)?;
         let records = cache.records();
-        // A DB entry is never zero bytes long, and the keys must be strictly
-        // ascending for the per-hit binary search. An all-zero record fails
-        // both. One pass, as in `FoldcompLookup::map`.
+        // Non-zero lengths and strictly ascending keys; an all-zero record fails both.
         let sound = match records.split_last() {
             None => true,
             Some((last, _)) => {
@@ -309,10 +278,9 @@ impl std::fmt::Debug for FoldcompIndex {
     }
 }
 
-/// A FCZ DB reader
+/// Memory-mapped Foldcomp DB with its lookup and index tables.
 #[derive(Debug)]
 pub struct FoldcompDbReader {
-    /// The underlying reader
     pub path: String,
     pub input_type: StructureFileFormat,
     pub db_mmap: Mmap,
@@ -332,8 +300,7 @@ impl Drop for FoldcompDbReader {
 impl FoldcompDbReader {
     pub fn new(path: &str) -> Self {
         let (db_mmap, db) = read_foldcomp_db(path).expect("Error reading foldcomp db file.");
-        // Both tables come back mapped and already key-sorted, so opening a DB
-        // does no parsing and no sorting.
+        // Both tables are mapped and key-sorted already: no parsing on open.
         let lookup = FoldcompLookup::load(path).expect("Error reading foldcomp db lookup file.");
         let index = FoldcompIndex::load(path).expect("Error reading foldcomp db index file.");
         let path_string_to_return = path.to_string();
@@ -359,6 +326,7 @@ impl FoldcompDbReader {
         }
     }
 
+    /// Decompress one entry by name.
     pub fn read_single_structure(&self, name: &str) -> Result<Structure, String> {
         let mut structure = Structure::new(); // revise
         let mut record = (ChainId::from_byte(b' '), 0);
@@ -381,6 +349,7 @@ impl FoldcompDbReader {
         }
     }
 
+    /// Decompress one entry by DB key.
     pub fn read_single_structure_by_id(&self, id: usize) -> Result<Structure, String> {
         let mut structure = Structure::new(); // revise
         let mut record = (ChainId::from_byte(b' '), 0);
@@ -412,7 +381,7 @@ impl FoldcompDbReader {
     }
 }
 
-// Methods to convert atom_t to Atom
+// Zero-copy casts between Foldcomp's `atom_t` and `Atom` (identical layout).
 impl Atom {
     pub fn from_c(atom: &atom_t) -> &Self {
         unsafe { &*(atom as *const atom_t as *const Atom) }
@@ -431,7 +400,7 @@ impl Atom {
     }
 }
 
-// Convert atom_t slice to Structure
+/// Build a `Structure` from decompressed Foldcomp atoms.
 pub unsafe fn atom_t_slice_to_structure(slice: &[atom_t]) -> Structure {
     let mut structure = Structure::new(); 
     let mut record = (ChainId::from_byte(b' '), 0);
@@ -471,14 +440,13 @@ pub fn get_name_vector_subset_out_of_lookup(
     subset_ids.iter().filter_map(|id| lookup.name_of_key(*id).map(|n| n.to_string())).collect()
 }
 
+/// Map a Foldcomp DB file. The `Vec` aliases the mapping and must never be dropped.
 pub fn read_foldcomp_db(db_path: &str) -> Result<(Mmap, ManuallyDrop<Vec<u8>>), &'static str> {
-    // Check if the file exists
     let db_file = match File::open(&db_path) {
         Ok(file) => file,
         Err(_) => return Err("DB file not found."),
     };
     
-    // Read the file
     let mmap = unsafe { Mmap::map(&db_file).unwrap() };
     let db = unsafe { ManuallyDrop::new(Vec::from_raw_parts(mmap.as_ptr() as *mut u8, mmap.len(), mmap.len())) };
     Ok((mmap, db))
@@ -610,8 +578,7 @@ mod tests {
 mod cache_tests {
     use super::*;
 
-    /// A private copy of the example DB, so the caches these tests build do not
-    /// land next to the checked-in data and are not shared between tests.
+    /// Private copy of the example DB so test caches stay out of `data/` and unshared.
     struct TempDb {
         prefix: String,
     }
@@ -666,8 +633,7 @@ mod cache_tests {
         out
     }
 
-    /// The mapped tables have to hold exactly what the text files say, in key
-    /// order, both when built and when mapped back.
+    /// Built and re-mapped tables both match the text files, in key order.
     #[test]
     fn mapped_tables_match_the_text_files() {
         let db = TempDb::new("roundtrip");
@@ -699,9 +665,7 @@ mod cache_tests {
         }
     }
 
-    /// The cache must not be called `<index>.cache`: that is the name Foldcomp's
-    /// own `save_cache` writes, in a different format with no header, and
-    /// Foldcomp would read ours as its own.
+    /// The cache must not use Foldcomp's own `<index>.cache` name.
     #[test]
     fn cache_paths_do_not_collide_with_foldcomps_own() {
         let db = TempDb::new("collide");
@@ -738,8 +702,7 @@ mod cache_tests {
         );
     }
 
-    /// An all-zero record has every field individually in range. It has to be
-    /// caught at load, or a key-0 hit would return another entry's structure.
+    /// An all-zero (torn) record must be rejected at load.
     #[test]
     fn a_zeroed_record_is_rejected_and_the_text_is_reparsed() {
         use std::io::{Seek, SeekFrom, Write};
@@ -762,8 +725,7 @@ mod cache_tests {
         assert_eq!(index.records()[1].key, expected[1].0);
     }
 
-    /// A lookup rewritten under a cache built from the previous content must not
-    /// be served from that cache, even when the mtime does not move.
+    /// A rewritten lookup must invalidate its cache even if the mtime is unchanged.
     #[test]
     fn a_changed_source_is_rejected() {
         let db = TempDb::new("stale");

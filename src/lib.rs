@@ -10,10 +10,10 @@ pub mod index;
 pub mod structure;
 pub mod utils;
 
-/* re-export: pub use */
 pub use structure::io::pdb::Reader as PDBReader;
 pub use structure::io::cif::Reader as CIFReader;
 
+/// Common imports for the CLI workflows.
 pub mod prelude {
     pub use crate::PDBReader;
     pub use crate::measure_time;

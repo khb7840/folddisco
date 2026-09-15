@@ -1,5 +1,4 @@
-// MMCIF reader
-// Modified from pdbtbx
+// mmCIF reader (plain or gzipped), modified from pdbtbx.
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::path::Path;
@@ -16,16 +15,13 @@ use pdbtbx_cif::lex_item::{DataBlock, Item, DataItem, Loop, Value};
 use pdbtbx_cif::error::{PDBError, ErrorLevel, Context};
 
 
-/// A PDB reader
+/// An mmCIF reader. Only the first model's ATOM records are read.
 #[derive(Debug)]
 pub struct Reader<R: io::Read> {
-    /// The underlying reader
     pub reader: R,
-    ///
     pub input_type: StructureFileFormat,
 }
 
-// ??? trait Read -> impl Read for __ ???
 impl Reader<File> {
     pub fn new(file: File) -> Self {
         Reader {
@@ -34,13 +30,13 @@ impl Reader<File> {
         }
     }
 
-    /// Read from a file path
     pub fn from_file<P: AsRef<Path> + std::fmt::Debug>(path: P) -> Result<Self, &'static str> {
         File::open(&path)
             .map(Reader::new)
             .map_err(|_e| "Error opening file")
     }
 
+    /// Parse a plain-text mmCIF file.
     pub fn read_structure(&self) -> Result<Structure, &str> {
         let mut reader = BufReader::new(&self.reader);
         let mut structure = Structure::new(); // revise
@@ -60,20 +56,16 @@ impl Reader<File> {
         Ok(structure)
     }
 
+    /// Parse a gzipped mmCIF file.
     pub fn read_structure_from_gz(&self) -> Result<Structure, &str> {
-        // Load whole file and close the file
         let mut decoder = GzDecoder::new(&self.reader);
         let mut binary = Vec::new();
         decoder.read_to_end(&mut binary).unwrap();
-        // Close the decoder after flushing
         decoder.flush().unwrap();
-        // Drop the decoder
         drop(decoder);
 
-        // Create a new Structure
         let mut structure = Structure::new();
         
-        // Read binary as a string. Conver
         let mut reader = BufReader::new(&binary[..]);
         let mut contents = String::new();
         if reader.read_to_string(&mut contents).is_ok() {
@@ -125,7 +117,7 @@ fn parse_mmcif_block_into_structure(input: &DataBlock, structure: &mut Structure
 }
 
 
-/// Flatten a Result of a Result with the same error type (#70142 is still unstable)
+/// Flatten `Result<Result<T, E>, E>` (`Result::flatten` is unstable, #70142).
 fn flatten_result<T, E>(value: Result<Result<T, E>, E>) -> Result<T, E> {
     match value {
         Ok(Ok(t)) => Ok(t),
@@ -212,9 +204,7 @@ fn parse_atoms(
         return Some(errors);
     }
 
-    // Currently, ignoring atom deduplicte check from original code
-
-    // The previous lines make sure that there is no error in the vector.
+    // Unlike pdbtbx, atoms are not deduplicated. `errors` is empty here, so unwrap is safe.
     let positions: Vec<Option<usize>> = positions_.iter().map(|i| *i.as_ref().unwrap()).collect();
     let mut first_model_number: usize = 0;
     for (index, row) in input.data.iter().enumerate() {
@@ -238,17 +228,15 @@ fn parse_atoms(
             };
         }
 
-        // Early return cases
         // let element = parse_column!(get_text, ATOM_TYPE).expect("Atom element should be provided");
         let model_number = parse_column!(get_usize, ATOM_MODEL).unwrap_or(1);
-        // Use only first model
+        // First model only
         if index == 0 {
             first_model_number = model_number;
         } else if model_number != first_model_number {
             break;
         }
 
-        // Parse remaining fields in the order they appear in the line
 
         let name = parse_column!(get_four_char_array, ATOM_NAME).expect("Atom name should be provided");
         let id: u64 = parse_column!(get_isize, ATOM_ID).expect("Atom ID should be provided") as u64;
@@ -264,9 +252,7 @@ fn parse_atoms(
         let pos_y = parse_column!(get_f32, ATOM_Y).expect("Atom Y position should be provided");
         let pos_z = parse_column!(get_f32, ATOM_Z).expect("Atom Z position should be provided");
         let b_factor = parse_column!(get_f32, ATOM_B).unwrap_or(1.0);
-        // Current version does not support Occupancy, Charge and Anisotropic temperature factors 
-
-        // NOT handling HETATM with this version
+        // Occupancy, charge, anisotropic B factors and HETATM are not handled.
         // let atom_type = parse_column!(get_text, ATOM_GROUP).unwrap_or_else(|| "ATOM".to_string());
         // let hetero = if atom_type == "ATOM" {
         //     false
@@ -291,7 +277,7 @@ fn parse_atoms(
     }
 }
 
-/// Get the Textual content of the value, if available
+/// Atom name as a 4-byte, PDB-style padded array.
 fn get_four_char_array(
     value: &Value,
     _context: &Context,
@@ -316,6 +302,7 @@ fn get_four_char_array(
     }
 }
 
+/// Residue name as 3 bytes; longer names become blank.
 fn get_three_char_array(
     value: &Value,
     _context: &Context,
@@ -330,14 +317,11 @@ fn get_three_char_array(
         1 => Ok(Some([text.as_bytes()[0], b' ', b' '])),
         2 => Ok(Some([text.as_bytes()[0], text.as_bytes()[1], b' '])),
         3 => Ok(Some([text.as_bytes()[0], text.as_bytes()[1], text.as_bytes()[2]])),
-        //  2025-06-24 16:29:00 For now, not allowing residue names longer than 3 characters
-        // If more than 3 characters, we will return empty residue name
         _ => Ok(Some([b' ', b' ', b' '])), // Default to empty residue name
     }
 }
 
-/// Read a chain identifier of any length, e.g. `A`, `AA` or the numeric `10`
-/// that large cryo-EM entries such as PDB 9A1O use for `auth_asym_id`.
+/// Chain identifier of any length (`A`, `AA`, `10`).
 fn get_chain_id(
     value: &Value,
     _context: &Context,
@@ -349,8 +333,7 @@ fn get_chain_id(
         _ => return Ok(None),
     };
     if text.is_empty() {
-        // An absent chain ID is not an error here: the caller falls back to
-        // label_asym_id.
+        // Not an error: the caller falls back to label_asym_id.
         return Ok(None);
     }
     Ok(Some(ChainId::from_str(&text)))
@@ -523,12 +506,8 @@ mod tests {
         assert_eq!(result, Some([b' ', b'1', b'0', b' ']));
     }
 
-    /// Multi-character and numeric `auth_asym_id` values are kept in full, and
-    /// change nothing but the chain labels.
-    ///
-    /// `1G2F_multichain.cif` is `1G2F.cif` with every `auth_asym_id` rewritten
-    /// (A->AA, B->BB, C->10, D->DD, E->EE, F->FF) and the coordinates left
-    /// alone, so the two files have to agree residue for residue.
+    /// Multi-character and numeric `auth_asym_id`s are kept in full. `1G2F_multichain.cif`
+    /// is `1G2F.cif` with chains renamed (A->AA, ..., C->10), so residues must agree.
     #[test]
     fn test_read_cif_with_multi_char_chain_ids() {
         let read = |path: &str| {
@@ -552,8 +531,7 @@ mod tests {
             assert_eq!(multi.chain_per_residue[i], expected(&single.chain_per_residue[i]));
         }
 
-        // The zinc-finger motif this file is used for is on chain F, which is
-        // now FF. Looking it up by its full ID has to land on the same residue.
+        // Chain F is now FF; the full ID must find the same residue.
         for res in [207u64, 212, 225, 229] {
             assert_eq!(
                 multi.get_index(&ChainId::from_str("FF"), &res),
@@ -580,8 +558,7 @@ mod tests {
     #[test]
     fn test_get_chain_id_numeric_multi_digit() {
         let ctx = Context::show("test");
-        // Multi-digit chain ID like "10" (PDB 9A1O) is now kept in full
-        // instead of forcing a fallback to label_asym_id.
+        // Multi-digit chain ID like "10" (PDB 9A1O) is kept in full.
         let val = Value::Numeric(10.0);
         let result = get_chain_id(&val, &ctx, None).unwrap();
         assert_eq!(result, Some(ChainId::from_str("10")));

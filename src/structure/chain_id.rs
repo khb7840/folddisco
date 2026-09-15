@@ -1,27 +1,16 @@
-//! Chain identifiers wide enough for multi-character mmCIF asym IDs.
+//! Chain identifiers wide enough for multi-character mmCIF asym IDs (`AA`, `10`).
 //!
-//! Chain IDs used to be a single `u8`, which silently dropped everything past
-//! the first character of a multi-character mmCIF `auth_asym_id` (large cryo-EM
-//! entries such as PDB 9A1O use `"10"`, `"AA"`, ...). [`ChainId`] stores up to
-//! [`CHAIN_ID_MAX_LEN`] printable ASCII bytes inline, null-padded on the right,
-//! so it stays `Copy` and allocation-free in the retrieval hot path where one
-//! chain ID is carried per residue of every candidate structure.
-//!
-//! Note that [`crate::structure::atom::Atom`] deliberately keeps its
-//! single-byte `chain` field: it is transmuted from Foldcomp's C `atom_t`
-//! (see `Atom::from_c`), whose layout must not change. Widening happens one
-//! level up, in `AtomVector` / `Structure` / `CompactStructure`, which is where
-//! the CIF parser can supply the full identifier.
+//! [`ChainId`] is inline and `Copy` to stay allocation-free in the retrieval hot path.
+//! [`crate::structure::atom::Atom`] keeps a single-byte `chain` because its layout
+//! must match Foldcomp's C `atom_t`.
 
 use std::fmt;
 
-/// Longest chain ID that is stored in full. mmCIF asym IDs in the PDB archive
-/// are at most four characters today; the extra headroom costs nothing because
-/// `Option<(ChainId, u64)>` is 24 bytes either way.
+/// Longest chain ID stored in full. PDB asym IDs are at most 4 characters; 8 costs
+/// nothing extra since `Option<(ChainId, u64)>` is 24 bytes either way.
 pub const CHAIN_ID_MAX_LEN: usize = 8;
 
-/// Byte substituted for anything that is not printable ASCII, so that
-/// [`ChainId::as_str`] can never fail on a malformed input file.
+/// Substitute for non-printable bytes, so [`ChainId::as_str`] never fails.
 const REPLACEMENT: u8 = b'?';
 
 /// A chain identifier of up to [`CHAIN_ID_MAX_LEN`] printable ASCII bytes,
@@ -32,8 +21,7 @@ pub struct ChainId {
 }
 
 impl ChainId {
-    /// The empty chain ID. No parsed structure produces one, so it doubles as a
-    /// "nothing seen yet" sentinel.
+    /// Empty chain ID; never parsed from a file, so usable as a sentinel.
     pub const fn empty() -> Self {
         ChainId { bytes: [0; CHAIN_ID_MAX_LEN] }
     }
@@ -45,8 +33,7 @@ impl ChainId {
         ChainId { bytes }
     }
 
-    /// Take up to [`CHAIN_ID_MAX_LEN`] bytes. Anything longer is truncated;
-    /// callers that care can compare `len()` against the input length.
+    /// Take up to [`CHAIN_ID_MAX_LEN`] bytes; longer input is truncated.
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let mut out = [0u8; CHAIN_ID_MAX_LEN];
         for (slot, &byte) in out.iter_mut().zip(bytes.iter()) {
@@ -55,8 +42,7 @@ impl ChainId {
         ChainId { bytes: out }
     }
 
-    /// Take up to [`CHAIN_ID_MAX_LEN`] bytes of a string. Anything longer is
-    /// truncated.
+    /// Take up to [`CHAIN_ID_MAX_LEN`] bytes of a string; longer input is truncated.
     pub fn from_str(text: &str) -> Self {
         Self::from_bytes(text.as_bytes())
     }
@@ -79,25 +65,19 @@ impl ChainId {
         std::str::from_utf8(self.as_bytes()).unwrap_or("?")
     }
 
-    /// First byte, for the single-byte `Atom::chain` field that Foldcomp's
-    /// `atom_t` layout pins down. Lossy for multi-character IDs by definition.
+    /// First byte, for the single-byte `Atom::chain`. Lossy for multi-character IDs.
     pub fn first_byte(&self) -> u8 {
         self.bytes[0]
     }
 
-    /// Whether `format!("{}{}", chain, residue)` would be ambiguous to read
-    /// back, i.e. whether this chain ID needs an explicit `_` before the
-    /// residue index.
-    ///
-    /// `A` + `21` -> `A21` parses back, because a leading letter can only be
-    /// the chain. `10` + `21` -> `1021` and `AA` + `250` -> `AA250` cannot.
+    /// Whether `chain` + `residue` is ambiguous without `_`: `A21` parses back,
+    /// `1021` (chain `10`) and `AA250` do not.
     pub fn needs_separator(&self) -> bool {
         self.len() != 1 || !self.bytes[0].is_ascii_alphabetic()
     }
 }
 
-/// Map anything that is not printable ASCII onto [`REPLACEMENT`], so a
-/// corrupted input file cannot produce a `ChainId` that is not valid UTF-8.
+/// Map non-printable bytes onto [`REPLACEMENT`] to keep `ChainId` valid UTF-8.
 fn sanitize(byte: u8) -> u8 {
     if byte.is_ascii_graphic() || byte == b' ' { byte } else { REPLACEMENT }
 }
@@ -126,11 +106,8 @@ impl From<&str> for ChainId {
     }
 }
 
-/// Whether a whole residue list has to be printed with `_` separators.
-///
-/// The decision is taken per list rather than per residue so that one field is
-/// never half in one format and half in the other: a reader can split a field
-/// on `,` and apply a single rule to every element.
+/// Whether a residue list needs `_` separators. Decided per list, so one field
+/// never mixes both spellings.
 pub fn residue_list_needs_separator<'a, I>(chains: I) -> bool
 where
     I: IntoIterator<Item = &'a ChainId>,

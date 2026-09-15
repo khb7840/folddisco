@@ -6,7 +6,7 @@ use crate::utils::convert::map_aa_to_u8;
 
 use super::coordinate::{calc_torsion_radian, calc_angle_radian};
 
-/// Structure is the main data structure for storing the information of a protein structure.
+/// A parsed protein structure: every atom, plus chain and residue counts.
 #[derive(Debug)]
 pub struct Structure {
     pub num_chains: usize,
@@ -33,10 +33,9 @@ impl Structure {
         self.update_with_chain(atom, chain, record)
     }
 
-    /// Add an atom together with its full chain ID, for mmCIF `auth_asym_id`
-    /// values that do not fit in `Atom::chain`.
+    /// Add an atom with its full chain ID (mmCIF `auth_asym_id`).
+    /// `record` holds the previous (chain, residue serial) to count new chains and residues.
     pub fn update_with_chain(&mut self, atom: Atom, chain: ChainId, record: &mut (ChainId, u64)) {
-        // record store previous chain ID and residue serial
         if record.0 != chain {
             self.chains.push(chain);
             self.num_chains += 1;
@@ -61,6 +60,7 @@ impl Structure {
 
 }
 
+/// Per-residue backbone view (N, CA, CB) used for hashing and matching.
 #[derive(Debug, Clone)]
 pub struct CompactStructure {
     pub num_chains: usize,
@@ -76,8 +76,8 @@ pub struct CompactStructure {
 }
 
 impl CompactStructure {
+    /// Keep N, CA and CB per residue; a missing CB (e.g. Gly) is approximated from N, CA, C.
     pub fn build(origin: &Structure) -> CompactStructure {
-        // Store only backbone atoms
         let model = &origin.atom_vector;
 
         let mut res_serial_vec: Vec<u64> = Vec::with_capacity(origin.num_residues);
@@ -101,9 +101,7 @@ impl CompactStructure {
         let mut chain_per_residue: Vec<ChainId> = Vec::with_capacity(origin.num_residues);
         let mut prev_res_serial: Option<u64> = None;
         let mut prev_res_name: Option<&[u8; 3]> = None;
-        // Tracked like prev_res_serial / prev_res_name: a residue is flushed
-        // when the *next* one starts, so `origin.atom_vector.chain[idx]` at that
-        // point is the chain of the next residue, not of the one being written.
+        // A residue is flushed when the next one starts, so its chain must be tracked too.
         let mut prev_chain: Option<ChainId> = None;
         let mut n: Option<Coordinate> = None;
         let mut ca: Option<Coordinate> = None;
@@ -226,6 +224,7 @@ impl CompactStructure {
             b_factors: b_factors,
         }
     }
+    /// Residue index of (chain, residue serial), by linear scan.
     #[inline(always)]
     pub fn get_index(&self, chain: &ChainId, res_serial: &u64) -> Option<usize> {
         for i in 0..self.num_residues {
@@ -292,6 +291,7 @@ impl CompactStructure {
         }
     }
 
+    /// Angle between the CA->CB vectors of two residues.
     pub fn get_ca_cb_angle(&self, idx1: usize, idx2: usize, return_radian: bool) -> Option<f32> {
         let ca1 = self.get_ca(idx1);
         let cb1 = self.get_cb(idx1);
@@ -321,6 +321,7 @@ impl CompactStructure {
         (self.residue_serial[idx1], self.residue_serial[idx2])
     }
 
+    /// Point pair feature of the two CBs relative to CA1; `None` beyond `dist_cutoff`.
     pub fn get_ppf(&self, idx1: usize, idx2: usize, dist_cutoff: f32) -> Option<[f32; 4]> {
         let ca1 = self.get_ca(idx1);
         let cb1 = self.get_cb(idx1);
@@ -338,6 +339,7 @@ impl CompactStructure {
         }
     }
 
+    /// trRosetta orientations: (cb_dist, omega, theta1, theta2, phi1, phi2), radians.
     pub fn get_trrosetta_feature(&self, idx1: usize, idx2: usize, dist_cutoff: f32) -> Option<(f32, f32, f32, f32, f32, f32)> {
         let ca1 = self.get_ca(idx1);
         let ca2 = self.get_ca(idx2);
@@ -363,6 +365,7 @@ impl CompactStructure {
         }
     }
 
+    /// trRosetta orientations plus CB distance and signed log sequence separation.
     pub fn get_trrosetta_feature2(&self, idx1: usize, idx2: usize) -> Option<[f32; 7]> {
         let ca1 = self.get_ca(idx1);
         let ca2 = self.get_ca(idx2);
@@ -389,6 +392,8 @@ impl CompactStructure {
         }
     }
 
+    /// Default feature: (ca_dist, cb_dist, ca_cb_angle, theta1, theta2), radians.
+    /// `None` when CA distance exceeds `dist_cutoff`.
     pub fn get_pdb_tr_feature(&self, idx1: usize, idx2: usize, dist_cutoff: f32) -> Option<(f32, f32, f32, f32, f32)> {
         let ca1 = self.get_ca(idx1);
         let ca2 = self.get_ca(idx2);
@@ -416,6 +421,7 @@ impl CompactStructure {
         }
     }
     
+    /// `get_pdb_tr_feature` plus backbone torsions phi1, phi2. Needs both chain neighbours.
     pub fn get_hybrid_feature(&self, idx1: usize, idx2: usize, dist_cutoff: f32) -> Option<(f32, f32, f32, f32, f32, f32, f32)> {
         let ca1 = self.get_ca(idx1);
         let ca2 = self.get_ca(idx2);
@@ -456,6 +462,7 @@ impl CompactStructure {
     pub fn get_bfactor(&self, idx: usize) -> f32 {
         self.b_factors[idx]
     }
+    /// pLDDT, stored in the B-factor column for predicted models.
     #[inline(always)]
     pub fn get_plddt(&self, idx: usize) -> f32 {
         self.get_bfactor(idx)
@@ -473,8 +480,8 @@ impl CompactStructure {
         self.get_avg_bfactor()
     }
 
+    /// `(aa_i, aa_j, CA distance)`.
     pub fn get_list_amino_acids_and_distances(&self, i: usize, j: usize) -> Option<(u8, u8, f32)> {
-        // Return i, j, aa_i, aa_j, distance
         let aa_i = map_aa_to_u8(self.get_res_name(i));
         let aa_j = map_aa_to_u8(self.get_res_name(j));
         let distance = self.get_ca_distance(i, j);
@@ -524,15 +531,7 @@ mod structure_tests {
         assert_eq!(compact.num_residues, structure.num_residues);
     }
     
-    /// A residue that ends a chain belongs to that chain.
-    ///
-    /// `CompactStructure::build` writes a residue out when the *following* one
-    /// starts, so it used to take the chain ID from the first atom of the next
-    /// residue. That put the last residue of every chain into the next chain.
-    ///
-    /// Ground truth from `data/serine_peptidases/4cha.pdb`: chain A holds
-    /// residues 1-11, and chain B starts at residue 16, so nothing in chain B
-    /// is numbered 11.
+    /// The last residue of a chain keeps its own chain. In 4cha.pdb chain A is 1-11 and B starts at 16.
     #[test]
     fn last_residue_of_a_chain_keeps_its_own_chain() {
         let compact = PdbReader::from_file("data/serine_peptidases/4cha.pdb")

@@ -1,21 +1,22 @@
-// Result Filtering module
+// Result filters. A cutoff of 0 (or f64::MAX for evalue) disables that check.
 use super::result::{ MatchResult, StructureResult };
 
+/// Per-structure cutoffs, applied before and after residue matching.
 pub struct StructureFilter {
-    // Filtering parameters that doesn't require residue matching
+    // Checked before matching
     pub total_match_count: usize,
     pub covered_node_count: usize,
     pub covered_node_ratio: f32,
     pub idf_per_structure: f32,
     pub nres: usize,
     pub plddt: f32,
-    // Filtering parameters that require residue matching
+    // Checked after matching
     pub max_matching_node_count: usize,
     pub max_matching_node_ratio: f32,
     pub rmsd: f32,
     /// Superposition-free deformation cutoff, for non-rigid matches
     pub drmsd: f32,
-    // Expected number of residues and nodes
+    /// Query residue count; denominator of the ratio cutoffs
     pub expected_node_count: usize,
 }
 
@@ -41,7 +42,7 @@ impl StructureFilter {
         }
     }
 
-    // No filter
+    /// No filtering.
     pub fn none() -> Self {
         StructureFilter {
             total_match_count: 0,
@@ -58,7 +59,7 @@ impl StructureFilter {
         }
     }
 
-    // Default filters
+    /// Require 80% node coverage.
     pub fn default(node_count: usize) -> Self {
         StructureFilter {
             total_match_count: 0,
@@ -76,7 +77,7 @@ impl StructureFilter {
     }
     
     
-    // Filter single query result
+    /// Checks that need only index counts.
     #[inline]
     pub fn filter_before_matching(&self, result: &StructureResult) -> bool {
         let mut pass = true;
@@ -93,17 +94,16 @@ impl StructureFilter {
             pass = pass && result.idf >= self.idf_per_structure;
         }
         if self.nres > 0 {
-            // Number of residues in the query structure
-            // Should be less than or equal to the number of residues in the target structure
+            // Maximum target length (--num-residue)
             pass = pass && result.nres <= self.nres;
         }
         if self.plddt > 0.0 {
             pass = pass && result.plddt >= self.plddt;
         }
-        //
         pass
     }
 
+    /// Checks that need residue matching results.
     #[inline]
     pub fn filter_after_matching(&self, result: &StructureResult) -> bool {
         let mut pass = true;
@@ -119,19 +119,18 @@ impl StructureFilter {
         if self.drmsd > 0.0 {
             pass = pass && result.min_drmsd_with_max_match <= self.drmsd;
         }
-        //
         pass
     }
     
 }
 
+/// Per-match cutoffs.
 pub struct MatchFilter {
     pub node_count: usize,
     pub node_ratio: f32,
     pub idf_per_match: f32,
     pub evalue: f64,
     pub rmsd: f32,
-    // Metrics from StructureSimilarityMetrics
     pub tm_score: f32,
     pub gdt_ts: f32,
     pub gdt_ha: f32,
@@ -139,7 +138,7 @@ pub struct MatchFilter {
     pub hausdorff_distance: f32,
     /// Superposition-free deformation cutoff, for non-rigid matches
     pub drmsd: f32,
-    // Expected number of nodes
+    /// Query residue count; denominator of `node_ratio`
     pub expected_node_count: usize,
 }
 
@@ -166,7 +165,7 @@ impl MatchFilter {
         }
     }
 
-    // No filter
+    /// No filtering.
     pub fn none() -> Self {
         MatchFilter {
             node_count: 0,
@@ -184,13 +183,14 @@ impl MatchFilter {
         }
     }
 
+    /// Require 80% node coverage and RMSD <= 1.0.
     pub fn default(node_count: usize) -> Self {
         MatchFilter {
             node_count: 0,
             node_ratio: 0.8,
             idf_per_match: 0.0,
             evalue: f64::MAX,
-            rmsd: 1.0, // Default at 1.0
+            rmsd: 1.0,
             tm_score: 0.0,
             gdt_ts: 0.0,
             gdt_ha: 0.0,
@@ -202,12 +202,11 @@ impl MatchFilter {
     }
 
 
-    // Filter single query result
+    /// True if `result` passes every enabled cutoff.
     #[inline]
     pub fn filter(&self, result: &MatchResult) -> bool {
         let mut pass = true;
         
-        // Node-based filters
         if self.node_count > 0 {
             pass = pass && result.node_count >= self.node_count;
         }
@@ -224,8 +223,7 @@ impl MatchFilter {
             pass = pass && result.rmsd <= self.rmsd;
         }
         
-        // Metrics-based filters (using StructureSimilarityMetrics)
-        // Higher is better metrics (>=)
+        // Higher is better
         if self.tm_score > 0.0 {
             pass = pass && result.metrics.tm_score >= self.tm_score;
         }
@@ -236,7 +234,7 @@ impl MatchFilter {
             pass = pass && result.metrics.gdt_ha >= self.gdt_ha;
         }
         
-        // Lower is better metrics (<=)
+        // Lower is better
         if self.chamfer_distance > 0.0 {
             pass = pass && result.metrics.chamfer_distance <= self.chamfer_distance;
         }

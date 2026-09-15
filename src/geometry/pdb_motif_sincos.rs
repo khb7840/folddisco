@@ -13,13 +13,13 @@ use crate::utils::convert::*;
 pub const MAX_NBIN_DIST: f32 = 16.0;
 pub const MAX_NBIN_SIN_COS: f32 = 16.0;
 
+/// 26-bit PDBMotif hash with the angle sin/cos encoded.
 #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Copy, Hash)]
 pub struct HashValue(pub u32);
 
 impl HashValue {
     #[inline]
     pub fn perfect_hash(feature: &Vec<f32>, nbin_dist: usize, nbin_angle: usize) -> u32 {
-        // Added one more quantization for distance
         let nbin_dist = if nbin_dist > MAX_NBIN_DIST as usize {
             MAX_NBIN_DIST
         } else if nbin_dist == 0 {
@@ -51,6 +51,7 @@ impl HashValue {
         let cos_angle = discretize_value(
             cos_angle, MIN_SIN_COS, MAX_SIN_COS, nbin_angle
         );
+        // res1 5b | res2 5b | ca_dist 4b | cb_dist 4b | sin 4b | cos 4b
         let hashvalue = res1 << 21 | res2 << 16 | ca_dist << 12 
             | cb_dist << 8 | sin_angle << 4 | cos_angle;
         hashvalue

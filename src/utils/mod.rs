@@ -1,5 +1,4 @@
 //! Common utilities for the library.
-//!
 
 pub mod benchmark;
 pub mod cli;

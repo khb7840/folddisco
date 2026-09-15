@@ -1,12 +1,6 @@
-//! Caches whose on-disk layout *is* the in-memory layout, so loading one is an
-//! `mmap` plus a header check rather than a parse.
-//!
-//! The record table is a plain array of a `#[repr(C)]` POD type, laid out at an
-//! 8-aligned offset, so it is handed to callers as a `&[R]` cast straight out of
-//! the mapping. Nothing per entry is allocated, decoded or sorted at load time:
-//! whatever ordering or auxiliary index the reader needs is computed once when
-//! the cache is built. Variable-length names live in a single blob at the end
-//! and are resolved only for the entries a caller actually asks about.
+//! Memory-mapped caches whose on-disk layout is the in-memory layout: loading is
+//! an `mmap` plus a header check. Records are cast directly to `&[R]`; names live
+//! in one trailing blob and are resolved on demand.
 //!
 //! ```text
 //! magic [u8; 8] | version u32 | pad u32 | count u64 |
@@ -15,40 +9,13 @@
 //! names length bytes of UTF-8                                      (name blob)
 //! ```
 //!
-//! ## What is validated, and why that is enough
-//!
-//! Every load checks the magic, the version, the length and mtime of the file
-//! the cache was built from, and that the file size is exactly what the header's
-//! three counts imply. The source length and mtime together identify the exact
-//! input: an mtime comparison alone accepts a stale cache whenever the source is
-//! rewritten inside one filesystem timestamp tick, which would serve wrong names
-//! and keys with no signal at all. The size check pins the counts, so a
-//! corrupted `count` cannot decode as a short-but-well-formed cache -- a zeroed
-//! count would otherwise look like an empty database and make a search silently
-//! find nothing. Anything that fails sends the caller back to parsing the
-//! source, which is always still there.
-//!
-//! There is deliberately no checksum over the record table: computing one would
-//! cost a full pass over the file, which is the entire thing this cache exists
-//! to avoid, and after the size and identity checks no reachable write path
-//! leaves a table that is corrupt yet passes. There is also deliberately no
-//! temp-file-and-rename: cache content is a pure function of the source, so two
-//! processes writing the same cache emit identical bytes from offset 0, and a
-//! reader that catches a write in progress sees a short file and rejects it.
-//! Both arguments hold only while the bytes stay deterministic -- putting a
-//! timestamp or a thread id in the body would break them and bring atomicity
-//! back into scope.
-//!
-//! ## What is not validated
-//!
-//! Names are checked for UTF-8 when they are resolved, not up front, because
-//! validating a multi-gigabyte blob on every load would defeat the purpose. A
-//! name that is not UTF-8 reads back as empty rather than panicking.
-//!
-//! Like every other mapping in this crate, the cache is mapped read-only and
-//! assumed not to be rewritten underneath a live reader; the identity check
-//! catches a source that moved on, not a cache actively being overwritten by
-//! something that is not this code.
+//! A load checks magic, version, source length + mtime, and that the file size
+//! matches the header counts; any failure means "rebuild from source".
+//! No checksum (it would cost the full pass the cache avoids) and no
+//! temp-file-and-rename: the bytes are deterministic, so concurrent writers emit
+//! identical files and a partial write fails the size check. Keep the body
+//! deterministic (no timestamps/thread ids) or both assumptions break.
+//! Names are UTF-8-checked only when resolved; invalid names read as empty.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -56,32 +23,25 @@ use std::mem::{align_of, size_of};
 
 use memmap2::Mmap;
 
-/// Header size, a multiple of 8 so that the record table that follows is
-/// aligned for any of the record types below.
+/// Header size; a multiple of 8 so the record table is aligned.
 pub const HEADER_SIZE: usize = 48;
 
 /// Marks a type as safe to reinterpret from arbitrary cache bytes.
 ///
 /// # Safety
-/// Implementors must be `#[repr(C)]`, contain no padding bytes, have an
-/// alignment of at most 8, a size that is a multiple of 8 (so consecutive
-/// records stay aligned), and be valid for every bit pattern -- i.e. be built
-/// only out of integer and floating-point fields, with no enums, references,
-/// `bool`s or `NonZero` types.
+/// Implementors must be `#[repr(C)]`, padding-free, aligned to at most 8, sized
+/// in multiples of 8, and valid for every bit pattern (integer/float fields only).
 pub unsafe trait CacheRecord: Copy {
     /// Distinguishes cache kinds, so one kind's file is never read as another's.
     const MAGIC: &'static [u8; 8];
+    /// Layout version; bump when the record layout changes.
     const VERSION: u32;
 }
 
-/// Where a cache's bytes live: a mapping of the cache file, or an in-memory
-/// image for when the cache could not be written to disk.
+/// A cache's bytes: a file mapping, or an in-memory image when writing failed.
 ///
-/// The in-memory image is held as `u64` words rather than bytes because the
-/// record table is cast out of it: a `Vec<u8>` is only guaranteed 1-aligned, and
-/// most allocators happen to return more, which is not something an alignment
-/// invariant should rest on. `len` is the logical byte length, which is what the
-/// header's size check is compared against; the word buffer rounds up past it.
+/// The image is stored as `u64` words so the record cast is 8-aligned; `len` is
+/// the logical byte length.
 enum Backing {
     Mapped(Mmap),
     Owned { words: Vec<u64>, len: usize },
@@ -114,10 +74,8 @@ impl Backing {
     }
 }
 
-/// Length and modification time of `path`, as stored in a cache header.
-///
-/// `None` when the file is gone or carries a timestamp outside the range this
-/// encoding covers, in which case no cache is written or trusted.
+/// `(length, mtime nanos)` of `path`, as stored in a cache header.
+/// `None` if the file is missing or its mtime is unrepresentable.
 pub fn source_identity(path: &str) -> Option<(u64, u64)> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime = meta.modified().ok()?
@@ -126,8 +84,7 @@ pub fn source_identity(path: &str) -> Option<(u64, u64)> {
     Some((meta.len(), u64::try_from(mtime).ok()?))
 }
 
-/// A loaded cache: a record table and a name blob, both borrowed from one
-/// mapping.
+/// A loaded cache: a record table and a name blob over one backing buffer.
 pub struct PodCache<R: CacheRecord> {
     backing: Backing,
     count: usize,
@@ -137,12 +94,8 @@ pub struct PodCache<R: CacheRecord> {
 }
 
 impl<R: CacheRecord> PodCache<R> {
-    /// Map `cache_path` and check it was built from the current `source_path`.
-    ///
-    /// Returns `None` for anything unexpected -- missing, truncated, wrong magic
-    /// or version, a source that no longer matches, a size that disagrees with
-    /// the header -- so the caller rebuilds from the source instead of returning
-    /// stale or partial data.
+    /// Map `cache_path` if it was built from the current `source_path`.
+    /// `None` on any mismatch or corruption, so the caller rebuilds from source.
     pub fn map(cache_path: &str, source_path: &str) -> Option<Self> {
         let file = File::open(cache_path).ok()?;
         let mmap = unsafe { Mmap::map(&file).ok()? };
@@ -169,9 +122,7 @@ impl<R: CacheRecord> PodCache<R> {
         if bytes.len() != names_offset.checked_add(names_len)? {
             return None;
         }
-        // Guaranteed by HEADER_SIZE and the size_of::<R>() contract, but a
-        // misaligned cast would be undefined behaviour, so it is checked rather
-        // than assumed.
+        // Guaranteed by construction, but checked because a misaligned cast is UB.
         if bytes.as_ptr() as usize % align_of::<R>() != 0 || HEADER_SIZE % align_of::<R>() != 0 {
             return None;
         }
@@ -182,8 +133,7 @@ impl<R: CacheRecord> PodCache<R> {
         })
     }
 
-    /// Build a cache in memory rather than on disk, for when the cache
-    /// directory is not writable.
+    /// Load a cache from an in-memory image (used when the directory is read-only).
     fn from_image(image: Vec<u8>, source_path: &str) -> Option<Self> {
         Self::from_backing(Backing::own(image), source_path)
     }
@@ -213,17 +163,14 @@ impl<R: CacheRecord> PodCache<R> {
     #[inline]
     pub fn records(&self) -> &[R] {
         if self.count == 0 {
-            // `from_raw_parts` demands an aligned, non-null pointer even for a
-            // zero length, and an empty cache has no record table to point at.
+            // `from_raw_parts` needs an aligned non-null pointer even for length 0.
             return &[];
         }
         let bytes = self.backing.bytes();
         let start = HEADER_SIZE;
-        // SAFETY: `from_backing` established that `bytes` is aligned for R, that
-        // HEADER_SIZE is a multiple of R's alignment, and that the mapping holds
-        // at least `count * size_of::<R>()` bytes from HEADER_SIZE onwards. R is
-        // `CacheRecord`, whose contract is that every bit pattern is a valid
-        // value. The mapping outlives the returned slice, which borrows `self`.
+        // SAFETY: `from_backing` checked alignment and that `count * size_of::<R>()`
+        // bytes follow the header; `CacheRecord` types accept any bit pattern; the
+        // slice borrows `self`, which owns the backing.
         unsafe {
             std::slice::from_raw_parts(
                 bytes[start..].as_ptr() as *const R,
@@ -232,15 +179,13 @@ impl<R: CacheRecord> PodCache<R> {
         }
     }
 
-    /// The raw name blob. Slices of it are handed out by the typed wrappers.
+    /// The raw name blob.
     #[inline]
     pub fn names_blob(&self) -> &[u8] {
         &self.backing.bytes()[self.names_offset..self.names_offset + self.names_len]
     }
 
-    /// Resolve one name. Empty when the range is out of bounds or the bytes are
-    /// not UTF-8; both mean a cache this loader should not have accepted, and
-    /// neither is worth panicking a search over.
+    /// Resolve one name; empty if out of bounds or not UTF-8.
     #[inline]
     pub fn name_at(&self, offset: u64, len: u32) -> &str {
         let start = offset as usize;
@@ -253,8 +198,7 @@ impl<R: CacheRecord> PodCache<R> {
     }
 }
 
-/// Serialise a cache: `records` in the order readers will see them, and `names`
-/// as the blob the records' offsets point into.
+/// Serialise a cache: header, `records` in reader order, then the `names` blob.
 pub fn write_cache<R: CacheRecord, W: Write>(
     sink: &mut W, source_len: u64, source_mtime: u64,
     records: &[R], names: &[u8],
@@ -266,8 +210,7 @@ pub fn write_cache<R: CacheRecord, W: Write>(
     sink.write_all(&source_len.to_le_bytes())?;
     sink.write_all(&source_mtime.to_le_bytes())?;
     sink.write_all(&(names.len() as u64).to_le_bytes())?;
-    // SAFETY: R is `CacheRecord`, so it is `#[repr(C)]` and padding-free; its
-    // bytes are exactly its value and can be written as-is.
+    // SAFETY: `CacheRecord` types are `#[repr(C)]` and padding-free.
     let record_bytes = unsafe {
         std::slice::from_raw_parts(
             records.as_ptr() as *const u8,
@@ -279,18 +222,14 @@ pub fn write_cache<R: CacheRecord, W: Write>(
     sink.flush()
 }
 
-/// Write a cache next to its source and map it back, falling back to an
-/// in-memory image when the directory is not writable.
-///
-/// A read-only index directory is a normal deployment, so a failed cache write
-/// must not fail the load; it only costs the next process the parse again.
+/// Write a cache and map it back; falls back to an in-memory image if the
+/// directory is not writable (read-only index directories are normal).
 pub fn store_and_map<R: CacheRecord>(
     cache_path: &str, source_path: &str,
     records: &[R], names: &[u8],
 ) -> Option<PodCache<R>> {
     let (source_len, source_mtime) = source_identity(source_path)?;
-    // A 4 MB buffer instead of the default 8 KB: these files reach several GB,
-    // and the records go out in one `write_all` of many hundreds of MB.
+    // 4 MB buffer: caches reach several GB.
     let written = File::create(cache_path).and_then(|file| {
         let mut writer = BufWriter::with_capacity(4 << 20, file);
         write_cache(&mut writer, source_len, source_mtime, records, names)
@@ -300,8 +239,7 @@ pub fn store_and_map<R: CacheRecord>(
             if let Some(cache) = PodCache::map(cache_path, source_path) {
                 return Some(cache);
             }
-            // Written but not mappable: fall through to the in-memory image
-            // rather than leaving the caller with nothing.
+            // Written but not mappable: fall back to the in-memory image.
             crate::utils::log::print_log_msg(
                 crate::utils::log::WARN,
                 &format!("Wrote but could not map the cache {}; using memory", cache_path),
@@ -474,8 +412,7 @@ mod tests {
         assert_eq!(empty.name_at(0, 3), "");
     }
 
-    /// An unwritable directory must degrade to an in-memory image, not fail.
-    /// The image has to be 8-aligned for the record cast to be sound.
+    /// An unwritable path degrades to an 8-aligned in-memory image.
     #[test]
     fn an_unwritable_cache_path_falls_back_to_memory() {
         let (src, _) = temp_paths("readonly");

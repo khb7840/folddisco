@@ -1,4 +1,4 @@
-// QueryResult struct and its implementation
+// Query results (per structure and per match) and their TSV output.
 
 use std::fmt;
 use rayon::slice::ParallelSliceMut;
@@ -17,18 +17,8 @@ use super::sort::{MatchSortStrategy, StructureSortStrategy};
 /// Placeholder printed for a query residue that the target did not match.
 const UNMATCHED: &str = "_";
 
-/// Render one `matching_residues` field.
-///
-/// The legacy spelling `A21,A23` is kept whenever it can be read back
-/// unambiguously, which is the case exactly when every chain in the list is a
-/// single letter. A multi-character chain (`AA`) or a numeric one (`10`) would
-/// make `AA250` / `10250` impossible to split, so the whole field switches to
-/// `AA_250` / `10_250`. `force_separator` (the `--chain-sep` flag) asks for the
-/// separated spelling even when the legacy one would have worked, for callers
-/// that want one stable format across every structure they query.
-///
-/// The decision is taken once per field rather than per residue, so a reader
-/// never has to cope with a field that is half in each spelling.
+/// Render one `matching_residues` field: `A21,A23`, or `AA_250,10_250` for the whole
+/// field if any chain is ambiguous without `_` or `force_separator` (`--chain-sep`) is set.
 pub fn format_residue_matches(residues: &[ResidueMatch], force_separator: bool) -> String {
     let separator = force_separator
         || residue_list_needs_separator(residues.iter().filter_map(|r| r.as_ref()).map(|(c, _)| c));
@@ -40,18 +30,19 @@ pub fn format_residue_matches(residues: &[ResidueMatch], force_separator: bool) 
     }).collect::<Vec<String>>().join(",")
 }
 
+/// Per-structure result: index counts, then residue matches once retrieved.
 pub struct StructureResult<'a> {
     pub tid: &'a str,
     pub nid: usize,
     pub db_key: usize, // Database key for the structure
     pub total_match_count: usize,
     pub node_count: usize,
-    pub edge_count: usize,  // Add edge count field
+    pub edge_count: usize,
     pub idf: f32,
     pub nres: usize,
     pub plddt: f32,
-    pub matching_residues: Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>, // Match with connected components, with subgraph IDF
-    pub matching_residues_processed: Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>, // Match with c-alpha distances, with subgraph IDF
+    pub matching_residues: Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>, // (residues, RMSD, U, T, Ca coords, metrics, subgraph IDF) from connected components
+    pub matching_residues_processed: Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>, // Same, after the Ca-distance check
     pub max_matching_node_count: usize,
     pub min_rmsd_with_max_match: f32,
     /// Lowest superposition-free deformation among the best matches
@@ -81,6 +72,7 @@ impl<'a> StructureResult<'a> {
         }
     }
 
+    /// One `MatchResult` per match; `skip_ca_dist` uses matches before the Ca-distance check.
     pub fn into_match_query_results(&self, skip_ca_dist: bool, index_size: usize, query_length: usize) -> Vec<MatchResult<'_>> {
         match skip_ca_dist {
             false => self.matching_residues_processed.iter().enumerate().map(|(i, (residues, rmsd, u_matrix, t_matrix, matching_coordinates, metrics, subgraph_idf))| {
@@ -99,6 +91,7 @@ impl<'a> StructureResult<'a> {
     }
 }
 
+/// Flatten structure results into match results.
 pub fn convert_structure_query_result_to_match_query_results<'a>(
     results: &'a [(usize, StructureResult<'a>)], skip_ca_dist: bool, index_size: usize, query_length: usize
 ) -> Vec<(usize, MatchResult<'a>)> {
@@ -114,7 +107,6 @@ pub fn convert_structure_query_result_to_match_query_results<'a>(
 
 impl<'a> fmt::Display for StructureResult<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // Use the default formatter logic inline for Display
         let matching_residues_str = if self.matching_residues_processed.is_empty() {
             "NA".to_string()
         } else {
@@ -137,6 +129,7 @@ impl<'a> fmt::Debug for StructureResult<'a> {
     }
 }
 
+/// One residue-level match in a target structure.
 pub struct MatchResult<'a> {
     pub tid: &'a str,
     pub nid: usize,
@@ -159,7 +152,6 @@ impl<'a> MatchResult<'a> {
         index_size: usize, query_length: usize,
         metrics: StructureSimilarityMetrics,
     ) -> Self {
-        //
         let node_count = matching_residues.iter().map(|x| {
             match x {
                 Some(_) => 1,
@@ -185,21 +177,18 @@ impl<'a> MatchResult<'a> {
         }
     }
     
+    /// Legacy TSV line; `superpose` adds U, T and Ca coordinates.
     pub fn to_string(&self, superpose: bool) -> String {
         let matching_residues = format_residue_matches(&self.matching_residues, false);
         if superpose {
-            // print u_matrix by flattening it
             let u_string = self.u_matrix.iter().flat_map(
                 |x| x.iter()).map(|&val| format!("{:.4}", val)
             ).collect::<Vec<String>>().join(",");
-            // print t_matrix by flattening it
             let t_string = self.t_matrix.iter().map(|&val| format!("{:.4}", val)
             ).collect::<Vec<String>>().join(",");
-            // c-alpha coordinates. print x, y, z by concatenating with comma
             let matching_coordinates = self.matching_coordinates.iter().map(|x| {
                 format!("{:.4},{:.4},{:.4}", x.x, x.y, x.z)
             }).collect::<Vec<String>>().join(",");
-            // Return
             format!(
                 "{}\t{}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}",
                 self.tid, self.node_count, self.idf, self.rmsd, self.evalue,
@@ -232,10 +221,7 @@ impl<'a> fmt::Debug for MatchResult<'a> {
     }
 }
 
-
-
 // Column registries and defaults
-
 
 /// Build all available columns for StructureResult
 fn build_structure_result_columns<'a>(
@@ -370,11 +356,9 @@ pub const MATCH_RESULT_SUPERPOSE_COLUMNS: &[&str] = &[
 
 
 
-//Create a evalue fitting function to compute evalues based on IDF score
+/// E-value from IDF score `x`, index size `m` and query length `l`.
+/// Unvalidated fit; not shown in default output.
 pub fn evalue_fitting(x: f32, m: f32, l: f32) -> f64 {
-    // TODO: Finalize fitting.
-    // WARNING: This is not validated yet.
-    // x: score, m: index size, l: query residue length 
     let x_d = x as f64;
     let m_d = m as f64;
     let l_d = l as f64;
@@ -383,7 +367,7 @@ pub fn evalue_fitting(x: f32, m: f32, l: f32) -> f64 {
     let lam = 0.2894 * (l_d * -0.0762).exp() + 0.0316;
     
     let ref_db_size = 10546.0; 
-    let search_space_ref = ref_db_size;    // let search_space_ref = ref_db_size;
+    let search_space_ref = ref_db_size;
     
     let k_val = (lam * mu).exp() / search_space_ref;
     let real_search_space = m_d;
@@ -419,12 +403,12 @@ pub fn match_result_superpose_formatter<'a>(
     match_result_formatter(MATCH_RESULT_SUPERPOSE_COLUMNS, qid, query_residues, chain_sep)
 }
 
+/// Sort structure results and write them as TSV to `output_path` (stdout if empty).
 pub fn sort_and_print_structure_query_result(
     results: &mut Vec<(usize, StructureResult)>, 
     output_path: &str, qid: &str, query_residues: &str, columns: Option<&[&str]>, header: bool, verbose: bool,
     sort_strategy: StructureSortStrategy, chain_sep: bool,
 ) {
-    // Sort using the strategy
     if verbose {
         measure_time!(results.par_sort_by(|a, b| {
             sort_strategy.compare(&a.1, &b.1)
@@ -440,9 +424,7 @@ pub fn sort_and_print_structure_query_result(
         None => structure_result_default_formatter(qid, query_residues, chain_sep),
     };
 
-    // If output path is not empty, write to file
     if !output_path.is_empty() {
-        // Create file
         let file = std::fs::File::create(&output_path).expect(
             &log_msg(FAIL, &format!("Failed to create file: {}", &output_path))
         );
@@ -469,12 +451,12 @@ pub fn sort_and_print_structure_query_result(
     }
 }
 
+/// Sort match results, keep `top_n`, and write them as TSV to `output_path` (stdout if empty).
 pub fn sort_and_print_match_query_result(
     results: &mut Vec<(usize, MatchResult)>, top_n: usize, 
     output_path: &str, qid: &str, query_residues: &str, columns: Option<&[&str]>, superpose: bool, header: bool, verbose: bool,
     sort_strategy: MatchSortStrategy, chain_sep: bool,
 ) {
-    // Sort using the strategy
     if verbose {
         measure_time!(results.par_sort_by(|a, b| {
             sort_strategy.compare(&a.1, &b.1)
@@ -484,7 +466,6 @@ pub fn sort_and_print_match_query_result(
             sort_strategy.compare(&a.1, &b.1)
         });
     }
-    // Apply top N filter if top_n is not usize::MAX
     if top_n != usize::MAX {
         if verbose {
             print_log_msg(INFO, &format!("Printing top {} results", top_n));
@@ -503,9 +484,7 @@ pub fn sort_and_print_match_query_result(
         }
     };
 
-    // If output path is not empty, write to file
     if !output_path.is_empty() {
-        // Create file
         let file = std::fs::File::create(&output_path).expect(
             &log_msg(FAIL, &format!("Failed to create file: {}", &output_path))
         );
@@ -543,9 +522,7 @@ mod tests {
         Some((ChainId::from_str(chain), index))
     }
 
-    /// The default output has to stay byte-identical to what folddisco printed
-    /// before chain IDs were widened, so that existing parsers and the query
-    /// grammar keep working.
+    /// Single-letter chains keep the legacy, parser-compatible spelling.
     #[test]
     fn single_letter_chains_keep_the_legacy_spelling() {
         let residues = vec![
@@ -563,8 +540,7 @@ mod tests {
         assert_eq!(format_residue_matches(&residues, false), "A21,_,A25");
     }
 
-    /// A chain ID that would make `chain + index` unreadable switches the whole
-    /// field over, so one field is never half in each spelling.
+    /// One ambiguous chain switches the whole field to `_` separators.
     #[test]
     fn ambiguous_chains_switch_the_whole_field() {
         let multi_char = vec![residue("AA", 250), residue("AB", 232)];
@@ -573,8 +549,6 @@ mod tests {
         let numeric = vec![residue("10", 250), residue("10", 252)];
         assert_eq!(format_residue_matches(&numeric, false), "10_250,10_252");
 
-        // One ambiguous chain is enough: `A` is separated too, rather than
-        // leaving the reader to guess per element.
         let mixed = vec![residue("A", 21), residue("10", 250)];
         assert_eq!(format_residue_matches(&mixed, false), "A_21,10_250");
     }
@@ -585,8 +559,7 @@ mod tests {
         assert_eq!(format_residue_matches(&residues, true), "A_21,_,A_23");
     }
 
-    /// Every spelling this function emits has to be readable by the query
-    /// parser, in both directions.
+    /// Every emitted spelling parses back as a query.
     #[test]
     fn output_round_trips_through_the_query_parser() {
         use crate::controller::query::parse_query_string;
