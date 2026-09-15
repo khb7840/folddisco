@@ -126,6 +126,12 @@ impl From<&str> for ChainId {
     }
 }
 
+/// Shorthand for `ChainId::from_str`, handy at call sites that build chain IDs
+/// from string literals, e.g. in tests.
+pub fn chain(text: &str) -> ChainId {
+    ChainId::from_str(text)
+}
+
 /// Whether a whole residue list has to be printed with `_` separators.
 ///
 /// The decision is taken per list rather than per residue so that one field is

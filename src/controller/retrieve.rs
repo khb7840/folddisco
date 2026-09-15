@@ -882,7 +882,9 @@ mod tests {
         let path = String::from("data/serine_peptidases/4cha.pdb");
         let compact = read_structure_from_path(&path)
             .expect("Error reading structure from path").to_compact();
-        let indices: Vec<usize> = vec![(b'B', 57u64), (b'B', 102), (b'C', 195)].iter()
+        let indices: Vec<usize> = vec![
+            (ChainId::from_byte(b'B'), 57u64), (ChainId::from_byte(b'B'), 102), (ChainId::from_byte(b'C'), 195)
+        ].iter()
             .map(|(chain, res)| compact.get_index(chain, res).expect("residue not found"))
             .collect();
         let (rmsd, _u, _t, _ca, metrics) = rmsd_with_calpha_and_rottran(

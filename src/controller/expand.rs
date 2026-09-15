@@ -507,4 +507,38 @@ mod tests {
             });
         }
     }
+
+    /// Prints every expanded feature vector for one query, and times how long
+    /// generating them takes. Run with `cargo test print_expanded_feature_sets --
+    /// --nocapture` to see the output.
+    #[test]
+    fn print_expanded_feature_sets() {
+        let tolerance = ToleranceConfig::new(vec![0.5], vec![5.0], 2);
+        let mut expander = FeatureExpander::new(HashType::PDBTrRosetta, 16, 4, &tolerance);
+        let feature = pdbtr_feature();
+
+        println!("query feature: {:?}", feature);
+
+        let mut variants = Vec::new();
+        let start = std::time::Instant::now();
+        expander.for_each_neighbor(&feature, |variant| {
+            variants.push(variant.to_vec());
+            true
+        });
+        let elapsed = start.elapsed();
+
+        for (i, variant) in variants.iter().enumerate() {
+            println!("variant {:4}: {:?}", i, variant);
+        }
+        println!(
+            "generated {} additional feature sets in {:?} ({:?}/variant)",
+            variants.len(),
+            elapsed,
+            variants.len().checked_sub(0).filter(|&n| n > 0)
+                .map(|n| elapsed / n as u32)
+                .unwrap_or_default(),
+        );
+
+        assert!(!variants.is_empty());
+    }
 }

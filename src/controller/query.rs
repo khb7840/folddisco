@@ -450,12 +450,15 @@ pub fn parse_query_string_checked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::structure::chain_id::chain;
     
     fn zinc_finger_query_map(
         tolerance: &ToleranceConfig, substitutions: Vec<Option<Vec<u8>>>,
     ) -> HashMap<GeometricHash, ((usize, usize), bool, f32)> {
         let path = String::from("query/1G2F.pdb");
-        let query_residues = vec![(b'F', 207), (b'F', 212), (b'F', 225)];
+        let query_residues = vec![
+            (b'F'.into(), 207), (b'F'.into(), 212), (b'F'.into(), 225)
+        ];
         let (hash_collection, _indices, _observed_dist_map) = make_query_map(
             &path, &query_residues, HashType::PDBTrRosetta, 16, 4, &None,
             tolerance, &substitutions, 20.0, false, &None, 1000.0
@@ -476,9 +479,10 @@ mod tests {
         //     (b'A', 250), (b'A', 232), (b'A', 269)
         // ];
         let hash_type = HashType::PDBTrRosetta;
+        let tolerance = ToleranceConfig::default_query();
         let (hash_collection, _index_found, _observed_dist_map) = make_query_map(
             &path, &query_residues, hash_type, 16, 4, &None,
-            &vec![0.0], &vec![0.0], &amino_acid_substitutions, 20.0, false,
+            &tolerance, &amino_acid_substitutions, 20.0, false,
             &None, 1000.0
         );
         let exact = hash_collection.values().filter(|(_, is_primary, _)| *is_primary).count();
@@ -536,10 +540,6 @@ mod tests {
         assert_eq!(plain.len(), bogus.len());
     }
 
-    fn chain(text: &str) -> ChainId {
-        ChainId::from_str(text)
-    }
-
     #[test]
     fn test_parse_query_string() {
         let query_string = "A250,B232,C269";
@@ -573,13 +573,13 @@ mod tests {
     }
     #[test]
     fn range_end_uses_declared_chain_only() {
-        let parsed = parse_query_string_checked("F204-215,F222-232", b'A').unwrap();
+        let parsed = parse_query_string_checked("F204-215,F222-232", chain("A")).unwrap();
         assert_eq!(parsed.0.len(), 23);
-        assert_eq!(parsed.0[0], (b'F', 204));
-        assert_eq!(*parsed.0.last().unwrap(), (b'F', 232));
+        assert_eq!(parsed.0[0], (chain("F"), 204));
+        assert_eq!(*parsed.0.last().unwrap(), (chain("F"), 232));
 
         // End tokens are numeric only; a repeated chain prefix is rejected.
-        let err = parse_query_string_checked("F204-F215", b'A').unwrap_err();
+        let err = parse_query_string_checked("F204-F215", chain("A")).unwrap_err();
         assert!(err.contains("F215"), "{}", err);
     }
 
@@ -588,16 +588,16 @@ mod tests {
         // `A204-2150000000` asks for 2.15e9 residues, about 80 GB, and used to be killed
         // by the OOM reaper with no message. One mistyped digit is exactly the malformed
         // input this parser exists to name.
-        let err = parse_query_string_checked("A204-2150000000", b'A').unwrap_err();
+        let err = parse_query_string_checked("A204-2150000000", chain("A")).unwrap_err();
         assert!(err.contains("2150000000") || err.contains("spans"), "{}", err);
         assert!(err.contains("100000"), "the message should name the limit: {}", err);
         // A range that a real index could match is not rejected: the default --residue
         // indexing limit is 50,000, and the cap sits above it
-        let (residues, _) = parse_query_string_checked("A1-50000", b'A').unwrap();
+        let (residues, _) = parse_query_string_checked("A1-50000", chain("A")).unwrap();
         assert_eq!(residues.len(), 50_000);
         // Exactly at the cap is allowed, one past it is not
-        assert_eq!(parse_query_string_checked("A1-100000", b'A').unwrap().0.len(), 100_000);
-        assert!(parse_query_string_checked("A1-100001", b'A').is_err());
+        assert_eq!(parse_query_string_checked("A1-100000", chain("A")).unwrap().0.len(), 100_000);
+        assert!(parse_query_string_checked("A1-100001", chain("A")).is_err());
     }
 
     #[test]
@@ -606,32 +606,32 @@ mod tests {
         // denominator of the coverage ratios, so a perfect 7-residue match would read
         // 7/10. Deduplicating changes filtering on the default path, so the parser keeps
         // them and the caller warns; this test pins the arithmetic the warning is about.
-        let (residues, _) = parse_query_string_checked("A1-A5,A3-A7", b'A').unwrap();
+        let (residues, _) = parse_query_string_checked("A1-5,A3-7", chain("A")).unwrap();
         assert_eq!(residues.len(), 10);
         let mut distinct = residues.clone();
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(distinct.len(), 7);
         // The plain repeated-residue form behaves the same way
-        assert_eq!(parse_query_string_checked("B57,B57,B57", b'A').unwrap().0.len(), 3);
+        assert_eq!(parse_query_string_checked("B57,B57,B57", chain("A")).unwrap().0.len(), 3);
     }
 
     #[test]
     fn malformed_queries_are_diagnosed_not_panicked() {
         // End tokens are numeric only; chain-prefixed ones are malformed.
-        let err = parse_query_string_checked("F204-G215", b'A').unwrap_err();
+        let err = parse_query_string_checked("F204-G215", chain("A")).unwrap_err();
         assert!(err.contains("G215"), "{}", err);
         // Reversed ranges used to yield an empty residue list silently
-        let err = parse_query_string_checked("F215-F204", b'A').unwrap_err();
+        let err = parse_query_string_checked("F215-204", chain("A")).unwrap_err();
         assert!(err.contains("ends before it starts"), "{}", err);
         // Non-numeric tokens name themselves
-        let err = parse_query_string_checked("F20x", b'A').unwrap_err();
+        let err = parse_query_string_checked("F20x", chain("A")).unwrap_err();
         assert!(err.contains("F20x") && err.contains("'20x'"), "{}", err);
-        assert!(parse_query_string_checked("F204-", b'A').is_err());
+        assert!(parse_query_string_checked("F204-", chain("A")).is_err());
         // The documented good forms keep working
-        assert!(parse_query_string_checked("B57,B102,C195", b'A').is_ok());
-        assert!(parse_query_string_checked("1-10,11:X", b'A').is_ok());
-        assert!(parse_query_string_checked("164:H,195,221,247:ND", b'A').is_ok());
+        assert!(parse_query_string_checked("B57,B102,C195", chain("A")).is_ok());
+        assert!(parse_query_string_checked("1-10,11:X", chain("A")).is_ok());
+        assert!(parse_query_string_checked("164:H,195,221,247:ND", chain("A")).is_ok());
     }
 
     #[test]
@@ -717,23 +717,4 @@ mod tests {
         );
     }
     
-    #[test]
-    fn test_add_shifted_hashes() {
-        let mut hash_collection = HashMap::default();
-        let feature = vec![1.0, 2.0, 10.5, 15.2, 0.8, 1.2, 2.1, 0.0, 0.0]; // PDBTrRosetta feature
-        let hash_type = HashType::PDBTrRosetta;
-        let idf = 5.0; // Example IDF value
-        
-        // Test that shifted hashes are added for PDBTrRosetta
-        _add_shifted_hashes(&feature, &mut hash_collection, 0, 1, hash_type, idf);
-        
-        // Should have added multiple shifted hash variants
-        assert!(hash_collection.len() > 0);
-        println!("Added {} shifted hash variants", hash_collection.len());
-        
-        // Test that no hashes are added for other hash types
-        let mut hash_collection_other = HashMap::default();
-        _add_shifted_hashes(&feature, &mut hash_collection_other, 0, 1, HashType::TrRosetta, idf);
-        assert_eq!(hash_collection_other.len(), 0);
-    }
 }
