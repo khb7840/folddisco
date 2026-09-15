@@ -43,6 +43,10 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             recursive: args.contains(["-r", "--recursive"]),
             mmap_on_disk: args.contains("--mmap-on-disk"),
             id_type: args.value_from_str("--id").unwrap_or("relpath".into()),
+            expand_radius: args.value_from_str("--expand-radius").unwrap_or(0),
+            expand_distance: args.value_from_str("--expand-distance").unwrap_or(0.5),
+            expand_angle: args.value_from_str("--expand-angle").unwrap_or(5.0),
+            aa_subst: args.opt_value_from_str("--aa-subst")?,
             verbose: args.contains(["-v", "--verbose"]),
             help: args.contains(["-h", "--help"]),
         }),
@@ -52,13 +56,13 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             threads: args.value_from_str(["-t", "--threads"]).unwrap_or(1),
             index_path: args.opt_value_from_str(["-i", "--index"])?,
             skip_match: args.contains("--skip-match"),
-            // Filtering parameters
-            dist_threshold: args.value_from_str(["-d", "--distance"]).unwrap_or("0.5".into()),
-            angle_threshold: args.value_from_str(["-a", "--angle"]).unwrap_or("5".into()),
+            // Tolerances and expansion
+            dist_threshold: args.opt_value_from_str(["-d", "--distance"])?,
+            angle_threshold: args.opt_value_from_str(["-a", "--angle"])?,
             ca_dist_threshold: args.value_from_str("--ca-distance").unwrap_or(1.0),
-            // Non-rigid / sensitivity knobs
-            expand_radius: args.value_from_str("--expand-radius").unwrap_or(1),
+            expand_radius: args.opt_value_from_str("--expand-radius")?,
             nonrigid: args.contains("--nonrigid"),
+            aa_subst: args.opt_value_from_str("--aa-subst")?,
             total_match_count: args.value_from_str("--total-match").unwrap_or(0),
             covered_node_count: args.value_from_str("--covered-node").unwrap_or(0),
             covered_node_ratio: args.value_from_str("--covered-node-ratio").unwrap_or(0.0),
@@ -70,7 +74,6 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             num_res_cutoff: args.value_from_str("--num-residue").unwrap_or(50000),
             plddt_cutoff: args.value_from_str("--plddt").unwrap_or(0.0),
             rmsd_cutoff: args.value_from_str("--rmsd").unwrap_or(0.0),
-            // Structure similarity metric filters
             tm_score_cutoff: args.value_from_str("--tm-score").unwrap_or(0.0),
             gdt_ts_cutoff: args.value_from_str("--gdt-ts").unwrap_or(0.0),
             gdt_ha_cutoff: args.value_from_str("--gdt-ha").unwrap_or(0.0),
@@ -79,14 +82,12 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             drmsd_cutoff: args.value_from_str("--drmsd").unwrap_or(0.0),
             top_n: args.value_from_str("--top").unwrap_or(usize::MAX),
             web_mode: args.contains("--web"), // Web mode for output
-            // Query filtering
+            // Hash sampling and scoring
             sampling_count: args.opt_value_from_str("--sampling-count")?,
             sampling_ratio: args.opt_value_from_str("--sampling-ratio")?,
             freq_filter: args.opt_value_from_str("--freq-filter")?,
             length_penalty: args.opt_value_from_str("--length-penalty")?,
-            // Sorting strategy (comma-separated keys)
             sort_by: args.value_from_str("--sort-by").unwrap_or("".into()),
-            // Output format (comma-separated column names)
             format_output: args.opt_value_from_str("--format-output")?,
             // Output mode
             output_per_structure: args.contains("--per-structure"),
@@ -98,10 +99,7 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             serial_query: args.contains("--serial-index"),
             chain_separator: args.contains("--chain-sep"),
             output: args.value_from_str(["-o", "--output"]).unwrap_or("".into()),
-            // Novelty output mode
             novelty_mode: args.contains("--novelty-mode"),
-            novelty_coverage_threshold: args.value_from_str("--novelty-coverage").unwrap_or(0.8),
-            novelty_rmsd_threshold: args.value_from_str("--novelty-rmsd").unwrap_or(2.0),
             verbose: args.contains(["-v", "--verbose"]),
             help: args.contains(["-h", "--help"]),
         }),

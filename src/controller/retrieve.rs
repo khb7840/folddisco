@@ -1,5 +1,4 @@
-///! Module for retrieval functions
-///! Contains functions for retrieving target residues containing the motif
+//! Residue matching: find target residues that realise the query motif, then superpose.
 
 use std::collections::BTreeSet;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -25,6 +24,7 @@ use crate::structure::io::fcz::FoldcompDbReader;
 const PREFILTER_AA_SKIPPING_SIZE: usize = 200; // If query vector is larger than this, skip prefiltering amino acids
 const RESIDUE_RESCUE_COUNT_CUTOFF: usize = 2; 
 
+/// Distinct (aa1, aa2) codes decoded from `hash_vec` with default binning.
 pub fn hash_vec_to_aa_pairs(hash_vec: &Vec<GeometricHash>) -> HashSet<(u32, u32)> {
     let mut output: HashSet<(u32, u32)> = HashSet::default();
     let mut feature = vec![0.0; 9];
@@ -36,11 +36,10 @@ pub fn hash_vec_to_aa_pairs(hash_vec: &Vec<GeometricHash>) -> HashSet<(u32, u32)
 }
 
 
+/// Format residue pairs as `A12-B34`, comma separated.
 pub fn res_vec_as_string(res_vec: &Vec<((u8, u8), (u64, u64))>) -> String {
     let mut output = String::new();
-    // Merge chain and residue number. Commas separate each pair
     for (k, (i, j)) in res_vec.iter().enumerate() {
-        // If last element, don't add comma
         if k == res_vec.len() - 1 {
             output.push_str(&format!("{}{}-{}{}", i.0 as char, j.0, i.1 as char, j.1));
         } else {
@@ -50,6 +49,9 @@ pub fn res_vec_as_string(res_vec: &Vec<((u8, u8), (u64, u64))>) -> String {
     output
 }
 
+/// Target residue pairs whose hash is in `hash_set`, and (query residue, target pair)
+/// candidates whose amino acids and Ca distance agree with `query_aa_dist_map`.
+/// Only `prefilter` pairs are scanned when it is non-empty.
 pub fn retrieve_with_prefilter(
     compact: &CompactStructure,
     hash_set: &HashSet<GeometricHash>,
@@ -79,18 +81,17 @@ pub fn retrieve_with_prefilter(
         .collect();
 
 
-    // 
     let mut temp_candidates: Vec<(usize, (usize, usize))> = Vec::with_capacity(16);
     let mut feature = vec![0.0; 9];
 
     let mut process_pair = |i: usize, j: usize| {
-        // 1. Calculate Euclidean Distance
+        // 1. Ca distance within cutoff
         let curr_dist = match compact.get_ca_distance(i, j) {
             Some(d) if d <= dist_cutoff => d,
             _ => return,
         };
 
-        // 2. Check Amino Acid pair constraints using query_aa_dist_map directly
+        // 2. Amino acid pair present in the query, at a similar Ca distance
         let aa1 = residue_types[i];
         let aa2 = residue_types[j];
         
@@ -102,7 +103,6 @@ pub fn retrieve_with_prefilter(
         let mut is_valid_dist_for_query = false;
         temp_candidates.clear();
         
-        // Check distances and buffer candidates
         for (dist, qi) in dists {
             if (curr_dist - dist).abs() < ca_distance_cutoff {
                 temp_candidates.push((*qi, (i, j)));
@@ -110,18 +110,17 @@ pub fn retrieve_with_prefilter(
             }
         }
 
-        // As calculate feature is more expensive than distance check, if no valid distance found, skip
+        // Features are costlier than the distance check
         if !is_valid_dist_for_query {
             return;
         }
 
-        // 3. Calculate features for valid ij pairs
+        // 3. Features and hashes
         let is_feature = get_single_feature(i, j, compact, hash_type, dist_cutoff, &mut feature);
 
         if is_feature {
             candidate_pairs.extend_from_slice(&temp_candidates);
             
-            // 4. Hashing Logic
             if let Some(multiple_bins) = multiple_bin {
                 for (nb_d, nb_a) in multiple_bins.iter() {
                     let curr_hash =
@@ -143,7 +142,6 @@ pub fn retrieve_with_prefilter(
         }
     };
 
-    // If amino acid prefilter is given, only process those pairs
     if prefilter.is_empty() {
         let comb = CombinationIterator::new(compact.num_residues);
         comb.for_each(|(i, j)| process_pair(i, j));
@@ -157,13 +155,16 @@ pub fn retrieve_with_prefilter(
 }
 
 
+/// (chain, residue serial) of residue index `i`.
 pub fn get_chain_and_res_ind(compact: &CompactStructure, i: usize) -> (ChainId, u64) {
     (compact.chain_per_residue[i], compact.residue_serial[i])
 }
+/// `A21`, or `AA_21` when the chain needs a separator.
 pub fn res_index_to_char(chain: &ChainId, res_ind: u64) -> String {
     format_chain_residue(chain, res_ind, chain.needs_separator())
 }
 
+/// `retrieval_wrapper` for a target read from a Foldcomp database by `db_key`.
 #[cfg(feature = "foldcomp")]
 pub fn retrieval_wrapper_for_foldcompdb(
     db_key: usize, node_count: usize, query_vector: &Vec<GeometricHash>,
@@ -181,8 +182,6 @@ pub fn retrieval_wrapper_for_foldcompdb(
     let compact = compact.to_compact();
 
     // let mut indices_found: Vec<Vec<(usize, usize)>> = Vec::new();
-    // Iterate over query vector and retrieve indices
-    // Parallel
     let query_set: HashSet<GeometricHash> = HashSet::from_iter(query_vector.clone());
     let query_symmetry_map = get_hash_symmetry_map(&query_set);
 
@@ -207,15 +206,12 @@ pub fn retrieval_wrapper_for_foldcompdb(
         }
     );
     
-    // Make a graph and find connected components with the same node count
-    // NOTE: Naive implementation to find matching components. Need to be improved to handle partial matches
+    // Connected components of the hit graph; naive, partial matches are handled poorly
     let graph = create_index_graph(&indices_found);
     let connected = connected_components_with_given_node_count(&graph, node_count);
     
-    // Parallel
     let output: Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32,
                      Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)> = connected.par_iter().map(|component| {
-        // Filter graph to get subgraph with component
         let subgraph: Graph<usize, GeometricHash> = graph.filter_map(
             |node, _| {
                 if component.contains(&graph[node]) {
@@ -228,7 +224,6 @@ pub fn retrieval_wrapper_for_foldcompdb(
         );
         let node_count = subgraph.node_count();
         
-        // Calculate IDF for this subgraph
         let subgraph_idf = calculate_subgraph_idf(&subgraph, query_map);
         
         // Find mapping between query residues and retrieved residues
@@ -236,7 +231,6 @@ pub fn retrieval_wrapper_for_foldcompdb(
             &subgraph, query_map, node_count, &query_symmetry_map,
         );
 
-        // Pre-build HashSets for O(1) lookups instead of O(n) vector operations
         let retrieved_indices_set: HashSet<usize> = retrieved_indices.iter().cloned().collect();
         let query_to_retrieved: HashMap<usize, usize> = query_indices.iter()
             .zip(retrieved_indices.iter())
@@ -266,8 +260,7 @@ pub fn retrieval_wrapper_for_foldcompdb(
                     retrieved_indices_scanned.push(retrieved_index);
                     retrieved_indices_scanned_set.insert(retrieved_index);
                 } else {
-                    // Find and replace previous entry - more complex but still O(n) in worst case
-                    // This case should be rare, so we keep it simple
+                    // Rare: replace the previous entry
                     if let Some(prev_pos) = retrieved_indices_scanned.iter().position(|&x| x == retrieved_index) {
                         res_vec[prev_pos] = None;
                         res_vec.push(Some((chain, res_ind)));
@@ -288,7 +281,6 @@ pub fn retrieval_wrapper_for_foldcompdb(
                     pairs_vec.sort_by_key(|&(j, _)| j);
                     let mut max_count = 0usize;
                     for (j, k) in &pairs_vec {
-                        // Use HashSet for O(1) lookup instead of O(n) vector contains
                         if retrieved_indices_set.contains(k) {
                             *count_map.entry(*j).or_insert(0) += 1;
                             // Track maximum count for this residue
@@ -334,12 +326,10 @@ pub fn retrieval_wrapper_for_foldcompdb(
         (res_vec_from_hash, rmsd_from_hash, u_mat_from_hash, t_mat_from_hash, ca_coords_from_hash, metrics_from_hash, subgraph_idf,
          res_vec, rmsd, u_mat, t_mat, ca_coords, metrics, subgraph_idf)
     }).collect();
-    // Split
     let (result_from_hash, result): (Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
         Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>) = output.into_iter().map(|(a, b, c, d, e, f, g, h, i, j, k, l, m, n)| {
         ((a, b, c, d, e, f, g), (h, i, j, k, l, m, n))
     }).unzip();
-    // In result, find the maximum matching node count and the best RMSD / dRMSD there
     let (max_matching_node_count, min_rmsd_with_max_match, min_drmsd_with_max_match) =
         summarize_best_match(&result);
     (result_from_hash, result, max_matching_node_count, min_rmsd_with_max_match, min_drmsd_with_max_match)
@@ -348,11 +338,10 @@ pub fn retrieval_wrapper_for_foldcompdb(
 
 
 
-// Returns a vector of 
-// 1) chain+residue index as String
-// 2) RMSD value as f32
-// TODO: Add U, T matrix and C-alpha coordinates
-// 3) U, T matrix and C-alpha coordinates
+/// Match the query motif in the structure at `path`.
+///
+/// Returns matches from hashes alone and after residue rescue, each as (residues, RMSD,
+/// U, T, target Ca, metrics, IDF), plus max matched node count and its best RMSD/dRMSD.
 pub fn retrieval_wrapper(
     path: &str, node_count: usize, query_vector: &Vec<GeometricHash>,
     _hash_type: HashType, _nbin_dist: usize, _nbin_angle: usize, 
@@ -364,12 +353,9 @@ pub fn retrieval_wrapper(
 ) -> (Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
       Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>,
       usize, f32, f32) {
-    // Load structure to retrieve motif
     let compact = read_structure_from_path(&path).expect("Error reading structure from path");
     let compact = compact.to_compact();
     // let mut indices_found: Vec<Vec<(usize, usize)>> = Vec::new();
-    // Iterate over query vector and retrieve indices
-    // Parallel
     let query_set: HashSet<GeometricHash> = HashSet::from_iter(query_vector.clone());
     let query_symmetry_map = get_hash_symmetry_map(&query_set);
     
@@ -395,16 +381,13 @@ pub fn retrieval_wrapper(
         }
     );
     
-    // Make a graph and find connected components with the same node count
-    // NOTE: Naive implementation to find matching components. Need to be improved to handle partial matches
+    // Connected components of the hit graph; naive, partial matches are handled poorly
     let graph = create_index_graph(&indices_found);
     let connected = connected_components_with_given_node_count(&graph, node_count);
 
-    // Parallel
 // Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>)>
     let output: Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32,
                      Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)> = connected.par_iter().map(|component| {
-        // Filter graph to get subgraph with component
         let subgraph: Graph<usize, GeometricHash> = graph.filter_map(
             |node, _| {
                 if component.contains(&graph[node]) {
@@ -418,7 +401,6 @@ pub fn retrieval_wrapper(
         
         let node_count = subgraph.node_count();
         
-        // Calculate IDF for this subgraph
         let subgraph_idf = calculate_subgraph_idf(&subgraph, query_map);
         
         // Find mapping between query residues and retrieved residues
@@ -426,7 +408,6 @@ pub fn retrieval_wrapper(
             &subgraph, query_map, node_count, &query_symmetry_map,
         );
 
-        // Pre-build HashSets for O(1) lookups instead of O(n) vector operations
         let retrieved_indices_set: HashSet<usize> = retrieved_indices.iter().cloned().collect();
         let query_to_retrieved: HashMap<usize, usize> = query_indices.iter()
             .zip(retrieved_indices.iter())
@@ -456,8 +437,7 @@ pub fn retrieval_wrapper(
                     retrieved_indices_scanned.push(retrieved_index);
                     retrieved_indices_scanned_set.insert(retrieved_index);
                 } else {
-                    // Find and replace previous entry - more complex but still O(n) in worst case
-                    // This case should be rare, so we keep it simple
+                    // Rare: replace the previous entry
                     if let Some(prev_pos) = retrieved_indices_scanned.iter().position(|&x| x == retrieved_index) {
                         res_vec[prev_pos] = None;
                         res_vec.push(Some((chain, res_ind)));
@@ -475,7 +455,6 @@ pub fn retrieval_wrapper(
                     let pairs = candidate_pair_map.get(&i).unwrap();
                     let mut max_count = 0usize;
                     for (j, k) in pairs {
-                        // Use HashSet for O(1) lookup instead of O(n) vector contains
                         if retrieved_indices_set.contains(k) {
                             *count_map.entry(*j).or_insert(0) += 1;
                             // Track maximum count for this residue
@@ -523,20 +502,16 @@ pub fn retrieval_wrapper(
         (res_vec_from_hash, rmsd_from_hash, u_mat_from_hash, t_mat_from_hash, ca_coords_from_hash, metrics_from_hash, subgraph_idf,
          res_vec, rmsd, u_mat, t_mat, ca_coords, metrics, subgraph_idf)
         }).collect();
-    // Split 
     let (result_from_hash, result): (Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>, 
         Vec<(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)>) = output.into_iter().map(|(a, b, c, d, e, f, g, h, i, j, k, l, m, n)| {
         ((a, b, c, d, e, f, g), (h, i, j, k, l, m, n))
     }).unzip();
-    // In result, find the maximum matching node count and the best RMSD / dRMSD there
     let (max_matching_node_count, min_rmsd_with_max_match, min_drmsd_with_max_match) =
         summarize_best_match(&result);
     (result_from_hash, result, max_matching_node_count, min_rmsd_with_max_match, min_drmsd_with_max_match)
 }
 
-/// Best match of a structure: the largest number of matched query residues, plus
-/// the lowest rigid RMSD and lowest superposition-free dRMSD among the matches that
-/// reach that count.
+/// Largest matched residue count, with the lowest RMSD and dRMSD at that count.
 fn summarize_best_match(
     result: &[(Vec<ResidueMatch>, f32, [[f32; 3]; 3], [f32; 3], Vec<Coordinate>, StructureSimilarityMetrics, f32)]
 ) -> (usize, f32, f32) {
@@ -544,7 +519,6 @@ fn summarize_best_match(
     let mut min_rmsd = 0.0f32;
     let mut min_drmsd = 0.0f32;
     for (res_vec, rmsd, _, _, _, metrics, _) in result.iter() {
-        // Count number of Some in res_vec
         let count = res_vec.iter().filter(|&x| x.is_some()).count();
         if count > max_matching_node_count {
             max_matching_node_count = count;
@@ -562,6 +536,7 @@ fn summarize_best_match(
     (max_matching_node_count, min_rmsd, min_drmsd)
 }
 
+/// Whether each query hash is symmetric under swapping its residue pair.
 fn get_hash_symmetry_map(query_set: &HashSet<GeometricHash>) -> HashMap<GeometricHash, bool> {
     let mut query_symmetry_map = HashMap::default();
     query_set.iter().for_each(|hash| {
@@ -571,12 +546,13 @@ fn get_hash_symmetry_map(query_set: &HashSet<GeometricHash>) -> HashMap<Geometri
     query_symmetry_map
 }
 
+/// Target residue indices whose amino acid appears first / second in any query hash.
+/// Both empty (no prefilter) above `PREFILTER_AA_SKIPPING_SIZE` hashes.
 pub fn prefilter_amino_acid(query_set: &HashSet<GeometricHash>, _hash_type: HashType, compact: &CompactStructure) -> (BTreeSet<usize>, BTreeSet<usize>) {
     let mut observed_aa1: HashSet<u8> = HashSet::default();
     let mut observed_aa2: HashSet<u8> = HashSet::default();
     let mut index_vec1 = BTreeSet::new();
     let mut index_vec2 = BTreeSet::new();
-    // If query_set is too large, just return empty sets
     if query_set.len() > PREFILTER_AA_SKIPPING_SIZE {
         return (index_vec1, index_vec2);
     }
@@ -612,13 +588,14 @@ pub fn prefilter_amino_acid(query_set: &HashSet<GeometricHash>, _hash_type: Hash
     (index_vec1, index_vec2)
 }
 
+/// Greedily pair query and target residues by how many hit edges support each pairing,
+/// stopping at `node_count` pairs.
 pub fn map_query_and_retrieved_residues(
     retrieved: &Graph<usize, GeometricHash>, 
     query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
     node_count: usize,
     query_symmetry_map: &HashMap<GeometricHash, bool>,
 ) -> (Vec<usize>, Vec<usize>) {
-    // Find max indices
     let max_query_idx = query_map.values().map(|((i, j), _, _)| (*i).max(*j)).max().unwrap_or(0);
     let max_retrieved_idx = retrieved.node_weights().max().copied().unwrap_or(0);
     
@@ -631,7 +608,6 @@ pub fn map_query_and_retrieved_residues(
     // Track best match per query: (count, retrieved_idx)
     let mut best_match: Vec<(u8, usize)> = vec![(0, 0); q_size];
     
-    // Helper macro for flat array access
     macro_rules! count_at {
         ($q:expr, $r:expr) => {
             counts[$q * r_size + $r]
@@ -712,7 +688,7 @@ pub fn map_query_and_retrieved_residues(
     (query_indices, retrieved_indices)
 }
 
-/// Calculate total IDF score for a subgraph by summing IDFs of all edges
+/// Sum of query IDFs over the subgraph's edges.
 pub fn calculate_subgraph_idf(
     subgraph: &Graph<usize, GeometricHash>,
     query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
@@ -729,6 +705,7 @@ pub fn calculate_subgraph_idf(
     total_idf
 }
 
+/// RMSD of matched Ca+Cb coordinates; `lms` uses LMS for more than 3 residues.
 pub fn rmsd_for_matched(
     compact1: &CompactStructure, compact2: &CompactStructure, 
     index1: &Vec<usize>, index2: &Vec<usize>, lms: bool
@@ -764,6 +741,7 @@ pub fn rmsd_for_matched(
     }
 }
 
+/// Like `rmsd_for_matched`, also returning rotation, translation, target Ca and metrics.
 pub fn rmsd_with_calpha_and_rottran(
     compact1: &CompactStructure, compact2: &CompactStructure, 
     index1: &Vec<usize>, index2: &Vec<usize>, lms: bool
@@ -781,10 +759,7 @@ pub fn rmsd_with_calpha_and_rottran(
         |&i| compact2.ca_vector.get_coord(i).unwrap()
     ).collect();
 
-    // Superposition-free deformation of the match, read straight off the original
-    // coordinates so a hinge motion between two rigid halves shows up as a low dRMSD
-    // even where the superposition RMSD is large. Indexed through closures to avoid
-    // copying both coordinate sets into another layout.
+    // Superposition-free deformation from the original coordinates (hinges stay low)
     let deformation = || deformation_stats_indexed(
         coord_vec1.len().min(coord_vec2.len()),
         |i, j| coord_vec1[i].calc_distance(&coord_vec1[j]),
@@ -877,9 +852,12 @@ mod tests {
 
     /// Max matched node count of the 4CHA catalytic triad query against `target`.
     fn triad_match_nodes(query_string: &str, target: &str) -> usize {
+        use crate::controller::query::resolve_query_substitutions;
+        use crate::controller::substitution::SubstitutionScheme;
         let path = String::from("data/serine_peptidases/4cha.pdb");
         let query = read_structure_from_path(&path).unwrap().to_compact();
         let (residues, subs) = parse_query_string(query_string, ChainId::from_byte(b'A'));
+        let subs = resolve_query_substitutions(&query, &residues, &subs, SubstitutionScheme::Blosum62, false, false);
         let (query_map, query_indices, aa_dist_map) = make_query_map(
             &path, &residues, HashType::PDBTrRosetta, 16, 4, &None,
             &ToleranceConfig::default_query(), &subs, 20.0, false, &None, 1000.0,
@@ -909,13 +887,13 @@ mod tests {
         assert_eq!(triad_match_nodes("B57,B102,C195", "data/serine_peptidases/4cha.pdb"), 3);
         assert!(triad_match_nodes("B57,B102,C195", &target) < 3);
         assert_eq!(triad_match_nodes("B57,B102:N,C195", &target), 3, "explicit substitution");
+        assert_eq!(triad_match_nodes("B57,B102:*,C195", &target), 3, "BLOSUM62 scheme (D -> N, E)");
         std::fs::remove_file(&target).ok();
     }
 
     #[test]
     fn self_match_has_zero_deformation() {
-        // Matching a motif against its own structure: identical geometry, so both
-        // the superposition RMSD and the superposition-free dRMSD must vanish.
+        // Self match: RMSD and dRMSD vanish
         let path = String::from("data/serine_peptidases/4cha.pdb");
         let compact = read_structure_from_path(&path)
             .expect("Error reading structure from path").to_compact();

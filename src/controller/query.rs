@@ -10,28 +10,23 @@ use crate::structure::chain_id::{split_chain_and_rest, ChainId};
 use crate::utils::convert::{is_aa_group_char, map_one_letter_to_u8_vec};
 use crate::utils::combination::CombinationIterator;
 use crate::utils::log::{log_msg, print_log_msg, FAIL, WARN};
-use super::expand::{FeatureExpander, ToleranceConfig};
+use crate::utils::convert::map_aa_to_u8;
+use super::expand::{for_each_expanded_feature, FeatureExpander, ToleranceConfig};
 use super::feature::get_single_feature;
 use super::io::read_compact_structure;
+use super::substitution::{index_matching_substitution, resolve_substitution, substitution_variants, SubstitutionScheme, SCHEME_MARKER};
 use crate::structure::core::CompactStructure;
 
-/// Ceiling on the hashes generated for a single residue pair.
-///
-/// Amino acid substitutions multiply with the geometric neighbourhood, so a
-/// wildcard on both residues of a pair (`400` alternatives) together with a wide
-/// expansion radius could generate tens of thousands of hashes for one pair. The
-/// neighbourhood is enumerated nearest-first, so cutting it off here drops the
-/// least useful variants.
-const MAX_HASHES_PER_PAIR: usize = 4096;
+/// Ceiling on hashes generated for one residue pair. Substitutions multiply with the
+/// geometric neighbourhood; enumeration is nearest-first, so the cut drops the farthest.
+pub const MAX_HASHES_PER_PAIR: usize = 4096;
 
-/// Calculate IDF (Inverse Document Frequency) for a given GeometricHash
-/// Uses index to determine hash count
+/// IDF of `hash` in `index`: log2(total structures / structures with the hash); 0 if absent.
 pub fn calculate_idf_for_hash(
     hash: &GeometricHash,
     index: &Option<&FolddiscoIndex>,
     total_structures: f32,
 ) -> f32 {
-    // Use index to get hash counts
     if let Some(ref idx) = index {
         let entries = idx.get_entries(hash.as_u32());
         let hash_count = entries.len();
@@ -39,7 +34,6 @@ pub fn calculate_idf_for_hash(
             return (total_structures / (hash_count as f32)).log2();
         }
     }
-    // Default IDF if hash not found in either index
     0.0
 }
 
@@ -60,18 +54,8 @@ pub fn parse_threshold_string(threshold_string: Option<String>) -> Vec<f32> {
     thresholds
 }
 
-// Doesn't support duplicate hash
-// If hash is already in the hash_collection, skip.
-//
-// `is_primary` marks the hash of the observed geometry, as opposed to one the tolerance
-// expansion added. It has **no production consumer**: the rare-hash IDF filter that read
-// it was removed once it measured worse than no filter at all, and the only remaining
-// reader is `test_make_query_map`, which uses it to assert that the expansion produces
-// at most one observed hash per ordered residue pair. It is kept rather than deleted
-// because the tuple type `((usize, usize), bool, f32)` is spelled in ten places across
-// three files with about seventeen edit sites, and the `f32` beside it *is* load-bearing
-// (`retrieve::calculate_subgraph_idf` reads it), so removing one bool costs a wide
-// refactor for six lines. Written down here so the next maintainer does not redo the grep.
+/// Insert `feature`'s hash(es) unless already present; the first insertion wins.
+/// `is_primary` marks observed geometry; only tests read it (the `f32` IDF is used by retrieval).
 fn insert_binned_hash(
     hash_collection: &mut HashMap<GeometricHash, ((usize, usize), bool, f32)>,
     feature: &Vec<f32>, indices: (usize, usize), hash_type: HashType,
@@ -105,52 +89,56 @@ fn insert_binned_hash(
     }
 }
 
-/// Amino acid pairs to query for one residue pair, besides the observed one.
-///
-/// The alternatives of both sides are crossed with each other and with the observed
-/// residue, so `A164:H,A200:ND` reaches (His, Asp), (His, Asn), (His, observed),
-/// (observed, Asp) and (observed, Asn). Unknown one-letter codes map to 255, which
-/// is not encodable, and are dropped.
-fn substitution_variants(
-    i_idx: usize, j_idx: usize, observed: (f32, f32),
-    substitution_map: &HashMap<usize, Vec<u8>>,
-) -> Vec<(f32, f32)> {
-    let sub_i = substitution_map.get(&i_idx);
-    let sub_j = substitution_map.get(&j_idx);
-    if sub_i.is_none() && sub_j.is_none() {
-        return Vec::new();
-    }
-    let alternatives = |observed_aa: f32, subs: Option<&Vec<u8>>| -> Vec<f32> {
-        let mut out = vec![observed_aa];
-        if let Some(subs) = subs {
-            for aa in subs {
-                // 255 marks an unknown one-letter code and is not encodable
-                if *aa as usize >= 20 {
-                    continue;
-                }
-                let aa = *aa as f32;
-                if !out.contains(&aa) {
-                    out.push(aa);
-                }
-            }
-        }
-        out
-    };
-    let alt_i = alternatives(observed.0, sub_i);
-    let alt_j = alternatives(observed.1, sub_j);
-
-    let mut variants = Vec::with_capacity(alt_i.len() * alt_j.len());
-    for aa_i in &alt_i {
-        for aa_j in &alt_j {
-            if *aa_i == observed.0 && *aa_j == observed.1 {
-                continue; // the observed pair is inserted separately
-            }
-            variants.push((*aa_i, *aa_j));
-        }
-    }
-    variants
+/// Resolve `:*` markers, and with `apply_to_all` every residue lacking an explicit
+/// `:ALT`, into `scheme`'s alternatives for the residue observed in `compact`.
+/// Residues missing from the structure are left unchanged.
+pub fn resolve_query_substitutions(
+    compact: &CompactStructure, query_residues: &[(ChainId, u64)],
+    substitutions: &[Option<Vec<u8>>], scheme: SubstitutionScheme, apply_to_all: bool,
+    serial_query: bool,
+) -> Vec<Option<Vec<u8>>> {
+    map_observed_residues(compact, query_residues, substitutions, serial_query, |substitution, observed| {
+        resolve_substitution(substitution, observed, scheme, apply_to_all)
+    })
 }
 
+/// Substitutions residue matching needs on an index expanded with `scheme`; see
+/// `index_matching_substitution`. `substitutions` should already be resolved.
+pub fn index_matching_substitutions(
+    compact: &CompactStructure, query_residues: &[(ChainId, u64)],
+    substitutions: &[Option<Vec<u8>>], scheme: SubstitutionScheme, serial_query: bool,
+) -> Vec<Option<Vec<u8>>> {
+    map_observed_residues(compact, query_residues, substitutions, serial_query, |substitution, observed| {
+        index_matching_substitution(substitution, observed, scheme)
+    })
+}
+
+/// Apply `f` to each residue's substitution list and observed amino acid code.
+/// Residues missing from the structure keep their list unchanged.
+fn map_observed_residues<F>(
+    compact: &CompactStructure, query_residues: &[(ChainId, u64)],
+    substitutions: &[Option<Vec<u8>>], serial_query: bool, f: F,
+) -> Vec<Option<Vec<u8>>>
+where
+    F: Fn(&Option<Vec<u8>>, u8) -> Option<Vec<u8>>,
+{
+    query_residues.iter().zip(substitutions.iter()).map(|((chain, ri), substitution)| {
+        let index = if serial_query {
+            Some(*ri as usize).filter(|&i| i < compact.num_residues)
+        } else {
+            compact.get_index(chain, ri)
+        };
+        match index {
+            Some(index) => f(substitution, map_aa_to_u8(compact.get_res_name(index))),
+            None => substitution.clone(),
+        }
+    }).collect()
+}
+
+/// Build the query hash map for `query_residues` of the structure at `path`.
+///
+/// Returns (hash -> (residue index pair, is observed, IDF), residue indices, and
+/// amino acid pair -> [(Ca distance, first residue index)]), the last used by matching.
 pub fn make_query_map(
     path: &String, query_residues: &Vec<(ChainId, u64)>, hash_type: HashType, 
     nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
@@ -199,7 +187,6 @@ fn make_query_map_from_structure(
     for (i, (chain, ri)) in query_residues.iter().enumerate() {
         let index = if serial_query { Some(*ri as usize) } else { compact.get_index(&chain, &ri) };
         if let Some(index) = index {
-            // convert u8 array to string
             let _residue: String = compact.get_res_name(index).iter().map(|&c| c as char).collect();
             indices.push(index);
             if let Some(substitution) = amino_acid_substitutions[i].clone() {
@@ -210,7 +197,6 @@ fn make_query_map_from_structure(
     // Amino acid positions inside the feature vector, if this hash type encodes them
     let aa_indices = hash_type.amino_acid_index().map(|idx| (idx[0], idx[1]));
     let mut expander = FeatureExpander::new(hash_type, nbin_dist, nbin_angle, tolerance);
-    // Make combinations
     let comb_iter = CombinationIterator::new(indices.len());
     let mut feature = vec![0.0; 9];
     let mut variant = vec![0.0; 9];
@@ -223,101 +209,55 @@ fn make_query_map_from_structure(
         );
 
         if is_feature {
-            // Gather observed distance & aa pairs.
-            let aa_dist_info = compact.get_list_amino_acids_and_distances(indices[i], indices[j]);
-            if let Some(aa_dist_info) = aa_dist_info {
-                // Check if the pair is already in the map
-                let aa_pair = (aa_dist_info.0, aa_dist_info.1);
-                if observed_distance_map.contains_key(&aa_pair) {
-                    observed_distance_map.get_mut(&aa_pair).unwrap().push((aa_dist_info.2, indices[i]));
-                } else {
-                    observed_distance_map.insert(aa_pair, vec![(aa_dist_info.2, indices[i])]);
-                }
-            }
-
-            // Insert observed hash - calculate IDF first
             let observed_hash = if nbin_dist == 0 || nbin_angle == 0 {
                 GeometricHash::perfect_hash_default(&feature, hash_type)
             } else {
                 GeometricHash::perfect_hash(&feature, hash_type, nbin_dist, nbin_angle)
             };
             let idf = calculate_idf_for_hash(&observed_hash, index, total_structures);
-
+            let pair = (indices[i], indices[j]);
             insert_binned_hash(
-                &mut hash_collection, &feature, (indices[i], indices[j]),
+                &mut hash_collection, &feature, pair,
                 hash_type, nbin_dist, nbin_angle, multiple_bin, true, idf
             );
 
-            // Amino acid alternatives requested with `<residue>:<ALT>`. They are
-            // applied to the observed geometry *and* to every geometric neighbour
-            // below: a substitution and a distance tolerance have to compose,
-            // otherwise `164:H` only matches a His sitting in exactly the bins the
-            // original residue happened to fall into.
+            // Substitutions apply to every geometric neighbour too, so `164:H` is not
+            // limited to the bins the observed residue fell into.
             let aa_variants = match aa_indices {
                 Some((a0, a1)) => substitution_variants(
-                    indices[i], indices[j], (feature[a0], feature[a1]), &substitution_map
+                    (feature[a0], feature[a1]),
+                    substitution_map.get(&indices[i]).map(|v| v.as_slice()),
+                    substitution_map.get(&indices[j]).map(|v| v.as_slice()),
                 ),
                 None => Vec::new(),
             };
-            // Matching accepts a target residue pair only if its amino acids are listed
+
+            // Matching accepts a target residue pair only if its amino acids appear
             // here, so substituted pairs are registered alongside the observed one.
-            if let Some((_, _, ca_dist)) = aa_dist_info {
+            if let Some((aa_i, aa_j, ca_dist)) = compact.get_list_amino_acids_and_distances(pair.0, pair.1) {
+                observed_distance_map.entry((aa_i, aa_j)).or_default().push((ca_dist, pair.0));
                 for &(sub_i, sub_j) in &aa_variants {
                     let entry = observed_distance_map.entry((sub_i as u8, sub_j as u8)).or_default();
-                    if !entry.contains(&(ca_dist, indices[i])) {
-                        entry.push((ca_dist, indices[i]));
+                    if !entry.contains(&(ca_dist, pair.0)) {
+                        entry.push((ca_dist, pair.0));
                     }
-                }
-            }
-            if let Some((a0, a1)) = aa_indices {
-                variant.copy_from_slice(&feature);
-                for (aa_i, aa_j) in &aa_variants {
-                    variant[a0] = *aa_i;
-                    variant[a1] = *aa_j;
-                    insert_binned_hash(
-                        &mut hash_collection, &variant, (indices[i], indices[j]),
-                        hash_type, nbin_dist, nbin_angle, multiple_bin, false, idf
-                    );
                 }
             }
 
-            // Tolerance neighbourhood, nearest first
-            let per_neighbor = 1 + aa_variants.len();
-            let mut generated = per_neighbor;
-            expander.for_each_neighbor(&feature, |neighbor| {
-                variant[..neighbor.len()].copy_from_slice(neighbor);
-                insert_binned_hash(
-                    &mut hash_collection, &variant, (indices[i], indices[j]),
+            for_each_expanded_feature(
+                &mut expander, &feature, aa_indices, &aa_variants, MAX_HASHES_PER_PAIR,
+                &mut variant, |variant| insert_binned_hash(
+                    &mut hash_collection, variant, pair,
                     hash_type, nbin_dist, nbin_angle, multiple_bin, false, idf
-                );
-                if let Some((a0, a1)) = aa_indices {
-                    for (aa_i, aa_j) in &aa_variants {
-                        variant[a0] = *aa_i;
-                        variant[a1] = *aa_j;
-                        insert_binned_hash(
-                            &mut hash_collection, &variant, (indices[i], indices[j]),
-                            hash_type, nbin_dist, nbin_angle, multiple_bin, false, idf
-                        );
-                    }
-                }
-                generated += per_neighbor;
-                generated + per_neighbor <= MAX_HASHES_PER_PAIR
-            });
+                ),
+            );
         }
     });
     (hash_collection, indices, observed_distance_map)
 }
 
-/// Widest residue span a single `-q` range may expand to.
-///
-/// Ranges are expanded eagerly, one residue pushed per position, so the span is an
-/// allocation. 100,000 sits above anything a real query can want - the default
-/// `--residue` indexing limit is 50,000, i.e. the largest structure folddisco will index
-/// unless told otherwise, and the longest human protein (titin) is about 35,000 residues
-/// - so it cannot reject a range that any default-built index could match. Its purpose is
-/// the other end of the scale: `A204-2150000000`, one mistyped digit, asks for 2.15e9
-/// residues and roughly 80 GB, and used to be killed by the OOM reaper with no message at
-/// all. At this cap the two vectors stay a few megabytes and a typo gets a diagnostic.
+/// Widest residue span one `-q` range may expand to. Above the default 50,000-residue
+/// index limit; stops a typo like `A204-2150000000` from allocating ~80 GB.
 const MAX_RESIDUE_RANGE_SPAN: u64 = 100_000;
 
 /// Residue number at one end of a range, or a single position.
@@ -336,12 +276,8 @@ fn parse_residue_number(token: &str, chain: ChainId, segment: &str) -> Result<u6
     ))
 }
 
-/// Parse a query string for the CLI, exiting with a diagnostic rather than a panic when
-/// it is malformed - a bad `-q` is user input, not a bug.
-///
-/// This **terminates the process** on a malformed query, which is right for a command
-/// line and wrong for anything else. Library consumers should call
-/// `parse_query_string_checked` and handle the `Err`.
+/// Parse a query string for the CLI; **exits the process** on malformed input.
+/// Library callers should use `parse_query_string_checked`.
 pub fn parse_query_string(query_string: &str, default_chain: ChainId) -> (Vec<(ChainId, u64)>, Vec<Option<Vec<u8>>>) {
     match parse_query_string_checked(query_string, default_chain) {
         Ok((query_residues, amino_acid_substitutions)) => {
@@ -355,13 +291,8 @@ pub fn parse_query_string(query_string: &str, default_chain: ChainId) -> (Vec<(C
     }
 }
 
-/// Warn when a query names the same residue more than once, as `B57,B57` or a pair of
-/// overlapping ranges like `A1-A5,A3-A7` does.
-///
-/// Deduplicating would be the real fix, but the length of this list is the denominator of
-/// `--covered-node-ratio`, `--max-node-ratio` and the novelty coverage, so dropping
-/// repeats changes filtering on the default path - which is the one path this branch
-/// keeps byte-identical to upstream. It waits for a benchmark run that can clear it.
+/// Warn when a query names a residue more than once (`B57,B57`, `A1-A5,A3-A7`).
+/// Repeats are kept because the list length is the denominator of the coverage ratios.
 fn warn_on_duplicate_residues(query_string: &str, query_residues: &[(ChainId, u64)]) {
     let mut distinct = query_residues.to_vec();
     distinct.sort_unstable();
@@ -376,20 +307,12 @@ fn warn_on_duplicate_residues(query_string: &str, query_residues: &[(ChainId, u6
     }
 }
 
-/// Parse a query string into its residues and their allowed substitutions, returning the
-/// diagnostic instead of acting on it. This is the entry point for library use.
-/// Parse a `-q` motif string into `(chain, residue)` pairs.
+/// Parse a `-q` string into `(chain, residue)` pairs and per-residue substitutions,
+/// returning an error message for malformed input.
 ///
-/// Both spellings of a residue are accepted, so that any `matching_residues`
-/// field this tool prints can be pasted straight back in as a query:
-///
-///   `A250`     legacy, single-letter chain
-///   `A_250`    same residue, explicit separator
-///   `AA_250`   multi-character chain, separator required
-///   `10_250`   numeric chain, separator required
-///   `250`      no chain, `default_chain` applies
-///
-/// Ranges (`A250-252`) and substitutions (`A250:R`) work with either spelling.
+/// Accepts `A250`, `A_250`, `AA_250`, `10_250` (separator required for multi-character or
+/// numeric chains) and bare `250` (`default_chain`). Ranges (`A250-252`) and
+/// substitutions (`A250:R`, `A250:*`) work with every spelling.
 pub fn parse_query_string_checked(
     query_string: &str, default_chain: ChainId
 )-> Result<(Vec<(ChainId, u64)>, Vec<Option<Vec<u8>>>) , String> {
@@ -399,9 +322,7 @@ pub fn parse_query_string_checked(
     if query_string.is_empty() {
         return Ok((query_residues, amino_acid_substitutions));
     }
-    // A blank chain ID is no use as an implicit default; fall back to A as
-    // before. A multi-character or numeric one is fine here, because the
-    // default is supplied rather than parsed out of the query string.
+    // A blank or non-alphanumeric single-byte default falls back to chain A
     let default_chain = if default_chain.is_empty()
         || (default_chain.len() == 1 && !default_chain.first_byte().is_ascii_alphanumeric())
     {
@@ -419,11 +340,15 @@ pub fn parse_query_string_checked(
 
         let (range_part, subst_part) = match rest.split_once(':') {
             Some((r, s)) => {
-                let sub_vec = s
+                let mut sub_vec = s
                     .chars()
                     .filter(|c| is_aa_group_char(*c))
                     .flat_map(|c| map_one_letter_to_u8_vec(c))
                     .collect::<Vec<_>>();
+                // `*` asks for the substitution scheme; resolved once the residue is known
+                if s.contains('*') {
+                    sub_vec.push(SCHEME_MARKER);
+                }
                 (r, Some(sub_vec))
             }
             None => (rest, None),
@@ -461,8 +386,6 @@ pub fn parse_query_string_checked(
 }
 
 
-
-// ADD TEST
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,9 +441,7 @@ mod tests {
 
     #[test]
     fn substitutions_compose_with_geometric_tolerance() {
-        // His at 207 as an alternative. Every hash of the unsubstituted query has to
-        // stay, and the His variants have to appear at the tolerance neighbourhood
-        // too and not only at the observed geometry.
+        // His variants must appear across the tolerance neighbourhood, not only at the observed geometry
         let tolerance = ToleranceConfig::new(vec![0.5], vec![5.0], 1);
         let plain = zinc_finger_query_map(&tolerance, vec![None; 3]);
         let substituted = zinc_finger_query_map(
@@ -529,13 +450,30 @@ mod tests {
         for hash in plain.keys() {
             assert!(substituted.contains_key(hash));
         }
-        // 2 of the 6 ordered pairs involve residue 207, each gaining as many His
-        // variants as it has geometric variants.
+        // Pairs with residue 207 gain one His variant per geometric variant
         assert!(
             substituted.len() > plain.len() + 2,
             "substitution did not compose with tolerance: {} vs {}",
             substituted.len(), plain.len()
         );
+    }
+
+    #[test]
+    fn scheme_marker_resolves_against_the_observed_residue() {
+        let (residues, subs) = parse_query_string("F207,F212:*,F225:Q*", chain("A"));
+        assert_eq!(subs, vec![None, Some(vec![SCHEME_MARKER]), Some(vec![5, SCHEME_MARKER])]);
+        let (compact, _) = read_compact_structure(&String::from("query/1G2F.pdb")).unwrap();
+        let scheme = SubstitutionScheme::Group;
+        let observed = |k: usize| map_aa_to_u8(compact.get_res_name(compact.get_index(&residues[k].0, &residues[k].1).unwrap()));
+        let resolved = resolve_query_substitutions(&compact, &residues, &subs, scheme, false, false);
+        assert_eq!(resolved[0], None);
+        assert_eq!(resolved[1], Some(scheme.alternatives(observed(1))));
+        let mut expected = vec![5];
+        expected.extend(scheme.alternatives(observed(2)).into_iter().filter(|&aa| aa != 5));
+        assert_eq!(resolved[2], Some(expected));
+        // Global application fills residues without an explicit list
+        let all = resolve_query_substitutions(&compact, &residues, &subs, scheme, true, false);
+        assert_eq!(all[0], Some(scheme.alternatives(observed(0))));
     }
 
     #[test]
@@ -560,8 +498,7 @@ mod tests {
 
     #[test]
     fn unknown_substitution_code_is_ignored() {
-        // 255 is what an unrecognised one-letter code maps to; encoding it would
-        // overflow the residue field of the hash.
+        // 255 (unknown one-letter code) would overflow the residue field
         let tolerance = ToleranceConfig::default_query();
         let plain = zinc_finger_query_map(&tolerance, vec![None; 3]);
         let bogus = zinc_finger_query_map(&tolerance, vec![Some(vec![255]), None, None]);
@@ -619,14 +556,11 @@ mod tests {
 
     #[test]
     fn an_unbounded_range_is_a_diagnostic_not_an_allocation() {
-        // `A204-2150000000` asks for 2.15e9 residues, about 80 GB, and used to be killed
-        // by the OOM reaper with no message. One mistyped digit is exactly the malformed
-        // input this parser exists to name.
+        // One mistyped digit would ask for 2.15e9 residues
         let err = parse_query_string_checked("A204-2150000000", chain("A")).unwrap_err();
         assert!(err.contains("2150000000") || err.contains("spans"), "{}", err);
         assert!(err.contains("100000"), "the message should name the limit: {}", err);
-        // A range that a real index could match is not rejected: the default --residue
-        // indexing limit is 50,000, and the cap sits above it
+        // The default 50,000-residue index limit stays below the cap
         let (residues, _) = parse_query_string_checked("A1-50000", chain("A")).unwrap();
         assert_eq!(residues.len(), 50_000);
         // Exactly at the cap is allowed, one past it is not
@@ -636,10 +570,7 @@ mod tests {
 
     #[test]
     fn duplicate_residues_are_kept_but_countable() {
-        // Overlapping ranges repeat residues 3-5, and the length of this list is the
-        // denominator of the coverage ratios, so a perfect 7-residue match would read
-        // 7/10. Deduplicating changes filtering on the default path, so the parser keeps
-        // them and the caller warns; this test pins the arithmetic the warning is about.
+        // Overlapping ranges repeat residues 3-5; repeats are kept (and warned about)
         let (residues, _) = parse_query_string_checked("A1-A5,A3-A7", chain("A")).unwrap();
         assert_eq!(residues.len(), 10);
         let mut distinct = residues.clone();
@@ -655,7 +586,7 @@ mod tests {
         // A range cannot span two chains
         let err = parse_query_string_checked("F204-G215", chain("A")).unwrap_err();
         assert!(err.contains("G215"), "{}", err);
-        // Reversed ranges used to yield an empty residue list silently
+        // Reversed ranges are rejected
         let err = parse_query_string_checked("F215-F204", chain("A")).unwrap_err();
         assert!(err.contains("ends before it starts"), "{}", err);
         // Non-numeric tokens name themselves
@@ -681,8 +612,7 @@ mod tests {
 
     #[test]
     fn test_parse_query_string_separator_is_optional_for_single_char_chains() {
-        // The two spellings of the same motif have to agree, so that a printed
-        // `matching_residues` field can be pasted back in as `-q` either way.
+        // Both spellings parse to the same motif
         assert_eq!(
             parse_query_string("A250,B232,C269", chain("A")),
             parse_query_string("A_250,B_232,C_269", chain("A"))
@@ -715,9 +645,7 @@ mod tests {
 
     #[test]
     fn test_parse_query_string_numeric_chain() {
-        // `10250` is unreadable, so a numeric chain has to be separated. The
-        // separated spelling must not be mistaken for residue 10250 of the
-        // default chain.
+        // A numeric chain needs `_`; `10_250` is chain 10, not residue 10250
         assert_eq!(
             parse_query_string("10_250,10_252", chain("A")),
             (vec![(chain("10"), 250), (chain("10"), 252)], vec![None, None])
@@ -730,8 +658,7 @@ mod tests {
 
     #[test]
     fn test_parse_query_string_default_chain_may_be_multi_char() {
-        // A bare residue index belongs to the query structure's own first
-        // chain, which can now be multi-character or numeric.
+        // A bare residue uses the default chain, which may be multi-character or numeric
         assert_eq!(
             parse_query_string("250,252", chain("AA")),
             (vec![(chain("AA"), 250), (chain("AA"), 252)], vec![None, None])
@@ -740,7 +667,7 @@ mod tests {
             parse_query_string("250", chain("10")),
             (vec![(chain("10"), 250)], vec![None])
         );
-        // A blank default still falls back to chain A, as before.
+        // A blank default falls back to chain A
         assert_eq!(
             parse_query_string("250", ChainId::from_byte(b' ')),
             (vec![(chain("A"), 250)], vec![None])

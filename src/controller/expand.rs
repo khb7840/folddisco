@@ -2,37 +2,19 @@
 // Author: Hyunbin Kim (khb7840@gmail.com)
 // Copyright © 2026 Hyunbin Kim, All rights reserved
 //
-// Tolerance driven expansion of a query feature vector.
+// Tolerance-driven expansion of a feature vector into neighbouring hash bins.
 //
-// Folddisco discretizes the geometry of a residue pair into bins and looks the
-// resulting hash up in the inverted index. A target pair that is geometrically
-// close to the query still gets a different hash whenever one of its features sits
-// on the other side of a bin boundary, so the query has to be expanded into the
-// neighbourhood of the observed geometry.
+// - Up to `radius` dimensions deviate at once (features often cross boundaries together).
+// - Tolerances wider than one bin are sub-stepped so no bin in between is skipped.
+// - Perturbed angles wrap (torsions) or reflect (bounded angles); distances are left as is.
 //
-// The expansion here differs from a plain per-dimension offset in three ways:
-//
-// 1. Dimensions are combined. Two features straddling a boundary at the same time
-//    is common, and a query that only ever moves one dimension misses it. The
-//    number of dimensions allowed to deviate at once is the `radius`.
-// 2. A tolerance wider than one bin is sub-stepped, so it reaches every bin in the
-//    interval instead of only the two at its ends.
-// 3. Perturbed angles are pulled back into their domain (torsions wrap, bounded
-//    angles reflect) instead of running off the end of their bit field or asking for
-//    a `sin` sign no real structure can produce. Distances stay untouched so the
-//    query keeps mirroring the encoding the index was built with.
-//
-// Variants are produced nearest-first in the sense that matters for early stopping:
-// every single-dimension neighbour before any two-dimension neighbour, and within one
-// dimension the closer offsets before the farther ones. Across dimensions at the same
-// radius the order is lexicographic by dimension index, not by geometric distance. A
-// caller that stops early - which is what MAX_HASHES_PER_PAIR does - therefore keeps
-// whole radius levels, not a ball.
+// Neighbours come in radius order (all 1-dim before 2-dim), nearer offsets first within a
+// dimension, so early stopping keeps whole radius levels.
 
 use crate::geometry::core::HashType;
+use super::substitution::SubstitutionScheme;
 
-/// Cap on the sub-steps generated for one dimension, so a very large threshold
-/// cannot blow up the query on its own.
+/// Cap on sub-steps per dimension, bounding the cost of a very large threshold.
 const MAX_SUBSTEPS: usize = 8;
 
 /// How far a query hash is expanded around the observed geometry.
@@ -42,8 +24,7 @@ pub struct ToleranceConfig {
     pub dist_thresholds: Vec<f32>,
     /// Angle offsets in degrees, as given on the command line.
     pub angle_thresholds: Vec<f32>,
-    /// Number of feature dimensions allowed to deviate from the observed bin at
-    /// the same time. 1 reproduces the classic one-dimension-at-a-time expansion.
+    /// Feature dimensions allowed to deviate from the observed bin at once.
     pub radius: usize,
 }
 
@@ -65,20 +46,48 @@ impl ToleranceConfig {
     }
 }
 
+/// Expansion stored into an index at build time: each target pair is also indexed
+/// under the hashes a query with this tolerance and substitution scheme would reach.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexExpansion {
+    pub tolerance: ToleranceConfig,
+    pub scheme: Option<SubstitutionScheme>,
+}
+
+impl IndexExpansion {
+    /// `None` when neither geometry nor residue identity would be expanded.
+    pub fn new(radius: usize, distance: f32, angle: f32, scheme: Option<SubstitutionScheme>) -> Option<Self> {
+        if radius == 0 && scheme.is_none() {
+            return None;
+        }
+        Some(Self { tolerance: ToleranceConfig::new(vec![distance], vec![angle], radius), scheme })
+    }
+
+    /// Tolerance matching must use so every candidate the expanded index returned for a
+    /// query expanded by `query` can still be matched: offsets and radii add up.
+    pub fn matching_tolerance(&self, query: &ToleranceConfig) -> ToleranceConfig {
+        if self.tolerance.radius == 0 {
+            return query.clone();
+        }
+        let add = |a: &[f32], b: &[f32]| vec![widest_tolerance(a) + widest_tolerance(b)];
+        ToleranceConfig::new(
+            add(&query.dist_thresholds, &self.tolerance.dist_thresholds),
+            add(&query.angle_thresholds, &self.tolerance.angle_thresholds),
+            query.radius + self.tolerance.radius,
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TolerantDim {
     /// Position of this dimension inside the feature vector
     index: usize,
-    /// Offsets covering this dimension's tolerance, nearest first. Only the widest
-    /// tolerance is expanded: sub-stepping it reaches a contiguous run of bins that
-    /// already contains every bin a smaller tolerance could reach.
+    /// Offsets covering the widest tolerance, nearest first.
     offsets: Vec<f32>,
 }
 
 /// Enumerates the tolerance neighbourhood of a feature vector for one hash type.
-///
-/// Holds its own scratch buffers, so expanding thousands of residue pairs does not
-/// allocate after construction.
+/// Reuses internal buffers, so it does not allocate after construction.
 pub struct FeatureExpander {
     hash_type: HashType,
     dims: Vec<TolerantDim>,
@@ -108,8 +117,7 @@ impl FeatureExpander {
         }
 
         if let Some(angle_indices) = hash_type.angle_index() {
-            // Command line thresholds are degrees; every hash type except PDBMotif
-            // stores angles in radians.
+            // CLI thresholds are degrees; only PDBMotif stores degrees
             let widest = widest_tolerance(&tolerance.angle_thresholds);
             let widest = if hash_type.angle_in_degrees() { widest } else { widest.to_radians() };
             if widest > 0.0 {
@@ -141,12 +149,8 @@ impl FeatureExpander {
         self.dims.len()
     }
 
-    /// Visit every neighbour of `feature`, nearest first. The observed feature
-    /// itself is *not* visited: the caller owns that hash because it also carries
-    /// the IDF of the edge.
-    ///
-    /// `visit` returns `false` to stop the expansion early, which keeps the closest
-    /// neighbours and drops the rest.
+    /// Visit every neighbour of `feature` (not `feature` itself), nearest first.
+    /// `visit` returns `false` to stop early.
     pub fn for_each_neighbor<F>(&mut self, feature: &[f32], mut visit: F)
     where
         F: FnMut(&[f32]) -> bool,
@@ -193,18 +197,49 @@ impl FeatureExpander {
     }
 }
 
-/// Widest magnitude in a threshold list. Smaller thresholds are redundant: the
-/// sub-stepped offsets of the widest one cover a contiguous run of bins that
-/// already includes every bin a smaller threshold could reach.
+/// Visit the expansion of one residue pair's `feature`: its amino acid variants, then
+/// each geometric neighbour with the observed and every variant residue pair.
+///
+/// The observed feature itself is not visited. Stops before the total, observed hash
+/// included, would exceed `cap`. `variant` is a scratch buffer as long as `feature`.
+/// Query and index expansion share this so both sides reach the same hashes.
+pub fn for_each_expanded_feature<F: FnMut(&Vec<f32>)>(
+    expander: &mut FeatureExpander, feature: &Vec<f32>, aa_indices: Option<(usize, usize)>,
+    aa_variants: &[(f32, f32)], cap: usize, variant: &mut Vec<f32>, mut visit: F,
+) {
+    let aa_variants = if aa_indices.is_some() { aa_variants } else { &[] };
+    variant.copy_from_slice(feature);
+    if let Some((a0, a1)) = aa_indices {
+        for &(aa_i, aa_j) in aa_variants {
+            variant[a0] = aa_i;
+            variant[a1] = aa_j;
+            visit(variant);
+        }
+    }
+    let per_neighbor = 1 + aa_variants.len();
+    let mut generated = per_neighbor;
+    expander.for_each_neighbor(feature, |neighbor| {
+        variant[..neighbor.len()].copy_from_slice(neighbor);
+        visit(variant);
+        if let Some((a0, a1)) = aa_indices {
+            for &(aa_i, aa_j) in aa_variants {
+                variant[a0] = aa_i;
+                variant[a1] = aa_j;
+                visit(variant);
+            }
+        }
+        generated += per_neighbor;
+        generated + per_neighbor <= cap
+    });
+}
+
+/// Widest magnitude in a threshold list; smaller ones reach no extra bin.
 fn widest_tolerance(thresholds: &[f32]) -> f32 {
     thresholds.iter().fold(0.0f32, |widest, t| widest.max(t.abs()))
 }
 
-/// Signed offsets covering `[-tolerance, +tolerance]`, nearest first.
-///
-/// Consecutive offsets are kept within one bin of each other so the covered bins
-/// form an unbroken run; a single jump of 2.5 bins would silently skip the bins in
-/// between and lose the targets that sit there.
+/// Signed offsets covering `[-tolerance, +tolerance]`, nearest first, at most one bin
+/// apart so no bin in between is skipped.
 fn substep_offsets(tolerance: f32, bin_width: f32) -> Vec<f32> {
     if !(tolerance > 0.0) {
         return Vec::new();
@@ -285,8 +320,7 @@ mod tests {
 
     #[test]
     fn wide_tolerance_is_substepped_and_leaves_no_gap() {
-        // 16 distance bins over [2, 20] give a 1.2 A bin, so a 3.0 A tolerance has
-        // to reach the bins in between and not only the ones at +-3.0 A.
+        // 1.2 A bins: a 3.0 A tolerance must reach the bins in between
         let tolerance = ToleranceConfig::new(vec![3.0], vec![], 1);
         let mut expander = FeatureExpander::new(HashType::PDBTrRosetta, 16, 4, &tolerance);
         let feature = pdbtr_feature();
@@ -308,8 +342,7 @@ mod tests {
 
     #[test]
     fn smaller_thresholds_reach_no_extra_bin() {
-        // `-d 0.5,1.0` and `-d 1.0` have to reach the same set of bins: only the
-        // widest tolerance is expanded, sub-stepped to stay gapless.
+        // `-d 0.5,1.0` and `-d 1.0` reach the same bins
         let feature = pdbtr_feature();
         let mut sets = Vec::new();
         for thresholds in [vec![0.5, 1.0], vec![1.0]] {
@@ -327,8 +360,7 @@ mod tests {
 
     #[test]
     fn torsion_offsets_wrap_around_pi() {
-        // A query torsion at 179 degrees has to be able to reach -179 degrees,
-        // which is 2 degrees away and not 358.
+        // 179 degrees must reach -179 degrees (2 degrees away)
         let mut feature = pdbtr_feature();
         feature[5] = 179.0_f32.to_radians();
         let tolerance = ToleranceConfig::new(vec![], vec![5.0], 1);
@@ -347,10 +379,8 @@ mod tests {
 
     #[test]
     fn perturbed_angles_stay_inside_their_bit_field() {
-        // FolddiscoDist packs theta1/theta2 into 4 bits each and the Ca-Cb angle
-        // into 3. A wide angle tolerance used to push a bin index past its field and
-        // corrupt the neighbouring one; wrapping and reflecting keep every value in
-        // the domain the encoding was sized for.
+        // FolddiscoDist packs theta1/theta2 in 4 bits and Ca-Cb angle in 3; a wide
+        // tolerance must not overflow into neighbouring fields.
         let tolerance = ToleranceConfig::new(vec![], vec![60.0], 3);
         let mut expander = FeatureExpander::new(HashType::FolddiscoDist, 32, 16, &tolerance);
         for &(ca_cb, theta1, theta2) in &[
@@ -365,8 +395,7 @@ mod tests {
                 assert!((-PI..=PI).contains(&variant[5]), "theta1 {}", variant[5]);
                 assert!((-PI..=PI).contains(&variant[6]), "theta2 {}", variant[6]);
                 let hash = hash_of(variant, HashType::FolddiscoDist, 32, 16);
-                // The residue pair occupies bits 21..29 and the distances 11..20;
-                // an angle overflow would leak upwards into them.
+                // Residue pair: bits 21..29; distances: 11..20
                 assert_eq!((hash >> 21) & 0x1FF, 8 * 20 + 3,
                     "angle overflowed into the residue field");
                 assert_eq!((hash >> 11) & 0x3FF, expected_distance_bits(&feature),
@@ -398,9 +427,7 @@ mod tests {
 
     #[test]
     fn radius_two_finds_a_pair_that_crosses_two_boundaries_at_once() {
-        // 16 distance bins over [2, 20] put a boundary at 2 + 1.2 * 4.5 = 7.4 A.
-        // Query sits just below it in both Ca and Cb distance, target just above:
-        // 0.1 A of drift, but in two dimensions at the same time.
+        // Boundary at 7.4 A; query and target straddle it in both Ca and Cb distance
         let mut query = pdbtr_feature();
         query[2] = 7.35;
         query[3] = 7.35;
@@ -424,8 +451,7 @@ mod tests {
 
     #[test]
     fn wrapping_finds_a_torsion_across_the_pi_boundary() {
-        // 179 degrees against -179 degrees: 2 degrees apart, opposite ends of the
-        // encoded range. Without wrapping no angle tolerance can bridge them.
+        // 179 vs -179 degrees: opposite ends of the encoded range
         let mut query = pdbtr_feature();
         query[5] = 179.0_f32.to_radians();
         let mut target = query.clone();
@@ -463,6 +489,17 @@ mod tests {
     }
 
     #[test]
+    fn matching_tolerance_adds_only_geometric_index_expansion() {
+        let query = ToleranceConfig::new(vec![0.5], vec![5.0], 1);
+        let geometric = IndexExpansion::new(1, 0.5, 5.0, None).unwrap();
+        assert_eq!(geometric.matching_tolerance(&query), ToleranceConfig::new(vec![1.0], vec![10.0], 2));
+        assert_eq!(geometric.matching_tolerance(&ToleranceConfig::none()), ToleranceConfig::new(vec![0.5], vec![5.0], 1));
+        let residues_only = IndexExpansion::new(0, 0.5, 5.0, Some(SubstitutionScheme::Group)).unwrap();
+        assert_eq!(residues_only.matching_tolerance(&query), query);
+        assert!(IndexExpansion::new(0, 0.5, 5.0, None).is_none());
+    }
+
+    #[test]
     fn empty_tolerance_produces_nothing() {
         let mut expander = FeatureExpander::new(
             HashType::PDBTrRosetta, 16, 4, &ToleranceConfig::none()
@@ -475,10 +512,8 @@ mod tests {
 
     #[test]
     fn every_hash_type_keeps_wide_angle_tolerance_inside_its_encoding() {
-        // Sanity net for the per-type angle metadata: whatever a wide angle
-        // tolerance does to a feature, the packed hash stays inside the declared
-        // width. Distances are kept mid-range on purpose — those mirror the index
-        // encoding out of the window as well, so they are not bounded here.
+        // A wide angle tolerance keeps every hash type inside its declared bit width.
+        // Distances stay mid-range; out-of-window distances are not bounded here.
         let tolerance = ToleranceConfig::new(vec![1.0], vec![60.0], 2);
         for hash_type in [
             HashType::PDBMotif, HashType::PDBMotifSinCos, HashType::TrRosetta,
