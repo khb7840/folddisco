@@ -389,6 +389,7 @@ pub fn parse_query_string_checked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::structure::chain_id::chain;
     
     fn zinc_finger_query_map(
         tolerance: &ToleranceConfig, substitutions: Vec<Option<Vec<u8>>>,
@@ -411,6 +412,7 @@ mod tests {
         ];
         let amino_acid_substitutions = vec![None; query_residues.len()];
         let hash_type = HashType::PDBTrRosetta;
+        let tolerance = ToleranceConfig::default_query();
         let (hash_collection, _index_found, _observed_dist_map) = make_query_map(
             &path, &query_residues, hash_type, 16, 4, &None,
             &ToleranceConfig::default_query(), &amino_acid_substitutions, 20.0, false,
@@ -503,10 +505,6 @@ mod tests {
         let plain = zinc_finger_query_map(&tolerance, vec![None; 3]);
         let bogus = zinc_finger_query_map(&tolerance, vec![Some(vec![255]), None, None]);
         assert_eq!(plain.len(), bogus.len());
-    }
-
-    fn chain(text: &str) -> ChainId {
-        ChainId::from_str(text)
     }
 
     #[test]

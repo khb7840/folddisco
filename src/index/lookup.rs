@@ -255,6 +255,7 @@ mod tests {
     }
 
     /// Overwrite bytes of the cache in place.
+    /// Only working within tests and should not be used in production code.
     fn patch_cache(cache_path: &str, offset: u64, bytes: &[u8]) {
         use std::io::{Seek, SeekFrom};
         let mut cache = std::fs::OpenOptions::new().write(true).open(cache_path).unwrap();
