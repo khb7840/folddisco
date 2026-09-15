@@ -322,11 +322,11 @@ mod tests {
     #[test]
     fn test_lookup_without_db_key_column_reuses_the_id() {
         let (path, cache_path) = temp_lookup_path("four_column");
-        std::fs::write(&path, "0\ta.pdb\t100\t50.0\n7\tb.pdb\t200\t60.0\n").unwrap();
+        std::fs::write(&path, "0\ta.pdb\t100\t50.0\n1\tb.pdb\t200\t60.0\n").unwrap();
         let loaded = load_lookup_from_file(&path);
         assert_eq!(loaded.entry(0).db_key, 0);
-        assert_eq!(loaded.entry(1).db_key, 7);
-        assert_eq!(loaded.entry(1).id, 7);
+        assert_eq!(loaded.entry(1).db_key, 1);
+        assert_eq!(loaded.entry(1).id, 1);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&cache_path);
     }
@@ -366,7 +366,7 @@ mod tests {
         load_lookup_from_file(&path);
         let cache_modified = std::fs::metadata(&cache_path).unwrap().modified().unwrap();
 
-        write_test_lookup(&path, &vec!["totally_different.pdb".to_string()], &vec![1]);
+        write_test_lookup(&path, &vec!["totally_different.pdb".to_string()], &vec![0]);
         let lookup = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         lookup.set_times(std::fs::FileTimes::new().set_modified(cache_modified)).unwrap();
         drop(lookup);
@@ -378,7 +378,7 @@ mod tests {
         assert!(LookupTable::open(&cache_path, &path).is_none());
         assert_eq!(
             load_lookup_from_file(&path).to_owned_vec(),
-            vec![("totally_different.pdb".to_string(), 1, 107, 51.0, 1001)]
+            vec![("totally_different.pdb".to_string(), 0, 100, 50.0, 1000)]
         );
 
         let _ = std::fs::remove_file(&path);
@@ -445,7 +445,7 @@ mod tests {
         assert!(std::path::Path::new(&cache_path).is_file());
 
         // Rewrite the lookup and backdate the cache: the cache is stale
-        write_test_lookup(&path, &vec!["b.pdb".to_string()], &vec![1]);
+        write_test_lookup(&path, &vec!["b.pdb".to_string()], &vec![0]);
         let lookup_modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         let cache = std::fs::OpenOptions::new().write(true).open(&cache_path).unwrap();
         cache.set_times(std::fs::FileTimes::new().set_modified(
@@ -455,7 +455,7 @@ mod tests {
         assert!(LookupTable::open(&cache_path, &path).is_none());
         assert_eq!(
             load_lookup_from_file(&path).to_owned_vec(),
-            vec![("b.pdb".to_string(), 1, 107, 51.0, 1001)]
+            vec![("b.pdb".to_string(), 0, 100, 50.0, 1000)]
         );
 
         let _ = std::fs::remove_file(&path);

@@ -106,6 +106,10 @@ impl From<&str> for ChainId {
     }
 }
 
+pub fn chain(text: &str) -> ChainId {
+    ChainId::from_str(text)
+}
+
 /// Whether a residue list needs `_` separators. Decided per list, so one field
 /// never mixes both spellings.
 pub fn residue_list_needs_separator<'a, I>(chains: I) -> bool
