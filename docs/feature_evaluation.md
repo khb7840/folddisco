@@ -418,8 +418,9 @@ Data: `fd-branchbench/selection/geometric_sweep.txt`.
   at best.
 
 **Index-time expansion** (M-CSA motif-only index, 24,762 motifs; site queries within 12 Å;
-2cd6e60): index-side expansion is not a substitute for query-side expansion. Radius 1 on the
-index vs on the query: Sens@1FP −0.025 [−0.040, −0.012], returned motifs overlap (Jaccard) 0.58;
+5ae7321): index-side expansion is not a substitute for query-side expansion. Radius 1 on the
+index vs on the query: Sens@1FP −0.025 [−0.040, −0.011], returned motifs overlap (Jaccard) 0.58;
 the index grows 3.5× (r1), 6× (r2), 9× (blosum62), 32× (both). An expanded index is looked up
-exactly, so candidate scoring cannot tell its substituted entries from exact ones.
+exactly, so candidate scoring cannot tell its substituted entries from exact ones. On mutant
+sites, `:*` on a plain index gains +0.101 while a blosum62 index loses −0.031 (idf ranking).
 Details: `fd-branchbench/index_expansion/README.md`.
