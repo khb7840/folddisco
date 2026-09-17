@@ -371,9 +371,11 @@ data/serine_peptidases/1azw.pdb	0.1856	2	2	2	2	0.9234	626	34.2399	A179,_,B176:0.
 ### Display Options
 - `--per-structure`: Outputs results per structure.
 - `--per-match`: Outputs results per match.
-- `--sort-by`: Sorts results by given columns (comma-separated). Default: `coverage_idf:desc,rmsd:asc`
-  per match (`coverage_idf` is `idf` times the matched fraction of the query) and
-  `max_node_count:desc,min_rmsd:asc` per structure.
+- `--sort-by`: Sorts results by given columns (comma-separated). Defaults:
+  `match_score:desc,rmsd:asc` per match, where `match_score` is `idf` × (matched fraction of the
+  query)² × TM-score, and `structure_score:desc,min_rmsd:asc` per structure, where
+  `structure_score` is matched residues² × √`idf` / (1 + RMSD). Both are also output columns.
+  With `--skip-match` there is no match to score, so results stay in IDF order.
 - `--format-output`: Custom output format using column names.
 - `--top <N>`: Outputs top N results.
 - `--header`: Outputs header for the result.

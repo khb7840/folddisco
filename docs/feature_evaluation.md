@@ -434,36 +434,50 @@ reproduced the shipped ranking on 250/250 M-CSA queries). Data:
 
 ### 15.1 Sort order
 
-172 lexicographic orders over 10 per-match keys (1-2 keys, plus 3 keys when the first is a
-count) and 9 over the structure keys, scored by Sens@1FP and average precision (AP) on M-CSA
-q250 (default, `--sensitive`, mutant `:*`, `--aa-subst blosum62`) and the four motif queries.
+Two passes. First 172 lexicographic orders over the 10 per-match keys (singles, ordered pairs,
+and triples led by `node_count`) and 109 over the 7 structure keys, plus 9 hand-picked
+composites. No lexicographic order beat the 2.x default by more than 0.0005 — `node_count`
+first trades M-CSA for the motif sets — but `idf` × coverage did, so the second pass searched
+that family: evidence `idf · coverage^p` (p = 0.5, 1, 1.5, 2) times one quality factor built
+from each implemented metric (`1/(1+rmsd/τ)` for τ = 0.5, 1, 2; `1/(1+drmsd/τ)` for τ = 0.5, 1;
+`tm_score`; `gdt_ha`; `gdt_ts`; `1/(1+chamfer)`; `1/(1+hausdorff)`; `1/(1+max_dist_dev/2)`),
+49 per-match and 20 structure candidates, RMSD breaking ties.
+
+M-CSA q250, mean over the four configs (default, `--sensitive`, mutant `:*`, blosum62), and the
+four motif queries:
 
 | per-match order | M-CSA Sens@1FP | M-CSA AP | motif Sens@1FP |
 | --- | --- | --- | --- |
 | `idf,rmsd` (2.x default) | 0.4518 | 0.5951 | 0.1817 |
 | best plain alternative (`idf,tm_score`) | 0.4523 | 0.5951 | 0.1837 |
 | `node_count,idf,rmsd` | 0.4078 | 0.5645 | 0.1958 |
-| **`coverage_idf,rmsd`** (shipped) | **0.4583** | **0.6024** | **0.2172** |
+| `idf·coverage,rmsd` | 0.4583 | 0.6024 | 0.2172 |
+| `idf·coverage²·(1+rmsd/0.5)⁻¹,rmsd` | 0.4847 | 0.6297 | 0.1081 |
+| **`match_score` = `idf·coverage²·tm_score`, rmsd** (shipped) | **0.4883** | **0.6308** | **0.2300** |
 
-`coverage_idf` is `idf` times the fraction of query residues the match covers. No lexicographic
-order beat `idf,rmsd` by more than 0.0005 — putting `node_count` first trades M-CSA for the motif
-sets — while the product wins on both. Exponents 0.5 / 2 / 3 on the coverage term scored 0.4559 /
-0.4514 / 0.4445; `idf` divided by node count was much worse (0.3666). `drmsd` as the second key
-was slightly worse than `rmsd` (0.4502 vs 0.4518 with `idf` first).
+**Held out** (the 492 runnable q755 queries outside q250; paired, 95% bootstrap CI). Shipped
+order vs the 2.x default: Sens@1FP +0.0370 [+0.025, +0.048] / +0.0276 / +0.0535 and AP +0.0444 /
++0.0336 / +0.0502 on default / `--sensitive` / mutant `:*`; against `idf·coverage`: Sens@1FP
++0.0355 / +0.0305 / +0.0533, AP +0.0349 / +0.0289 / +0.0402. Every interval excludes zero, with
+about 2.5 wins per loss. Mean held-out Sens@1FP 0.5036 and AP 0.6464, versus 0.4623 / 0.6097 for
+`idf·coverage` and 0.4599 / 0.6024 for `idf,rmsd`.
 
-**Held out** (the 492 runnable q755 queries outside q250, paired, 95% bootstrap CI): AP rises on
-all three configs — default +0.0095 [+0.006, +0.013] (262 wins / 137 losses), `--sensitive`
-+0.0046 [+0.001, +0.008], mutant `:*` +0.0100 [+0.007, +0.013] — while Sens@1FP is unchanged
-within noise (+0.0015, −0.0029, +0.0002; all CIs span 0). The Sens@1FP gain on the selection set
-did not reproduce, so the shipped claim is a better overall ranking, not a better first-FP cut.
+TM-score is not degenerate on short motifs: no row scores 0, and the median falls from 0.37
+(3 residues) to 0.09 (9+), so it acts as a length-aware geometric weight.
 
-Per structure, plain coverage wins and the product does not:
+Per structure the same family wins, without a TM-score (structure rows carry only RMSD/dRMSD):
 
 | per-structure order | M-CSA Sens@1FP | M-CSA AP | motif Sens@1FP |
 | --- | --- | --- | --- |
 | `idf,min_rmsd` (2.x default) | 0.3535 | 0.5237 | 0.0913 |
-| `idf*coverage^2,min_rmsd` | 0.4045 | 0.5782 | 0.1192 |
-| **`max_node_count,min_rmsd`** (shipped) | **0.4301** | **0.5920** | **0.1671** |
+| `max_node_count,min_rmsd` | 0.4301 | 0.5920 | 0.1671 |
+| **`structure_score` = `matched²·√idf/(1+rmsd)`, min_rmsd** (shipped) | **0.4771** | **0.6274** | 0.0731 |
+
+Held out: 0.4863 / 0.6349 against 0.4321 / 0.6033 for `max_node_count,min_rmsd` and 0.3699 /
+0.5320 for the 2.x default. The four motif queries prefer plain coverage on Sens@1FP (0.1671 vs
+0.0731) while their AP still rises (0.9265 → 0.9335); M-CSA, with 250 and 492 queries, decides.
+Query length is constant within a query, so ranking by matched residues² is the same order as
+coverage².
 
 ### 15.2 `--confident`
 

@@ -19,9 +19,10 @@ Indices built with 2.x are read unchanged.
   built on first use.
 
 ### Changed
-- Default sort: `coverage_idf:desc,rmsd:asc` per match (was `idf:desc,rmsd:asc`) and
-  `max_node_count:desc,min_rmsd:asc` per structure (was `idf:desc,min_rmsd:asc`).
-  `coverage_idf` (`idf` × matched fraction of the query) is also a sort key and an output column.
+- Default sort: `match_score:desc,rmsd:asc` per match (was `idf:desc,rmsd:asc`) and
+  `structure_score:desc,min_rmsd:asc` per structure (was `idf:desc,min_rmsd:asc`).
+  `match_score` (`idf` × coverage² × TM-score), `structure_score` (matched² × √`idf` / (1 + RMSD))
+  and `coverage_idf` are new sort keys and output columns.
 - Matching prefilters target residues by amino acid code for large queries (same output, faster).
 - Per-match IDF counts edges from neighbouring bins and substitutions only between the matched
   residues, so large components of similar residues no longer rank first.

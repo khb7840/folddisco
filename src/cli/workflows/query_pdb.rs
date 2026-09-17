@@ -104,19 +104,21 @@ display options:
  --per-structure                  Print output per structure
  --per-match                      Print output per match. Not working with --skip-match
  --format-output <KEYS>           Comma-separated column names to output
-                                  - Per-match: qid, tid, nid, db_key, node_count, idf, coverage_idf, rmsd, matching_residues,
-                                    u_matrix, t_vector,
-                                    matching_coordinates, query_residues, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance,
-                                    drmsd, max_dist_deviation
-                                  - Per-structure: qid, tid, nid, db_key, total_match_count, node_count, edge_count, idf, nres, plddt,
-                                    max_node_cov, min_rmsd, min_drmsd, matching_residues, query_residues
+                                  - Per-match: qid, tid, nid, db_key, node_count, idf, coverage_idf, match_score, rmsd,
+                                    matching_residues, u_matrix, t_vector, matching_coordinates, query_residues,
+                                    tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance, drmsd,
+                                    max_dist_deviation
+                                  - Per-structure: qid, tid, nid, db_key, total_match_count, node_count, edge_count, idf, nres,
+                                    plddt, max_node_cov, min_rmsd, min_drmsd, structure_score, matching_residues, query_residues
                                   - Example: --format-output tid,idf,rmsd,tm_score
  --sort-by <KEYS>                 Comma-separated sort keys with optional :asc or :desc
-                                  [per-match coverage_idf:desc,rmsd:asc; per-structure max_node_count:desc,min_rmsd:asc]
-                                  - Per-match: node_count, idf, coverage_idf (idf x matched fraction), rmsd, tm_score,
+                                  [per-match match_score:desc,rmsd:asc; per-structure structure_score:desc,min_rmsd:asc]
+                                  - Per-match: match_score (idf x coverage^2 x tm_score), node_count, idf,
+                                    coverage_idf (idf x matched fraction), rmsd, tm_score,
                                     gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance,
                                     drmsd, max_dist_deviation
-                                  - Per-structure: max_node_count, node_count, idf, min_rmsd, min_drmsd, total_match_count, edge_count, nres, plddt
+                                  - Per-structure: structure_score (matched^2 x sqrt(idf) / (1 + rmsd)), max_node_count,
+                                    node_count, idf, min_rmsd, min_drmsd, total_match_count, edge_count, nres, plddt
                                   - Example: --sort-by tm_score,rmsd or --sort-by idf:desc
  --chain-sep                      Always write residues as CHAIN_RESIDUE (A_21). Otherwise `_` is used only
                                   for multi-character or numeric chains. -q accepts both
@@ -139,7 +141,7 @@ general options:
  -h, --help                       Print this help menu
 
 examples:
-# Search with default settings (sorted by coverage-weighted IDF, then RMSD)
+# Search with default settings (ranked by match_score, then RMSD)
 folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6
 
 # Print custom columns (tid, idf, RMSD, and TM-score only)

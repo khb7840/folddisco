@@ -18,6 +18,8 @@ pub enum SortKey {
     Idf,
     /// IDF scaled by the fraction of query residues matched
     CoverageIdf,
+    /// Default score: IDF x coverage^2 x TM-score
+    MatchScore,
     /// E-value (from IDF)
     Evalue,
     /// RMSD
@@ -45,6 +47,7 @@ impl SortKey {
             "node_count" | "node-count" | "nodes" | "node" | "n" => Ok(Self::NodeCount),
             "idf" | "score" => Ok(Self::Idf),
             "coverage_idf" | "coverage-idf" | "cov_idf" | "cidf" => Ok(Self::CoverageIdf),
+            "match_score" | "match-score" | "score2" => Ok(Self::MatchScore),
             "evalue" | "e_value" | "e-value" => Ok(Self::Evalue),
             "rmsd" => Ok(Self::Rmsd),
             "tm_score" | "tm-score" | "tmscore" | "tm" => Ok(Self::TmScore),
@@ -64,14 +67,14 @@ impl SortKey {
 
     /// Get all valid key names for help text
     pub fn valid_keys() -> &'static str {
-        "node_count, idf, coverage_idf, evalue, rmsd, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance, drmsd, max_dist_deviation"
+        "match_score, node_count, idf, coverage_idf, evalue, rmsd, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance, drmsd, max_dist_deviation"
     }
 
     /// Descending for scores (higher is better), ascending for distances and E-value.
     pub fn default_order(&self) -> SortOrder {
         match self {
-            Self::NodeCount | Self::Idf | Self::CoverageIdf | Self::TmScore | Self::GdtTs
-            | Self::GdtHa => SortOrder::Desc,
+            Self::NodeCount | Self::Idf | Self::CoverageIdf | Self::MatchScore | Self::TmScore
+            | Self::GdtTs | Self::GdtHa => SortOrder::Desc,
             Self::Evalue | Self::Rmsd | Self::ChamferDistance | Self::HausdorffDistance |
             Self::Drmsd | Self::MaxDistDeviation => SortOrder::Asc,
         }
@@ -83,6 +86,7 @@ impl SortKey {
             Self::NodeCount => result.node_count as f64,
             Self::Idf => result.idf as f64,
             Self::CoverageIdf => result.coverage_idf() as f64,
+            Self::MatchScore => result.match_score() as f64,
             Self::Evalue => result.evalue,
             Self::Rmsd => result.rmsd as f64,
             Self::TmScore => result.metrics.tm_score as f64,
@@ -203,11 +207,10 @@ impl MatchSortStrategy {
         Ordering::Equal
     }
 
-    /// Default: coverage-weighted IDF (desc) -> RMSD (asc). Chosen in
-    /// docs/feature_evaluation.md §15.
+    /// Default: `match_score` (desc) -> RMSD (asc). Chosen in docs/feature_evaluation.md §15.
     pub fn default() -> Self {
         Self::new()
-            .then_by_default(SortKey::CoverageIdf)
+            .then_by_default(SortKey::MatchScore)
             .then_by_default(SortKey::Rmsd)
     }
 
@@ -285,6 +288,8 @@ pub enum StructureSortKey {
     MinRmsd,
     /// Minimum dRMSD with max match: deformation without superposition
     MinDrmsd,
+    /// Default score: matched residues^2 x sqrt(IDF) / (1 + RMSD)
+    StructureScore,
     /// Total match count
     TotalMatchCount,
     /// Edge count
@@ -304,6 +309,7 @@ impl StructureSortKey {
             "idf" | "score" => Ok(Self::Idf),
             "min_rmsd" | "min-rmsd" | "rmsd" => Ok(Self::MinRmsd),
             "min_drmsd" | "min-drmsd" | "drmsd" => Ok(Self::MinDrmsd),
+            "structure_score" | "structure-score" | "score2" => Ok(Self::StructureScore),
             "total_match_count" | "total-match-count" | "total_match" | "total-match" | "matches" | "match" => Ok(Self::TotalMatchCount),
             "edge_count" | "edge-count" | "edges" | "edge" | "e" => Ok(Self::EdgeCount),
             "nres" | "num_residues" | "num-residues" | "length" | "residues" | "residue" | "l" => Ok(Self::Nres),
@@ -318,15 +324,15 @@ impl StructureSortKey {
 
     /// Get all valid key names for help text
     pub fn valid_keys() -> &'static str {
-        "max_node_count, node_count, idf, min_rmsd, min_drmsd, total_match_count, edge_count, nres, plddt"
+        "structure_score, max_node_count, node_count, idf, min_rmsd, min_drmsd, total_match_count, edge_count, nres, plddt"
     }
 
     /// Get the default sort order for this key
     pub fn default_order(&self) -> SortOrder {
         match self {
             // Higher is better
-            Self::MaxNodeCount | Self::NodeCount | Self::Idf | Self::TotalMatchCount | 
-            Self::EdgeCount | Self::Nres | Self::Plddt => SortOrder::Desc,
+            Self::MaxNodeCount | Self::NodeCount | Self::Idf | Self::StructureScore
+            | Self::TotalMatchCount | Self::EdgeCount | Self::Nres | Self::Plddt => SortOrder::Desc,
             // Lower is better
             Self::MinRmsd | Self::MinDrmsd => SortOrder::Asc,
         }
@@ -340,6 +346,7 @@ impl StructureSortKey {
             Self::Idf => result.idf,
             Self::MinRmsd => result.min_rmsd_with_max_match,
             Self::MinDrmsd => result.min_drmsd_with_max_match,
+            Self::StructureScore => result.structure_score(),
             Self::TotalMatchCount => result.total_match_count as f32,
             Self::EdgeCount => result.edge_count as f32,
             Self::Nres => result.nres as f32,
@@ -431,11 +438,11 @@ impl StructureSortStrategy {
         Ordering::Equal
     }
 
-    /// Default: matched residues (desc) -> RMSD of that match (asc). Chosen in
+    /// Default: `structure_score` (desc) -> RMSD of the best match (asc). Chosen in
     /// docs/feature_evaluation.md §15.
     pub fn default() -> Self {
         Self::new()
-            .then_by_default(StructureSortKey::MaxNodeCount)
+            .then_by_default(StructureSortKey::StructureScore)
             .then_by_default(StructureSortKey::MinRmsd)
     }
     

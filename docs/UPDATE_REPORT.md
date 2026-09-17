@@ -9,11 +9,11 @@ State of `feature-integration`. Measurements live in `feature_evaluation.md`; us
   one may be missing from five up) and RMSD ≤ 1.0 Å for queries of at most 12 residues; longer
   queries keep coverage only. Explicit filters win, `--skip-match` gets coverage only.
   `confident_filters` in `query_pdb.rs`.
-- Default sort is now `coverage_idf:desc,rmsd:asc` per match and
-  `max_node_count:desc,min_rmsd:asc` per structure. `coverage_idf` = `idf` × matched fraction,
-  a new sort key and output column (`MatchResult::coverage_idf`).
-- Selected on M-CSA q250 and the motif set from re-sorted raw output; see
-  `feature_evaluation.md` §15.
+- Default sort is now `match_score:desc,rmsd:asc` per match (`idf` × coverage² × TM-score) and
+  `structure_score:desc,min_rmsd:asc` per structure (matched² × √`idf` / (1 + RMSD)); both are
+  sort keys and output columns, as is `coverage_idf`.
+- Selected from 281 lexicographic orders and 69 composite scores on re-sorted raw output
+  (M-CSA q250 + motif), validated on 492 held-out M-CSA queries; see `feature_evaluation.md` §15.
 
 ### Substitution scoring (latest)
 - The query map stores a weight per hash: 1 for the query's own residues, `SUBSTITUTION_WEIGHT`

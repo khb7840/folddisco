@@ -50,6 +50,15 @@ pub struct StructureResult<'a> {
 }
 
 impl<'a> StructureResult<'a> {
+    /// Default ranking score: matched residues^2 x sqrt(IDF) / (1 + RMSD). Query length is
+    /// constant within a query, so counts rank the same as coverage.
+    /// Chosen in docs/feature_evaluation.md §15.
+    pub fn structure_score(&self) -> f32 {
+        let matched = self.max_matching_node_count as f32;
+        let rmsd = if self.min_rmsd_with_max_match.is_finite() { self.min_rmsd_with_max_match } else { 0.0 };
+        matched * matched * self.idf.max(0.0).sqrt() / (1.0 + rmsd)
+    }
+
     pub fn new(
         tid: &'a str, nid: usize, total_match_count: usize, node_count: usize, edge_count: usize,
         idf: f32, nres: usize, plddt: f32, db_key: usize
@@ -146,12 +155,24 @@ pub struct MatchResult<'a> {
 }
 
 impl<'a> MatchResult<'a> {
-    /// IDF scaled by the fraction of query residues this match covers; the default sort key.
+    /// IDF scaled by the fraction of query residues this match covers.
     pub fn coverage_idf(&self) -> f32 {
         if self.matching_residues.is_empty() {
             return self.idf;
         }
         self.idf * self.node_count as f32 / self.matching_residues.len() as f32
+    }
+
+    /// Default ranking score: evidence (IDF) x coverage^2 x geometric quality (TM-score).
+    /// Chosen in docs/feature_evaluation.md §15.
+    pub fn match_score(&self) -> f32 {
+        let coverage = if self.matching_residues.is_empty() {
+            1.0
+        } else {
+            self.node_count as f32 / self.matching_residues.len() as f32
+        };
+        let tm_score = if self.metrics.tm_score.is_finite() { self.metrics.tm_score } else { 0.0 };
+        self.idf * coverage * coverage * tm_score
     }
 
     pub fn new(
@@ -248,6 +269,7 @@ fn build_structure_result_columns<'a>(
         Column::new("plddt", "pLDDT score", |r: &StructureResult| Value::Float(r.plddt, 2)),
         Column::new("max_node_cov", "Max node coverage", |r: &StructureResult| (r.max_matching_node_count as u64).into()),
         Column::new("min_rmsd", "Min RMSD", |r: &StructureResult| Value::Float(r.min_rmsd_with_max_match, DEFAULT_FLOAT_PRECISION)),
+        Column::new("structure_score", "matched^2 x sqrt(IDF) / (1 + RMSD)", |r: &StructureResult| Value::Float(r.structure_score(), DEFAULT_FLOAT_PRECISION)),
         Column::new("min_drmsd", "Min dRMSD", |r: &StructureResult| Value::Float(r.min_drmsd_with_max_match, DEFAULT_FLOAT_PRECISION)),
         Column::new("matching_residues", "Matching residues with RMSD", move |r: &StructureResult| {
             if r.matching_residues_processed.is_empty() {
@@ -276,6 +298,7 @@ fn build_match_result_columns<'a>(
         Column::new("node_count", "Node count", |r: &MatchResult| (r.node_count as u64).into()),
         Column::new("idf", "IDF score", |r: &MatchResult| Value::Float(r.idf, DEFAULT_FLOAT_PRECISION)),
         Column::new("coverage_idf", "IDF x matched residue fraction", |r: &MatchResult| Value::Float(r.coverage_idf(), DEFAULT_FLOAT_PRECISION)),
+        Column::new("match_score", "IDF x coverage^2 x TM-score", |r: &MatchResult| Value::Float(r.match_score(), DEFAULT_FLOAT_PRECISION)),
         Column::new("rmsd", "RMSD", |r: &MatchResult| Value::Float(r.rmsd, DEFAULT_FLOAT_PRECISION)),
         Column::new("e_value", "E-value", |r: &MatchResult| Value::ScientificFloat(r.evalue, 4)),
         Column::new("u_matrix", "Rotation matrix", |r: &MatchResult| Value::Float3DMatrix(r.u_matrix, DEFAULT_FLOAT_PRECISION, ",")),
@@ -521,6 +544,50 @@ pub fn sort_and_print_match_query_result(
 }
 
 // TODO: Need testing
+
+#[cfg(test)]
+mod default_score_tests {
+    use super::*;
+    use crate::structure::chain_id::ChainId;
+
+    fn match_result(node_count: usize, query_length: usize, idf: f32, tm_score: f32) -> MatchResult<'static> {
+        let residues: Vec<ResidueMatch> = (0..query_length)
+            .map(|i| (i < node_count).then(|| (ChainId::from_byte(b'A'), i as u64)))
+            .collect();
+        let mut metrics = StructureSimilarityMetrics::default();
+        metrics.tm_score = tm_score;
+        MatchResult::new(
+            "t", 0, idf, residues, 0.5, [[0.0; 3]; 3], [0.0; 3], Vec::new(), 0, 1000, query_length, metrics,
+        )
+    }
+
+    /// The default per-match score: IDF x coverage^2 x TM-score.
+    #[test]
+    fn match_score_weights_coverage_and_geometry() {
+        let full = match_result(4, 4, 10.0, 0.5);
+        assert!((full.match_score() - 5.0).abs() < 1e-5, "{}", full.match_score());
+        // Half the residues matched: coverage^2 quarters the score
+        let half = match_result(2, 4, 10.0, 0.5);
+        assert!((half.match_score() - 1.25).abs() < 1e-5, "{}", half.match_score());
+        assert!((full.coverage_idf() - 10.0).abs() < 1e-5);
+        assert!((half.coverage_idf() - 5.0).abs() < 1e-5);
+        // A worse superposition ranks below an equal-coverage match
+        assert!(match_result(4, 4, 10.0, 0.9).match_score() > full.match_score());
+    }
+
+    /// The default per-structure score: matched^2 x sqrt(IDF) / (1 + RMSD).
+    #[test]
+    fn structure_score_weights_matched_residues_and_rmsd() {
+        let mut r = StructureResult::new("t", 0, 5, 3, 4, 16.0, 100, 90.0, 0);
+        r.max_matching_node_count = 3;
+        r.min_rmsd_with_max_match = 1.0;
+        assert!((r.structure_score() - 18.0).abs() < 1e-4, "{}", r.structure_score());
+        let mut worse = StructureResult::new("t", 0, 5, 3, 4, 16.0, 100, 90.0, 0);
+        worse.max_matching_node_count = 2;
+        worse.min_rmsd_with_max_match = 1.0;
+        assert!(worse.structure_score() < r.structure_score());
+    }
+}
 
 #[cfg(test)]
 mod tests {
