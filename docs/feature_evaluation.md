@@ -474,10 +474,25 @@ Per structure the same family wins, without a TM-score (structure rows carry onl
 | **`structure_score` = `matched²·√idf/(1+rmsd)`, min_rmsd** (shipped) | **0.4771** | **0.6274** | 0.0731 |
 
 Held out: 0.4863 / 0.6349 against 0.4321 / 0.6033 for `max_node_count,min_rmsd` and 0.3699 /
-0.5320 for the 2.x default. The four motif queries prefer plain coverage on Sens@1FP (0.1671 vs
-0.0731) while their AP still rises (0.9265 → 0.9335); M-CSA, with 250 and 492 queries, decides.
-Query length is constant within a query, so ranking by matched residues² is the same order as
-coverage².
+0.5320 for the 2.x default; paired, `structure_score` − `max_node_count` is +0.0542 Sens@1FP
+[+0.042, +0.068] and +0.0316 AP [+0.022, +0.041], and dropping the √idf term costs 0.0134 /
+0.0185. Query length is constant within a query, so matched residues² ranks the same as coverage².
+
+**The motif set disagrees, on Sens@1FP only.** Under the published protocol filters the coverage
+term is constant, so the score reduces to √idf/(1+RMSD). Over the four matched commands:
+
+| per-structure order | motif Sens@1FP | Sens@5FP | AP | M-CSA held-out Sens@1FP |
+| --- | --- | --- | --- | --- |
+| `idf,min_rmsd` (2.x) | 0.0913 | 0.4785 | 0.8778 | 0.3699 |
+| `max_node_count,min_rmsd` | **0.2275** | 0.5856 | 0.8786 | 0.4321 |
+| `matched²/(1+rmsd)` | 0.1316 | **0.5879** | 0.8780 | 0.4729 |
+| `structure_score` (shipped) | 0.0731 | 0.5669 | 0.8785 | **0.4863** |
+
+The loss sits in the first ranks of two queries (D2 0.5650 → 0.0552, C2 0.2661 → 0.1532) while
+average precision is flat at 0.878 for every order, and B2 — which loses most on Sens@1FP —
+doubles its Sens@5FP. 742 M-CSA queries outweigh four motif queries on a k=1 metric, so
+`structure_score` ships; `--sort-by max_node_count,min_rmsd` reproduces the coverage-first order
+for family-level searches with a coverage filter already applied.
 
 ### 15.2 `--confident`
 

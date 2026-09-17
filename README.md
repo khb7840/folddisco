@@ -375,7 +375,9 @@ data/serine_peptidases/1azw.pdb	0.1856	2	2	2	2	0.9234	626	34.2399	A179,_,B176:0.
   `match_score:desc,rmsd:asc` per match, where `match_score` is `idf` × (matched fraction of the
   query)² × TM-score, and `structure_score:desc,min_rmsd:asc` per structure, where
   `structure_score` is matched residues² × √`idf` / (1 + RMSD). Both are also output columns.
-  With `--skip-match` there is no match to score, so results stay in IDF order.
+  With `--skip-match` there is no match to score, so results stay in IDF order. For a family-level
+  search whose filters already fix the coverage, `--sort-by max_node_count,min_rmsd` ranks by
+  geometry alone.
 - `--format-output`: Custom output format using column names.
 - `--top <N>`: Outputs top N results.
 - `--header`: Outputs header for the result.
