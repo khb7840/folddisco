@@ -5,7 +5,7 @@ Measurement record for the `feature-integration` branch. It ships:
 1. **Sensitive search**: joint bin expansion, `--sensitive` / `--expand-radius` (§2–§4)
 2. **Binary lookup cache**: automatic, no flag (§5)
 3. **Novelty evidence mode**: `--novelty-mode`, one evidence row per query, no verdict (§10)
-4. **Amino acid substitution schemes**: `--aa-subst blosum62|group|size` and per-residue `:*`. Not benchmarked yet.
+4. **Amino acid substitution schemes**: `--aa-subst blosum62|group|size` and per-residue `:*`, with substitution-aware scoring (§14)
 5. **Index-time expansion**: `folddisco index --expand-radius/--expand-distance/--expand-angle/--aa-subst`. Not benchmarked yet.
 
 Also: superposition-free deformation metrics (`drmsd`, `min_drmsd`, §9) and a fixed `-q F204-F215` parse (§12).
@@ -336,5 +336,63 @@ chain on the end is rejected with a message.
 - Fragility analysis perturbs answer sets, not indices or queries.
 - `-d 2.0 -a 20` in §4 is outside the author's protocol.
 - §9, §10 and the last five rows of §8 predate the author's protocol.
-- Substitution schemes and index-time expansion have no benchmark yet.
+- Index-time expansion has no benchmark yet. Substitution was measured on M-CSA only (§14).
 - Single machine, 20 cores, local NVMe, warm cache.
+
+## 14. Amino acid substitution
+
+**Benchmarks** (M-CSA index, `--top 6000`, Sens@1FP; paired over queries, 95% bootstrap CI):
+
+- *exact*: the M-CSA queries as published. Substitution can only cost here.
+- *mutant*: each query with one residue renamed to its best BLOSUM62 alternative (His→Tyr,
+  Asp→Glu, …; `fd-branchbench/scripts/make_mutant_queries.py`), same answer sets. Renaming
+  drops q250 from 0.4465 to 0.2851; substitution should win it back.
+- M-CSA answer sets hold aligned homologues, not identical residues: 4,468 q250 answers
+  differ from the query at one catalytic position.
+
+**Why the first scheme failed.** The per-pair 4096-hash cap never binds at default
+tolerances (radius 2: 50 bins × ≤36 residue pairs). The loss came from scoring: every
+substituted hash added its full IDF, a rare substitution outscored the exact pair, and
+common residues (the aliphatic group) grew large matched components. q60, exact:
+Sens@1FP 0.4680 → 0.3537 (blosum62), 0.3982 (group), 0.3097 (size), at 37–60 s per query.
+
+**Selection** (q250; Δ vs exact search on the same queries):
+
+| scoring | mutant `:*` | mutant `--aa-subst blosum62` | exact `--aa-subst blosum62`, Δ | exact `:*`, Δ |
+| --- | --- | --- | --- | --- |
+| aa5542d (full IDF) | 0.4241 | 0.3703¹ | −0.1143¹ | — |
+| weight 1.0 + cap + edge + matched | **0.4237** | 0.3968 | −0.0198 (−0.034, −0.007) | −0.0050 |
+| weight 0.75 + edge + matched | 0.4149 | **0.4021** | −0.0094 (−0.022, +0.002) | −0.0045 |
+| **weight 0.75 + cap + edge + matched** (shipped) | 0.4123 | 0.4015 | **−0.0017** (−0.011, +0.008) | **−0.0034** |
+
+¹ q60. *cap*: substituted IDF ≤ the query pair's; *edge*: one substituted hit per query edge
+and none with an exact hit; *matched*: per-match IDF counts substituted edges only between
+matched residues. On q60, weight 0.5 without *matched* kept exact at −0.0055 but recovered
+only 0.3879 on mutants; weight 0.25 was worse on both; weight 1.0 with *edge* alone left exact
+at −0.085.
+
+Shipped scoring against exact search on mutants: `:*` +0.1273 (159 wins / 11 losses),
+`--aa-subst blosum62` +0.1164 (158 / 18); mean 3.4 s and 5.7 s per query vs 2.8 s exact
+and 10.6 s for aa5542d `:*`.
+
+Matching above 200 query hashes now prefilters target residues by amino acid code; outputs
+were byte-identical on q60 (blosum62) and runtime fell 17.1 → 8.3 s per query.
+
+**Shipped (78bb4a6), exact M-CSA q250** (Δ vs default 0.4465; seconds per query):
+
+| flags | Sens@1FP | Δ (win/loss) | runtime |
+| --- | --- | --- | --- |
+| (default) | 0.4465 | — | 2.65 (5.78 at aa5542d) |
+| `--sensitive` | 0.4536 | +0.0071 (95/41) | 3.01 (9.58) |
+| `--aa-subst blosum62` | 0.4447 | −0.0017 (44/40) | 5.67 |
+| `--aa-subst group` | 0.4468 | +0.0004 (44/38) | 6.53 |
+| `--aa-subst size` | 0.4426 | −0.0039 (46/55) | 6.76 |
+| `--sensitive --aa-subst blosum62` | 0.4507 | +0.0043 (95/61) | 5.48 |
+
+- Answers ranked before the first FP: conservative single-substitution 458 → 549 with
+  blosum62, exact 5,747 → 5,531.
+- Motif commands: substitution keeps default Sens@1FP on C1/C2 (0.2339; aa5542d 0.0000);
+  D1/D2 F1 0.66–0.84 (aa5542d 0.005–0.34); D2 runtime 51–77 s → 17–23 s. Set F1 on the
+  prefilter commands still falls (C1 0.883 → 0.370), since more structures pass `--covered-node`.
+- Use substitution when the residues may differ; on exact-residue answer sets it is neutral
+  at best.
