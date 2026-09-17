@@ -25,10 +25,27 @@ pub const MAX_HASHES_PER_PAIR: usize = 4096;
 /// Chosen in docs/feature_evaluation.md §14.
 pub const SUBSTITUTION_WEIGHT: f32 = 0.75;
 
-/// Query hash -> (query residue pair, weight, IDF).
-/// Weight is 1 for the query's own amino acids and `SUBSTITUTION_WEIGHT` per substituted
-/// side. IDF is the observed hash's; a substituted hash keeps its own if that is lower.
-pub type QueryHashMap = HashMap<GeometricHash, ((usize, usize), f32, f32)>;
+/// What a query hash stands for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QueryHash {
+    /// Query residue indices of the pair.
+    pub pair: (usize, usize),
+    /// 1 for the query's own amino acids, `SUBSTITUTION_WEIGHT` per substituted side.
+    pub weight: f32,
+    /// The observed hash's IDF; a substituted hash keeps its own if that is lower.
+    pub idf: f32,
+    /// Observed geometry, not a neighbouring bin.
+    pub observed: bool,
+}
+
+impl QueryHash {
+    /// Exact residues at the observed geometry.
+    pub fn is_exact(&self) -> bool {
+        self.weight >= 1.0 && self.observed
+    }
+}
+
+pub type QueryHashMap = HashMap<GeometricHash, QueryHash>;
 
 /// IDF of `hash` in `index`: log2(total structures / structures with the hash); 0 if absent.
 pub fn calculate_idf_for_hash(
@@ -63,13 +80,14 @@ pub fn parse_threshold_string(threshold_string: Option<String>) -> Vec<f32> {
     thresholds
 }
 
-/// Insert `feature`'s hash(es). An existing entry is kept unless the new one has a
-/// higher weight, so an exact hash is never shadowed by another pair's substitution.
+/// Insert `feature`'s hash(es). An existing entry is kept unless the new one has a higher
+/// weight, or the same weight at observed geometry, so an exact hash is never shadowed by
+/// another pair's substitution or neighbouring bin.
 fn insert_binned_hash(
     hash_collection: &mut QueryHashMap,
-    feature: &Vec<f32>, indices: (usize, usize), hash_type: HashType,
+    feature: &Vec<f32>, hash_type: HashType,
     nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
-    weight: f32, idf: f32,
+    value: QueryHash,
 ) {
     if let Some(multiple_bin) = multiple_bin {
         for (nbin_dist, nbin_angle) in multiple_bin.iter() {
@@ -78,7 +96,7 @@ fn insert_binned_hash(
             } else {
                 GeometricHash::perfect_hash(feature, hash_type, *nbin_dist, *nbin_angle)
             };
-            insert_if_heavier(hash_collection, hash_value, (indices, weight, idf));
+            insert_if_heavier(hash_collection, hash_value, value);
         }
     } else {
         let hash_value = if nbin_dist == 0 || nbin_angle == 0 {
@@ -86,15 +104,13 @@ fn insert_binned_hash(
         } else {
             GeometricHash::perfect_hash(feature, hash_type, nbin_dist, nbin_angle)
         };
-        insert_if_heavier(hash_collection, hash_value, (indices, weight, idf));
+        insert_if_heavier(hash_collection, hash_value, value);
     }
 }
 
-fn insert_if_heavier(
-    hash_collection: &mut QueryHashMap, hash: GeometricHash, value: ((usize, usize), f32, f32),
-) {
+fn insert_if_heavier(hash_collection: &mut QueryHashMap, hash: GeometricHash, value: QueryHash) {
     match hash_collection.get(&hash) {
-        Some(&(_, weight, _)) if weight >= value.1 => {}
+        Some(old) if (old.weight, old.observed) >= (value.weight, value.observed) => {}
         _ => { hash_collection.insert(hash, value); }
     }
 }
@@ -227,8 +243,8 @@ fn make_query_map_from_structure(
             let idf = calculate_idf_for_hash(&observed_hash, index, total_structures);
             let pair = (indices[i], indices[j]);
             insert_binned_hash(
-                &mut hash_collection, &feature, pair,
-                hash_type, nbin_dist, nbin_angle, multiple_bin, 1.0, idf
+                &mut hash_collection, &feature, hash_type, nbin_dist, nbin_angle, multiple_bin,
+                QueryHash { pair, weight: 1.0, idf, observed: true },
             );
 
             // Substitutions apply to every geometric neighbour too, so `164:H` is not
@@ -266,9 +282,12 @@ fn make_query_map_from_structure(
                         }
                         _ => (1.0, idf),
                     };
+                    let observed = (0..variant.len()).all(|k| {
+                        aa_indices.map_or(false, |(a0, a1)| k == a0 || k == a1) || variant[k] == feature[k]
+                    });
                     insert_binned_hash(
-                        &mut hash_collection, variant, pair,
-                        hash_type, nbin_dist, nbin_angle, multiple_bin, weight, idf
+                        &mut hash_collection, variant, hash_type, nbin_dist, nbin_angle, multiple_bin,
+                        QueryHash { pair, weight, idf, observed },
                     )
                 },
             );
@@ -454,7 +473,10 @@ mod tests {
             &None, 1000.0
         );
         // Without substitutions every hash carries the query's own residues
-        assert!(hash_collection.values().all(|(_, weight, _)| *weight == 1.0));
+        assert!(hash_collection.values().all(|h| h.weight == 1.0));
+        // Observed geometry for at most one hash per ordered pair, neighbours for the rest
+        let observed = hash_collection.values().filter(|h| h.observed).count();
+        assert!(observed > 0 && observed <= 6, "observed hashes: {}", observed);
         assert!(hash_collection.len() > 6);
     }
 
@@ -539,11 +561,12 @@ mod tests {
         let substituted = zinc_finger_query_map(
             &tolerance, vec![Some(vec![8]), Some(vec![8]), None] // 8 = HIS
         );
-        for (hash, (_, weight, _)) in plain.iter() {
-            assert_eq!(*weight, 1.0);
-            assert_eq!(substituted[hash].1, 1.0, "an exact hash lost its weight");
+        for (hash, h) in plain.iter() {
+            assert_eq!(h.weight, 1.0);
+            assert_eq!(substituted[hash].weight, 1.0, "an exact hash lost its weight");
+            assert_eq!(substituted[hash].observed, h.observed);
         }
-        let weight = |w: f32| substituted.values().filter(|(_, x, _)| *x == w).count();
+        let weight = |w: f32| substituted.values().filter(|h| h.weight == w).count();
         assert_eq!(weight(1.0), plain.len());
         assert!(weight(SUBSTITUTION_WEIGHT) > 0);
         assert!(weight(SUBSTITUTION_WEIGHT * SUBSTITUTION_WEIGHT) > 0);

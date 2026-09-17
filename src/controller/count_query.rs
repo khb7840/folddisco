@@ -306,8 +306,8 @@ fn build_node_groups(
     let mut node_groups: HashMap<usize, Vec<((usize, usize), GeometricHash, f32, f32)>> = HashMap::default();
 
     for &query in sampled_queries {
-        if let Some(&(edge, weight, idf)) = query_map.get(&query) {
-            node_groups.entry(edge.0).or_insert_with(Vec::new).push((edge, query, weight, idf));
+        if let Some(h) = query_map.get(&query) {
+            node_groups.entry(h.pair.0).or_insert_with(Vec::new).push((h.pair, query, h.weight, h.idf));
         }
     }
     for (_, chunk) in node_groups.iter_mut() {
@@ -320,6 +320,7 @@ mod tests {
     use super::*;
     use crate::geometry::core::HashType;
     use crate::index::lookup::{load_lookup_from_file, save_lookup_to_file};
+    use crate::controller::query::QueryHash;
 
     fn hash(value: u32) -> GeometricHash {
         GeometricHash::from_u32(value, HashType::PDBTrRosetta)
@@ -352,10 +353,11 @@ mod tests {
         let lookup = load_lookup_from_file(&lookup_path);
 
         let mut query_map = QueryHashMap::default();
-        query_map.insert(hash(0), ((0, 1), 1.0, 9.0));
-        query_map.insert(hash(1), ((0, 1), 0.5, 1.0));
-        query_map.insert(hash(2), ((0, 1), 0.5, 1.2));
-        query_map.insert(hash(3), ((0, 2), 0.25, 2.0));
+        let entry = |pair, weight, idf| QueryHash { pair, weight, idf, observed: true };
+        query_map.insert(hash(0), entry((0, 1), 1.0, 9.0));
+        query_map.insert(hash(1), entry((0, 1), 0.5, 1.0));
+        query_map.insert(hash(2), entry((0, 1), 0.5, 1.2));
+        query_map.insert(hash(3), entry((0, 2), 0.25, 2.0));
         let queries = (0..4).map(hash).collect::<Vec<_>>();
 
         let mut results = count_query(&queries, &query_map, &index, &lookup, None, None, None, None);

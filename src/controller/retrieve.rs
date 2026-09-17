@@ -16,7 +16,7 @@ use crate::utils::combination::{CombinationIterator, CombinationVecIterator};
 use crate::controller::graph::{connected_components_with_given_node_count, create_index_graph};
 use crate::controller::feature::get_single_feature;
 use crate::controller::ResidueMatch;
-use crate::controller::query::QueryHashMap;
+use crate::controller::query::{QueryHash, QueryHashMap};
 use crate::controller::io::read_structure_from_path;
 
 #[cfg(feature = "foldcomp")]
@@ -609,7 +609,7 @@ pub fn map_query_and_retrieved_residues(
     node_count: usize,
     query_symmetry_map: &HashMap<GeometricHash, bool>,
 ) -> (Vec<usize>, Vec<usize>) {
-    let max_query_idx = query_map.values().map(|((i, j), _, _)| (*i).max(*j)).max().unwrap_or(0);
+    let max_query_idx = query_map.values().map(|h| h.pair.0.max(h.pair.1)).max().unwrap_or(0);
     let max_retrieved_idx = retrieved.node_weights().max().copied().unwrap_or(0);
     
     let q_size = max_query_idx + 1;
@@ -632,7 +632,7 @@ pub fn map_query_and_retrieved_residues(
         let (i, j) = retrieved.edge_endpoints(edge).unwrap();
         let hash = retrieved[edge];
         
-        if let Some(&((query_i, query_j), _, _)) = query_map.get(&hash) {
+        if let Some(&QueryHash { pair: (query_i, query_j), .. }) = query_map.get(&hash) {
             let is_symmetric = *query_symmetry_map.get(&hash).unwrap();
             
             let pairs = if is_symmetric {
@@ -701,8 +701,9 @@ pub fn map_query_and_retrieved_residues(
     (query_indices, retrieved_indices)
 }
 
-/// Sum of weighted query IDFs over the subgraph's edges. Substituted edges count only
-/// between `matched` residues, so a large component of similar residues adds nothing.
+/// Sum of weighted query IDFs over the subgraph's edges. Edges from substituted or
+/// neighbouring-bin hashes count only between `matched` residues, so a large component of
+/// similar residues adds nothing.
 pub fn calculate_subgraph_idf(
     subgraph: &Graph<usize, GeometricHash>,
     query_map: &QueryHashMap,
@@ -712,14 +713,14 @@ pub fn calculate_subgraph_idf(
     
     for edge in subgraph.edge_indices() {
         let hash = subgraph[edge];
-        if let Some(&(_, weight, idf)) = query_map.get(&hash) {
-            if weight < 1.0 {
+        if let Some(h) = query_map.get(&hash) {
+            if !h.is_exact() {
                 let (i, j) = subgraph.edge_endpoints(edge).unwrap();
                 if !matched.contains(&subgraph[i]) || !matched.contains(&subgraph[j]) {
                     continue;
                 }
             }
-            total_idf += weight * idf;
+            total_idf += h.weight * h.idf;
         }
     }
     
@@ -846,7 +847,7 @@ mod tests {
     use crate::controller::expand::ToleranceConfig;
 
     #[test]
-    fn substituted_edges_score_only_between_matched_residues() {
+    fn non_exact_edges_score_only_between_matched_residues() {
         let hash = |v: u32| GeometricHash::from_u32(v, HashType::PDBTrRosetta);
         let mut graph: Graph<usize, GeometricHash> = Graph::new();
         let nodes: Vec<_> = [1usize, 2, 3, 9].iter().map(|&r| graph.add_node(r)).collect();
@@ -854,13 +855,17 @@ mod tests {
         graph.add_edge(nodes[1], nodes[2], hash(1)); // substituted, matched
         graph.add_edge(nodes[2], nodes[3], hash(2)); // substituted, residue 9 unmatched
         graph.add_edge(nodes[0], nodes[3], hash(3)); // exact, counted as before
+        let entry = |pair, weight, idf, observed| QueryHash { pair, weight, idf, observed };
         let mut query_map = QueryHashMap::default();
-        query_map.insert(hash(0), ((0, 1), 1.0, 2.0));
-        query_map.insert(hash(1), ((1, 2), 0.5, 4.0));
-        query_map.insert(hash(2), ((1, 2), 0.5, 8.0));
-        query_map.insert(hash(3), ((0, 2), 1.0, 1.0));
+        query_map.insert(hash(0), entry((0, 1), 1.0, 2.0, true));
+        query_map.insert(hash(1), entry((1, 2), 0.5, 4.0, true));
+        query_map.insert(hash(2), entry((1, 2), 0.5, 8.0, true));
+        query_map.insert(hash(3), entry((0, 2), 1.0, 1.0, true));
         let matched: HashSet<usize> = [1, 2, 3].into_iter().collect();
         assert_eq!(calculate_subgraph_idf(&graph, &query_map, &matched), 2.0 + 0.5 * 4.0 + 1.0);
+        // A neighbouring bin is treated like a substitution
+        query_map.insert(hash(3), entry((0, 2), 1.0, 1.0, false));
+        assert_eq!(calculate_subgraph_idf(&graph, &query_map, &matched), 2.0 + 0.5 * 4.0);
     }
 
     #[test]
