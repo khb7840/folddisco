@@ -222,6 +222,8 @@ F1 on the human proteome (details in [feature_evaluation.md](docs/feature_evalua
 
 `--aa-subst <MODE>` lets every query residue without an explicit `:ALT` match similar residues;
 `:*` does the same for one residue. Substitutions compose with the geometric tolerance.
+A substituted residue scores 0.75 of an exact one and never above the query's own residue pair,
+so exact matches rank first. Prefer `:*` on the residues expected to vary.
 
 | mode | alternatives for the observed residue |
 | --- | --- |

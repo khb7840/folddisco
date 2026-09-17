@@ -16,12 +16,13 @@ use crate::utils::combination::{CombinationIterator, CombinationVecIterator};
 use crate::controller::graph::{connected_components_with_given_node_count, create_index_graph};
 use crate::controller::feature::get_single_feature;
 use crate::controller::ResidueMatch;
+use crate::controller::query::QueryHashMap;
 use crate::controller::io::read_structure_from_path;
 
 #[cfg(feature = "foldcomp")]
 use crate::structure::io::fcz::FoldcompDbReader;
 
-const PREFILTER_AA_SKIPPING_SIZE: usize = 200; // If query vector is larger than this, skip prefiltering amino acids
+const PREFILTER_AA_SKIPPING_SIZE: usize = 200; // Above this, prefilter by amino acid code instead of name
 const RESIDUE_RESCUE_COUNT_CUTOFF: usize = 2; 
 
 /// Distinct (aa1, aa2) codes decoded from `hash_vec` with default binning.
@@ -51,11 +52,11 @@ pub fn res_vec_as_string(res_vec: &Vec<((u8, u8), (u64, u64))>) -> String {
 
 /// Target residue pairs whose hash is in `hash_set`, and (query residue, target pair)
 /// candidates whose amino acids and Ca distance agree with `query_aa_dist_map`.
-/// Only `prefilter` pairs are scanned when it is non-empty.
+/// Only `prefilter` pairs are scanned when given; `None` scans every pair.
 pub fn retrieve_with_prefilter(
     compact: &CompactStructure,
     hash_set: &HashSet<GeometricHash>,
-    prefilter: CombinationVecIterator,
+    prefilter: Option<CombinationVecIterator>,
     nbin_dist: usize,
     nbin_angle: usize,
     multiple_bin: &Option<Vec<(usize, usize)>>,
@@ -142,13 +143,9 @@ pub fn retrieve_with_prefilter(
         }
     };
 
-    if prefilter.is_empty() {
-        let comb = CombinationIterator::new(compact.num_residues);
-        comb.for_each(|(i, j)| process_pair(i, j));
-    } else {
-        for (i, j) in prefilter {
-            process_pair(i, j);
-        }
+    match prefilter {
+        None => CombinationIterator::new(compact.num_residues).for_each(|(i, j)| process_pair(i, j)),
+        Some(pairs) => pairs.for_each(|(i, j)| process_pair(i, j)),
     }
 
     (output, candidate_pairs)
@@ -170,7 +167,7 @@ pub fn retrieval_wrapper_for_foldcompdb(
     db_key: usize, node_count: usize, query_vector: &Vec<GeometricHash>,
     _hash_type: HashType, _nbin_dist: usize, _nbin_angle: usize,
     multiple_bin: &Option<Vec<(usize, usize)>>, dist_cutoff: f32,
-    query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
+    query_map: &QueryHashMap,
     query_structure: &CompactStructure, all_query_indices: &Vec<usize>,
     aa_dist_map: &HashMap<(u8, u8), Vec<(f32, usize)>>,
     ca_distance_cutoff: f32, partial_fit: bool,
@@ -185,15 +182,7 @@ pub fn retrieval_wrapper_for_foldcompdb(
     let query_set: HashSet<GeometricHash> = HashSet::from_iter(query_vector.clone());
     let query_symmetry_map = get_hash_symmetry_map(&query_set);
 
-    let aa_filter = if _hash_type.amino_acid_index().is_some() {
-        let (index_set1, index_set2) = prefilter_amino_acid(&query_set, _hash_type, &compact);
-        CombinationVecIterator::new_from_btreesets(&index_set1, &index_set2)
-    } else {
-        CombinationVecIterator::new(vec![], vec![])
-    };
-    
-    // let (index_set1, index_set2) = prefilter_amino_acid(&query_set, _hash_type, &compact);
-    // let aa_filter = CombinationVecIterator::new_from_btreesets(&index_set1, &index_set2);
+    let aa_filter = amino_acid_prefilter(&query_set, _hash_type, &compact, aa_dist_map);
     let (indices_found , candidate_pairs) = retrieve_with_prefilter(
         &compact, &query_set, aa_filter, _nbin_dist, _nbin_angle, multiple_bin,
         dist_cutoff, ca_distance_cutoff, aa_dist_map
@@ -224,14 +213,13 @@ pub fn retrieval_wrapper_for_foldcompdb(
         );
         let node_count = subgraph.node_count();
         
-        let subgraph_idf = calculate_subgraph_idf(&subgraph, query_map);
-        
         // Find mapping between query residues and retrieved residues
         let (query_indices, retrieved_indices) = map_query_and_retrieved_residues(
             &subgraph, query_map, node_count, &query_symmetry_map,
         );
 
         let retrieved_indices_set: HashSet<usize> = retrieved_indices.iter().cloned().collect();
+        let subgraph_idf = calculate_subgraph_idf(&subgraph, query_map, &retrieved_indices_set);
         let query_to_retrieved: HashMap<usize, usize> = query_indices.iter()
             .zip(retrieved_indices.iter())
             .map(|(&q, &r)| (q, r))
@@ -346,7 +334,7 @@ pub fn retrieval_wrapper(
     path: &str, node_count: usize, query_vector: &Vec<GeometricHash>,
     _hash_type: HashType, _nbin_dist: usize, _nbin_angle: usize, 
     multiple_bin: &Option<Vec<(usize, usize)>>, dist_cutoff: f32,
-    query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
+    query_map: &QueryHashMap,
     query_structure: &CompactStructure, all_query_indices: &Vec<usize>,
     aa_dist_map: &HashMap<(u8, u8), Vec<(f32, usize)>>,
     ca_distance_cutoff: f32, partial_fit: bool,
@@ -359,15 +347,7 @@ pub fn retrieval_wrapper(
     let query_set: HashSet<GeometricHash> = HashSet::from_iter(query_vector.clone());
     let query_symmetry_map = get_hash_symmetry_map(&query_set);
     
-    // let (index_set1, index_set2) = prefilter_amino_acid(&query_set, _hash_type, &compact);
-
-    let aa_filter = if _hash_type.amino_acid_index().is_some() {
-        let (index_set1, index_set2) = prefilter_amino_acid(&query_set, _hash_type, &compact);
-        CombinationVecIterator::new_from_btreesets(&index_set1, &index_set2)
-    } else {
-        CombinationVecIterator::new(vec![], vec![])
-    };
-
+    let aa_filter = amino_acid_prefilter(&query_set, _hash_type, &compact, aa_dist_map);
 
     let (indices_found , candidate_pairs) = retrieve_with_prefilter(
         &compact, &query_set, aa_filter, _nbin_dist, _nbin_angle,
@@ -401,14 +381,13 @@ pub fn retrieval_wrapper(
         
         let node_count = subgraph.node_count();
         
-        let subgraph_idf = calculate_subgraph_idf(&subgraph, query_map);
-        
         // Find mapping between query residues and retrieved residues
         let (query_indices, retrieved_indices) = map_query_and_retrieved_residues(
             &subgraph, query_map, node_count, &query_symmetry_map,
         );
 
         let retrieved_indices_set: HashSet<usize> = retrieved_indices.iter().cloned().collect();
+        let subgraph_idf = calculate_subgraph_idf(&subgraph, query_map, &retrieved_indices_set);
         let query_to_retrieved: HashMap<usize, usize> = query_indices.iter()
             .zip(retrieved_indices.iter())
             .map(|(&q, &r)| (q, r))
@@ -546,6 +525,40 @@ fn get_hash_symmetry_map(query_set: &HashSet<GeometricHash>) -> HashMap<Geometri
     query_symmetry_map
 }
 
+/// Target residue pairs to scan, or `None` for all of them.
+///
+/// Up to `PREFILTER_AA_SKIPPING_SIZE` hashes, residues are picked by the names in the query
+/// hashes (an empty pick scans everything, as before). Above it, by the amino acid codes
+/// in `query_aa_dist_map`: the same pairs, in the same order, that a full scan keeps.
+fn amino_acid_prefilter(
+    query_set: &HashSet<GeometricHash>, hash_type: HashType, compact: &CompactStructure,
+    query_aa_dist_map: &HashMap<(u8, u8), Vec<(f32, usize)>>,
+) -> Option<CombinationVecIterator> {
+    hash_type.amino_acid_index()?;
+    if query_set.len() <= PREFILTER_AA_SKIPPING_SIZE {
+        let (index_set1, index_set2) = prefilter_amino_acid(query_set, hash_type, compact);
+        let pairs = CombinationVecIterator::new_from_btreesets(&index_set1, &index_set2);
+        return (!pairs.is_empty()).then_some(pairs);
+    }
+    let mut first = [false; 256];
+    let mut second = [false; 256];
+    for &(aa1, aa2) in query_aa_dist_map.keys() {
+        first[aa1 as usize] = true;
+        second[aa2 as usize] = true;
+    }
+    let (mut index_vec1, mut index_vec2) = (Vec::new(), Vec::new());
+    for (i, name) in compact.residue_name.iter().enumerate() {
+        let code = map_aa_to_u8(name) as usize;
+        if first[code] {
+            index_vec1.push(i);
+        }
+        if second[code] {
+            index_vec2.push(i);
+        }
+    }
+    Some(CombinationVecIterator::new(index_vec1, index_vec2))
+}
+
 /// Target residue indices whose amino acid appears first / second in any query hash.
 /// Both empty (no prefilter) above `PREFILTER_AA_SKIPPING_SIZE` hashes.
 pub fn prefilter_amino_acid(query_set: &HashSet<GeometricHash>, _hash_type: HashType, compact: &CompactStructure) -> (BTreeSet<usize>, BTreeSet<usize>) {
@@ -592,7 +605,7 @@ pub fn prefilter_amino_acid(query_set: &HashSet<GeometricHash>, _hash_type: Hash
 /// stopping at `node_count` pairs.
 pub fn map_query_and_retrieved_residues(
     retrieved: &Graph<usize, GeometricHash>, 
-    query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
+    query_map: &QueryHashMap,
     node_count: usize,
     query_symmetry_map: &HashMap<GeometricHash, bool>,
 ) -> (Vec<usize>, Vec<usize>) {
@@ -688,17 +701,25 @@ pub fn map_query_and_retrieved_residues(
     (query_indices, retrieved_indices)
 }
 
-/// Sum of query IDFs over the subgraph's edges.
+/// Sum of weighted query IDFs over the subgraph's edges. Substituted edges count only
+/// between `matched` residues, so a large component of similar residues adds nothing.
 pub fn calculate_subgraph_idf(
     subgraph: &Graph<usize, GeometricHash>,
-    query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
+    query_map: &QueryHashMap,
+    matched: &HashSet<usize>,
 ) -> f32 {
     let mut total_idf = 0.0f32;
     
     for edge in subgraph.edge_indices() {
         let hash = subgraph[edge];
-        if let Some(&(_, _, idf)) = query_map.get(&hash) {
-            total_idf += idf;
+        if let Some(&(_, weight, idf)) = query_map.get(&hash) {
+            if weight < 1.0 {
+                let (i, j) = subgraph.edge_endpoints(edge).unwrap();
+                if !matched.contains(&subgraph[i]) || !matched.contains(&subgraph[j]) {
+                    continue;
+                }
+            }
+            total_idf += weight * idf;
         }
     }
     
@@ -823,6 +844,24 @@ mod tests {
     use super::*;
 
     use crate::controller::expand::ToleranceConfig;
+
+    #[test]
+    fn substituted_edges_score_only_between_matched_residues() {
+        let hash = |v: u32| GeometricHash::from_u32(v, HashType::PDBTrRosetta);
+        let mut graph: Graph<usize, GeometricHash> = Graph::new();
+        let nodes: Vec<_> = [1usize, 2, 3, 9].iter().map(|&r| graph.add_node(r)).collect();
+        graph.add_edge(nodes[0], nodes[1], hash(0)); // exact
+        graph.add_edge(nodes[1], nodes[2], hash(1)); // substituted, matched
+        graph.add_edge(nodes[2], nodes[3], hash(2)); // substituted, residue 9 unmatched
+        graph.add_edge(nodes[0], nodes[3], hash(3)); // exact, counted as before
+        let mut query_map = QueryHashMap::default();
+        query_map.insert(hash(0), ((0, 1), 1.0, 2.0));
+        query_map.insert(hash(1), ((1, 2), 0.5, 4.0));
+        query_map.insert(hash(2), ((1, 2), 0.5, 8.0));
+        query_map.insert(hash(3), ((0, 2), 1.0, 1.0));
+        let matched: HashSet<usize> = [1, 2, 3].into_iter().collect();
+        assert_eq!(calculate_subgraph_idf(&graph, &query_map, &matched), 2.0 + 0.5 * 4.0 + 1.0);
+    }
 
     #[test]
     fn test_retrieval_wrapper() {

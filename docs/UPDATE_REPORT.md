@@ -4,6 +4,22 @@ State of `feature-integration`. Measurements live in `feature_evaluation.md`; us
 
 ## 1. This round
 
+### Substitution scoring (latest)
+- The query map stores a weight per hash: 1 for the query's own residues, `SUBSTITUTION_WEIGHT`
+  (0.75) per substituted side. A substituted hash's IDF is capped at the observed pair's.
+- `count_query`: substituted hits add `weight · IDF` once per query edge (best hash), and only
+  to targets without an exact hit on that edge.
+- Per-match IDF: substituted edges are weighted and count only between the matched residues.
+- An exact hash is no longer shadowed by another pair's substitution.
+- Matching: above 200 query hashes the residue prefilter uses amino acid codes from
+  `aa_dist_map` instead of scanning every pair; output is byte-identical.
+- The per-pair 4096-hash cap never binds at default tolerances (radius 2: 50 bins × at most 36
+  residue pairs); the earlier loss came from scoring, not the cap. Measurements: `feature_evaluation.md` §14.
+- Paths without substitution are unchanged (rank-identical on M-CSA q60).
+
+### `--nonrigid` renamed `--sensitive`
+- Same preset (`--expand-radius 2`); the name describes the effect, not a flexible alignment.
+
 ### Novelty evidence mode
 - `--novelty-mode` prints one row per query with no verdict:
   `query_id, status, candidates, hits, index_coverage, best_hit, best_coverage, best_rmsd, query_residues`.
@@ -78,7 +94,8 @@ with no upper bound, so repetitive structures produce very large scores (the EF-
 852,272-vs-110.688 case; mechanism read from code, value not reproduced here).
 
 Also:
-- Expanded variants inherit the observed hash's IDF in `query.rs`; `count_query` recomputes per hash.
+- Geometric variants inherit the observed hash's IDF in `query.rs`; `count_query` recomputes per
+  hash. Substituted variants keep the lower of their own and the observed IDF, weighted (§1).
 - Per-structure `idf_sum` adds once per matching hash while `edge_count` counts edges, so many
   neighbour bins of one edge can outrank one bin of every edge.
 - `--score` compares the per-structure sum before matching and the subgraph IDF per match.

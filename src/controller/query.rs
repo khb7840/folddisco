@@ -21,6 +21,15 @@ use crate::structure::core::CompactStructure;
 /// geometric neighbourhood; enumeration is nearest-first, so the cut drops the farthest.
 pub const MAX_HASHES_PER_PAIR: usize = 4096;
 
+/// Score factor per substituted residue in a hash, so exact matches rank first.
+/// Chosen in docs/feature_evaluation.md §14.
+pub const SUBSTITUTION_WEIGHT: f32 = 0.75;
+
+/// Query hash -> (query residue pair, weight, IDF).
+/// Weight is 1 for the query's own amino acids and `SUBSTITUTION_WEIGHT` per substituted
+/// side. IDF is the observed hash's; a substituted hash keeps its own if that is lower.
+pub type QueryHashMap = HashMap<GeometricHash, ((usize, usize), f32, f32)>;
+
 /// IDF of `hash` in `index`: log2(total structures / structures with the hash); 0 if absent.
 pub fn calculate_idf_for_hash(
     hash: &GeometricHash,
@@ -54,13 +63,13 @@ pub fn parse_threshold_string(threshold_string: Option<String>) -> Vec<f32> {
     thresholds
 }
 
-/// Insert `feature`'s hash(es) unless already present; the first insertion wins.
-/// `is_primary` marks observed geometry; only tests read it (the `f32` IDF is used by retrieval).
+/// Insert `feature`'s hash(es). An existing entry is kept unless the new one has a
+/// higher weight, so an exact hash is never shadowed by another pair's substitution.
 fn insert_binned_hash(
-    hash_collection: &mut HashMap<GeometricHash, ((usize, usize), bool, f32)>,
+    hash_collection: &mut QueryHashMap,
     feature: &Vec<f32>, indices: (usize, usize), hash_type: HashType,
     nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
-    is_primary: bool, idf: f32,
+    weight: f32, idf: f32,
 ) {
     if let Some(multiple_bin) = multiple_bin {
         for (nbin_dist, nbin_angle) in multiple_bin.iter() {
@@ -69,11 +78,7 @@ fn insert_binned_hash(
             } else {
                 GeometricHash::perfect_hash(feature, hash_type, *nbin_dist, *nbin_angle)
             };
-            if hash_collection.contains_key(&hash_value) {
-                continue;
-            } else {
-                hash_collection.insert(hash_value, (indices, is_primary, idf));
-            }
+            insert_if_heavier(hash_collection, hash_value, (indices, weight, idf));
         }
     } else {
         let hash_value = if nbin_dist == 0 || nbin_angle == 0 {
@@ -81,11 +86,16 @@ fn insert_binned_hash(
         } else {
             GeometricHash::perfect_hash(feature, hash_type, nbin_dist, nbin_angle)
         };
-        if hash_collection.contains_key(&hash_value) {
-            return;
-        } else {
-            hash_collection.insert(hash_value, (indices, is_primary, idf));
-        }
+        insert_if_heavier(hash_collection, hash_value, (indices, weight, idf));
+    }
+}
+
+fn insert_if_heavier(
+    hash_collection: &mut QueryHashMap, hash: GeometricHash, value: ((usize, usize), f32, f32),
+) {
+    match hash_collection.get(&hash) {
+        Some(&(_, weight, _)) if weight >= value.1 => {}
+        _ => { hash_collection.insert(hash, value); }
     }
 }
 
@@ -137,8 +147,8 @@ where
 
 /// Build the query hash map for `query_residues` of the structure at `path`.
 ///
-/// Returns (hash -> (residue index pair, is observed, IDF), residue indices, and
-/// amino acid pair -> [(Ca distance, first residue index)]), the last used by matching.
+/// Returns (`QueryHashMap`, residue indices, and amino acid pair ->
+/// [(Ca distance, first residue index)]), the last used by matching.
 pub fn make_query_map(
     path: &String, query_residues: &Vec<(ChainId, u64)>, hash_type: HashType, 
     nbin_dist: usize, nbin_angle: usize, multiple_bin: &Option<Vec<(usize, usize)>>,
@@ -146,7 +156,7 @@ pub fn make_query_map(
     amino_acid_substitutions: &Vec<Option<Vec<u8>>>, distance_cutoff: f32, serial_query: bool,
     index: &Option<&FolddiscoIndex>,
     total_structures: f32,
-) -> (HashMap<GeometricHash, ((usize, usize), bool, f32)>, Vec<usize>, HashMap<(u8, u8), Vec<(f32, usize)>>) {
+) -> (QueryHashMap, Vec<usize>, HashMap<(u8, u8), Vec<(f32, usize)>>) {
     let (compact, _) = read_compact_structure(path).expect("Failed to read compact structure");
     make_query_map_from_structure(
         &compact, query_residues, hash_type, nbin_dist, nbin_angle, multiple_bin,
@@ -163,7 +173,7 @@ fn make_query_map_from_structure(
     amino_acid_substitutions: &Vec<Option<Vec<u8>>>, distance_cutoff: f32, serial_query: bool,
     index: &Option<&FolddiscoIndex>,
     total_structures: f32,
-) -> (HashMap<GeometricHash, ((usize, usize), bool, f32)>, Vec<usize>, HashMap<(u8, u8), Vec<(f32, usize)>>) {
+) -> (QueryHashMap, Vec<usize>, HashMap<(u8, u8), Vec<(f32, usize)>>) {
     let mut hash_collection = HashMap::default();
     let mut observed_distance_map: HashMap<(u8, u8), Vec<(f32, usize)>> = HashMap::default();
     
@@ -218,7 +228,7 @@ fn make_query_map_from_structure(
             let pair = (indices[i], indices[j]);
             insert_binned_hash(
                 &mut hash_collection, &feature, pair,
-                hash_type, nbin_dist, nbin_angle, multiple_bin, true, idf
+                hash_type, nbin_dist, nbin_angle, multiple_bin, 1.0, idf
             );
 
             // Substitutions apply to every geometric neighbour too, so `164:H` is not
@@ -244,16 +254,42 @@ fn make_query_map_from_structure(
                 }
             }
 
+            let observed_aa = aa_indices.map(|(a0, a1)| (feature[a0], feature[a1]));
             for_each_expanded_feature(
                 &mut expander, &feature, aa_indices, &aa_variants, MAX_HASHES_PER_PAIR,
-                &mut variant, |variant| insert_binned_hash(
-                    &mut hash_collection, variant, pair,
-                    hash_type, nbin_dist, nbin_angle, multiple_bin, false, idf
-                ),
+                &mut variant, |variant| {
+                    let (weight, idf) = match (aa_indices, observed_aa) {
+                        (Some((a0, a1)), Some((o0, o1))) if (variant[a0], variant[a1]) != (o0, o1) => {
+                            let substituted = (variant[a0] != o0) as i32 + (variant[a1] != o1) as i32;
+                            (SUBSTITUTION_WEIGHT.powi(substituted),
+                             substituted_idf(variant, hash_type, nbin_dist, nbin_angle, idf, index, total_structures))
+                        }
+                        _ => (1.0, idf),
+                    };
+                    insert_binned_hash(
+                        &mut hash_collection, variant, pair,
+                        hash_type, nbin_dist, nbin_angle, multiple_bin, weight, idf
+                    )
+                },
             );
         }
     });
     (hash_collection, indices, observed_distance_map)
+}
+
+/// IDF of a substituted hash, capped by the observed hash's so a rare substitution
+/// does not outscore the query's own residues. Uncapped when the observed hash is absent.
+fn substituted_idf(
+    variant: &Vec<f32>, hash_type: HashType, nbin_dist: usize, nbin_angle: usize,
+    observed_idf: f32, index: &Option<&FolddiscoIndex>, total_structures: f32,
+) -> f32 {
+    let hash = if nbin_dist == 0 || nbin_angle == 0 {
+        GeometricHash::perfect_hash_default(variant, hash_type)
+    } else {
+        GeometricHash::perfect_hash(variant, hash_type, nbin_dist, nbin_angle)
+    };
+    let own = calculate_idf_for_hash(&hash, index, total_structures);
+    if observed_idf > 0.0 { own.min(observed_idf) } else { own }
 }
 
 /// Widest residue span one `-q` range may expand to. Above the default 50,000-residue
@@ -393,7 +429,7 @@ mod tests {
     
     fn zinc_finger_query_map(
         tolerance: &ToleranceConfig, substitutions: Vec<Option<Vec<u8>>>,
-    ) -> HashMap<GeometricHash, ((usize, usize), bool, f32)> {
+    ) -> QueryHashMap {
         let path = String::from("query/1G2F.pdb");
         let query_residues = vec![(chain("F"), 207), (chain("F"), 212), (chain("F"), 225)];
         let (hash_collection, _indices, _observed_dist_map) = make_query_map(
@@ -412,17 +448,14 @@ mod tests {
         ];
         let amino_acid_substitutions = vec![None; query_residues.len()];
         let hash_type = HashType::PDBTrRosetta;
-        let tolerance = ToleranceConfig::default_query();
         let (hash_collection, _index_found, _observed_dist_map) = make_query_map(
             &path, &query_residues, hash_type, 16, 4, &None,
             &ToleranceConfig::default_query(), &amino_acid_substitutions, 20.0, false,
             &None, 1000.0
         );
-        let exact = hash_collection.values().filter(|(_, is_primary, _)| *is_primary).count();
-        // At most one observed hash per ordered residue pair; two pairs sharing a
-        // hash collapse into a single entry.
-        assert!(exact > 0 && exact <= 6, "primary hashes: {}", exact);
-        assert!(hash_collection.len() > exact);
+        // Without substitutions every hash carries the query's own residues
+        assert!(hash_collection.values().all(|(_, weight, _)| *weight == 1.0));
+        assert!(hash_collection.len() > 6);
     }
 
     #[test]
@@ -496,6 +529,25 @@ mod tests {
         }
         assert!(substituted.keys().any(|&(aa_i, _)| aa_i == 17));
         assert!(!plain.keys().any(|&(aa_i, aa_j)| aa_i == 17 || aa_j == 17));
+    }
+
+    #[test]
+    fn substituted_hashes_are_weighted_and_never_shadow_exact_ones() {
+        let tolerance = ToleranceConfig::default_query();
+        let plain = zinc_finger_query_map(&tolerance, vec![None; 3]);
+        // 207 and 212 are both Cys; substituting both yields one- and two-sided variants
+        let substituted = zinc_finger_query_map(
+            &tolerance, vec![Some(vec![8]), Some(vec![8]), None] // 8 = HIS
+        );
+        for (hash, (_, weight, _)) in plain.iter() {
+            assert_eq!(*weight, 1.0);
+            assert_eq!(substituted[hash].1, 1.0, "an exact hash lost its weight");
+        }
+        let weight = |w: f32| substituted.values().filter(|(_, x, _)| *x == w).count();
+        assert_eq!(weight(1.0), plain.len());
+        assert!(weight(SUBSTITUTION_WEIGHT) > 0);
+        assert!(weight(SUBSTITUTION_WEIGHT * SUBSTITUTION_WEIGHT) > 0);
+        assert_eq!(weight(1.0) + weight(SUBSTITUTION_WEIGHT) + weight(SUBSTITUTION_WEIGHT * SUBSTITUTION_WEIGHT), substituted.len());
     }
 
     #[test]

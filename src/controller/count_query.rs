@@ -9,6 +9,7 @@ use crate::index::indextable::FolddiscoIndex;
 use crate::index::lookup::LookupTable;
 use crate::prelude::GeometricHash;
 
+use super::query::QueryHashMap;
 use super::result::StructureResult;
 
 
@@ -85,8 +86,10 @@ impl Default for CompactEntry {
 /// target, `node_count` is the number of nodes with a hit, `edge_count` the number
 /// of residue pairs with a hit, and `idf` the summed log2(N / hash frequency)
 /// scaled by `nres^-length_penalty` (default 0.5).
+/// Substituted hashes add only their weighted IDF, once per edge, and only to targets
+/// without an exact hit on that edge.
 pub fn count_query<'a>(
-    queries: &Vec<GeometricHash>, query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
+    queries: &Vec<GeometricHash>, query_map: &QueryHashMap,
     index: &FolddiscoIndex,
     lookup: &'a LookupTable, 
     sampling_ratio: Option<f32>, sampling_count: Option<usize>,
@@ -104,9 +107,13 @@ pub fn count_query<'a>(
             let mut local_results: Vec<CompactEntry> = vec![CompactEntry::default(); num_ids];
             let mut node_occupancy = BitVector::new(num_ids);
             let mut edge_occupancy = BitVector::new(num_ids);
+            let mut edge_exact = BitVector::new(num_ids);
+            // Best substituted score per target on the current edge
+            let mut edge_substituted: Vec<f32> = Vec::new();
+            let mut substituted_hits: Vec<usize> = Vec::new();
             let mut prev_edge = None;
 
-            for (_i, (e, query)) in chunk.iter().enumerate() {
+            for (_i, (e, query, weight, capped_idf)) in chunk.iter().enumerate() {
                 let need_edge_update = prev_edge.map_or(true, |prev| prev != *e);
                 
                 if need_edge_update {
@@ -117,8 +124,12 @@ pub fn count_query<'a>(
                                 local_results[nid].edge_count += 1;
                             }
                         }
+                        close_substituted_edge(
+                            &mut local_results, &edge_exact, &mut edge_substituted, &mut substituted_hits,
+                        );
                     }
                     edge_occupancy.clear();
+                    edge_exact.clear();
                     prev_edge = Some(*e);
                 }
                 
@@ -136,6 +147,10 @@ pub fn count_query<'a>(
                 } else {
                     continue;  // Hash absent from the index; nothing to count
                 };
+                let substituted = *weight < 1.0;
+                if substituted && edge_substituted.is_empty() {
+                    edge_substituted = vec![0.0; num_ids];
+                }
 
                 for &value in single_queried_values.iter() {
                     if value >= lookup.len() {
@@ -150,7 +165,16 @@ pub fn count_query<'a>(
                         node_occupancy.set(nid);
                     }
                     entry.match_count += 1;
-                    entry.idf_sum += idf;
+                    if substituted {
+                        let score = weight * capped_idf;
+                        if edge_substituted[nid] == 0.0 {
+                            substituted_hits.push(nid);
+                        }
+                        edge_substituted[nid] = edge_substituted[nid].max(score);
+                    } else {
+                        entry.idf_sum += idf;
+                        edge_exact.set(nid);
+                    }
                     
                     edge_occupancy.set(nid);
                 }
@@ -169,6 +193,9 @@ pub fn count_query<'a>(
                     local_results[nid].edge_count += 1;
                 }
             }
+            close_substituted_edge(
+                &mut local_results, &edge_exact, &mut edge_substituted, &mut substituted_hits,
+            );
             local_results
         })
         .collect();
@@ -220,6 +247,21 @@ pub fn count_query<'a>(
     results
 }
 
+/// Add each target's best substituted score on the edge just closed, unless the target
+/// also hit the edge exactly, then reset the buffers.
+fn close_substituted_edge(
+    results: &mut [CompactEntry], edge_exact: &BitVector,
+    edge_substituted: &mut [f32], substituted_hits: &mut Vec<usize>,
+) {
+    for &nid in substituted_hits.iter() {
+        if !edge_exact.is_set(nid) {
+            results[nid].idf_sum += edge_substituted[nid];
+        }
+        edge_substituted[nid] = 0.0;
+    }
+    substituted_hits.clear();
+}
+
 /// Keep the rarest hashes: a fraction (`sampling_ratio`) or a count (`sampling_count`).
 /// With neither or both set, all hashes are kept.
 fn sample_query(
@@ -255,21 +297,77 @@ fn sample_query(
     }
 }
 
-/// Group hashes by the first residue of their edge, sorted by edge.
+/// Group hashes by the first residue of their edge, sorted by edge, with each hash's
+/// weight and IDF from `query_map`.
 fn build_node_groups(
     sampled_queries: &[GeometricHash],
-    query_map: &HashMap<GeometricHash, ((usize, usize), bool, f32)>,
-) -> HashMap<usize, Vec<((usize, usize), GeometricHash)>> {
-    let mut node_groups: HashMap<usize, Vec<((usize, usize), GeometricHash)>> = HashMap::default();
+    query_map: &QueryHashMap,
+) -> HashMap<usize, Vec<((usize, usize), GeometricHash, f32, f32)>> {
+    let mut node_groups: HashMap<usize, Vec<((usize, usize), GeometricHash, f32, f32)>> = HashMap::default();
 
     for &query in sampled_queries {
-        if let Some(((e0, e1), _, _)) = query_map.get(&query) {
-            let edge = (*e0, *e1);
-            node_groups.entry(edge.0).or_insert_with(Vec::new).push((edge, query));
+        if let Some(&(edge, weight, idf)) = query_map.get(&query) {
+            node_groups.entry(edge.0).or_insert_with(Vec::new).push((edge, query, weight, idf));
         }
     }
     for (_, chunk) in node_groups.iter_mut() {
-        chunk.sort_by_key(|(edge, _)| *edge);
+        chunk.sort_by_key(|(edge, _, _, _)| *edge);
     }
     node_groups
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::core::HashType;
+    use crate::index::lookup::{load_lookup_from_file, save_lookup_to_file};
+
+    fn hash(value: u32) -> GeometricHash {
+        GeometricHash::from_u32(value, HashType::PDBTrRosetta)
+    }
+
+    #[test]
+    fn substituted_hits_count_once_per_edge_and_only_without_an_exact_hit() {
+        let dir = std::env::temp_dir().join(format!("folddisco_count_query_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prefix = dir.join("idx").to_string_lossy().to_string();
+
+        // Target 0: exact h0 and substituted h1, h2 on edge (0, 1)
+        // Target 1: substituted h1, h2 on edge (0, 1); target 2: substituted h3 on edge (0, 2)
+        let postings: Vec<(usize, Vec<u32>)> = vec![(0, vec![0, 1, 2]), (1, vec![1, 2]), (2, vec![3])];
+        let mut index = FolddiscoIndex::new(8, prefix.clone(), false);
+        for (id, hashes) in &postings {
+            index.count_entries(hashes, *id);
+        }
+        index.allocate_entries();
+        let mut buffer = Vec::new();
+        for (id, hashes) in &postings {
+            index.add_entries(hashes, *id, &mut buffer);
+        }
+        index.wrapup_offset_and_save_entries();
+        index.prune_to_sparse();
+
+        let lookup_path = format!("{}.lookup", prefix);
+        let names: Vec<String> = (0..3).map(|i| format!("t{}", i)).collect();
+        save_lookup_to_file(&lookup_path, &names, &vec![0, 1, 2], Some(&vec![1, 1, 1]), Some(&vec![0.0; 3]), None);
+        let lookup = load_lookup_from_file(&lookup_path);
+
+        let mut query_map = QueryHashMap::default();
+        query_map.insert(hash(0), ((0, 1), 1.0, 9.0));
+        query_map.insert(hash(1), ((0, 1), 0.5, 1.0));
+        query_map.insert(hash(2), ((0, 1), 0.5, 1.2));
+        query_map.insert(hash(3), ((0, 2), 0.25, 2.0));
+        let queries = (0..4).map(hash).collect::<Vec<_>>();
+
+        let mut results = count_query(&queries, &query_map, &index, &lookup, None, None, None, None);
+        results.sort_by_key(|(id, _)| *id);
+        let idf = |i: usize| results[i].1.idf;
+        // Exact hit only; its IDF is recomputed from the index (3 structures, 1 hit)
+        assert!((idf(0) - 3f32.log2()).abs() < 1e-5, "{}", idf(0));
+        // Best substituted hash on the edge, once
+        assert!((idf(1) - 0.6).abs() < 1e-5, "{}", idf(1));
+        assert!((idf(2) - 0.5).abs() < 1e-5, "{}", idf(2));
+        // Coverage counts every hit
+        assert_eq!((results[0].1.edge_count, results[0].1.total_match_count), (1, 3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
