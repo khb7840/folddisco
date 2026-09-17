@@ -47,6 +47,7 @@ pub enum AppArgs {
         ca_dist_threshold: f32,
         expand_radius: Option<usize>, // feature dimensions allowed to deviate at once
         sensitive: bool,              // preset that raises the expansion radius
+        confident: bool,              // preset that keeps only full, low-RMSD matches
         aa_subst: Option<String>,     // substitution scheme applied to every residue
         // Structure-level filters
         total_match_count: usize, 

@@ -145,6 +145,7 @@ folddisco query -i <INDEX> -p <QUERY_PDB> [-q <QUERY_RESIDUES> -d <DISTANCE_THRE
 - `-a`: Angle tolerance in degrees, increase sensitivity during the prefilter (default: 5)
 - `--sensitive`: Wider, slower search for deformed motifs (see [Sensitive search](#sensitive-search))
 - `--expand-radius`: How many geometric features may fall in a neighbouring bin at once (default: 1)
+- `--confident`: Keep only confident, full matches (see [Confident hits](#confident-hits))
 - `--aa-subst`: Substitute every query residue by scheme (see [Amino acid substitution](#amino-acid-substitution))
 - `--novelty-mode`: One evidence row per query instead of a hit list (see [Novelty screening](#novelty-screening))
 - `--skip-match`: Skips residue matching and RMSD calculation (prefilter only, much faster with same ranking)
@@ -217,6 +218,22 @@ F1 on the human proteome (details in [feature_evaluation.md](docs/feature_evalua
 | 3-residue zinc finger, matched | 0.9418 | **0.9577** |
 | Ser-His-Asp triad, prefilter (MEROPS S01) | 0.8831 | **0.9160** |
 | 23-residue two-segment query, matched | **0.9204** | 0.9117 |
+
+### Confident hits
+
+By default a query returns every structure that matched any part of the motif, partial matches
+included. `--confident` keeps only the confident, full ones: at least 80% of the query residues
+matched — all of them for a 3-4 residue motif, one may be missing from five residues up — within
+1 Å RMSD. Filters you give explicitly are left alone, so `--confident --rmsd 0.5` tightens only
+the RMSD. With `--skip-match` there is no superposition, so only the coverage applies.
+
+```bash
+folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --confident
+```
+
+On the M-CSA benchmark (250 catalytic sites, 3-21 residues) it raises precision from 0.06 to
+0.76 and cuts the median hit list from 1,804 to 21, keeping 0.48 of the answers (0.74 unfiltered);
+92% of queries still return something. See [feature_evaluation.md](docs/feature_evaluation.md) §15.
 
 ### Amino acid substitution
 
@@ -352,7 +369,9 @@ data/serine_peptidases/1azw.pdb	0.1856	2	2	2	2	0.9234	626	34.2399	A179,_,B176:0.
 ### Display Options
 - `--per-structure`: Outputs results per structure.
 - `--per-match`: Outputs results per match.
-- `--sort-by`: Sorts results by given columns (comma-separated).
+- `--sort-by`: Sorts results by given columns (comma-separated). Default: `coverage_idf:desc,rmsd:asc`
+  per match (`coverage_idf` is `idf` times the matched fraction of the query) and
+  `max_node_count:desc,min_rmsd:asc` per structure.
 - `--format-output`: Custom output format using column names.
 - `--top <N>`: Outputs top N results.
 - `--header`: Outputs header for the result.

@@ -10,6 +10,8 @@ Indices built with 2.x are read unchanged.
 - `query --aa-subst blosum62|group|size` and per-residue `:*`: substitution schemes.
   Substituted residues score below exact ones, so exact matches rank first.
 - `index --expand-radius/--expand-distance/--expand-angle/--aa-subst`: index-time expansion.
+- `query --confident`: keep only confident, full matches (≥ 80% of query residues within 1 Å);
+  filters given explicitly are left alone.
 - `query --novelty-mode`: one evidence row per query (coverage, best hit, RMSD).
 - Multi-character and numeric chain IDs (`AA_250`, `10_250`); `--chain-sep`.
 - Superposition-free `drmsd` and `max_dist_deviation` (columns, sort keys, `--drmsd`).
@@ -17,6 +19,9 @@ Indices built with 2.x are read unchanged.
   built on first use.
 
 ### Changed
+- Default sort: `coverage_idf:desc,rmsd:asc` per match (was `idf:desc,rmsd:asc`) and
+  `max_node_count:desc,min_rmsd:asc` per structure (was `idf:desc,min_rmsd:asc`).
+  `coverage_idf` (`idf` × matched fraction of the query) is also a sort key and an output column.
 - Matching prefilters target residues by amino acid code for large queries (same output, faster).
 - Per-match IDF counts edges from neighbouring bins and substitutions only between the matched
   residues, so large components of similar residues no longer rank first.

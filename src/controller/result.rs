@@ -146,6 +146,14 @@ pub struct MatchResult<'a> {
 }
 
 impl<'a> MatchResult<'a> {
+    /// IDF scaled by the fraction of query residues this match covers; the default sort key.
+    pub fn coverage_idf(&self) -> f32 {
+        if self.matching_residues.is_empty() {
+            return self.idf;
+        }
+        self.idf * self.node_count as f32 / self.matching_residues.len() as f32
+    }
+
     pub fn new(
         tid: &'a str, nid: usize, avg_idf: f32, matching_residues: Vec<ResidueMatch>, rmsd: f32,
         u_matrix: [[f32; 3]; 3], t_matrix: [f32; 3], matching_coordinates: Vec<Coordinate>, db_key: usize, 
@@ -267,6 +275,7 @@ fn build_match_result_columns<'a>(
         Column::new("db_key", "Database key", |r: &MatchResult| (r.db_key as u64).into()),
         Column::new("node_count", "Node count", |r: &MatchResult| (r.node_count as u64).into()),
         Column::new("idf", "IDF score", |r: &MatchResult| Value::Float(r.idf, DEFAULT_FLOAT_PRECISION)),
+        Column::new("coverage_idf", "IDF x matched residue fraction", |r: &MatchResult| Value::Float(r.coverage_idf(), DEFAULT_FLOAT_PRECISION)),
         Column::new("rmsd", "RMSD", |r: &MatchResult| Value::Float(r.rmsd, DEFAULT_FLOAT_PRECISION)),
         Column::new("e_value", "E-value", |r: &MatchResult| Value::ScientificFloat(r.evalue, 4)),
         Column::new("u_matrix", "Rotation matrix", |r: &MatchResult| Value::Float3DMatrix(r.u_matrix, DEFAULT_FLOAT_PRECISION, ",")),

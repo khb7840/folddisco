@@ -4,6 +4,16 @@ State of `feature-integration`. Measurements live in `feature_evaluation.md`; us
 
 ## 1. This round
 
+### Default filtering and sorting (latest)
+- `--confident`: coverage ratio 0.8 on both filter stages (all residues for a 3-4 residue motif,
+  one may be missing from five up) and RMSD ≤ 1.0 Å; explicit filters win, `--skip-match` gets
+  coverage only. `confident_filters` in `query_pdb.rs`.
+- Default sort is now `coverage_idf:desc,rmsd:asc` per match and
+  `max_node_count:desc,min_rmsd:asc` per structure. `coverage_idf` = `idf` × matched fraction,
+  a new sort key and output column (`MatchResult::coverage_idf`).
+- Selected on M-CSA q250 and the motif set from re-sorted raw output; see
+  `feature_evaluation.md` §15.
+
 ### Substitution scoring (latest)
 - The query map stores a weight per hash: 1 for the query's own residues, `SUBSTITUTION_WEIGHT`
   (0.75) per substituted side. A substituted hash's IDF is capped at the observed pair's.

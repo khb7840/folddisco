@@ -424,3 +424,63 @@ the index grows 3.5× (r1), 6× (r2), 9× (blosum62), 32× (both). An expanded i
 exactly, so candidate scoring cannot tell its substituted entries from exact ones. On mutant
 sites, `:*` on a plain index gains +0.101 while a blosum62 index loses −0.031 (idf ranking).
 Details: `fd-branchbench/index_expansion/README.md`.
+
+## 15. Default sort order and `--confident`
+
+Selected from one run per benchmark, re-sorted and re-filtered offline (a build that skips
+sorting and `--top` truncation prints every match with every metric column; re-sorting it
+reproduced the shipped ranking on 250/250 M-CSA queries). Data:
+`fd-branchbench/defaults/`.
+
+### 15.1 Sort order
+
+172 lexicographic orders over 10 per-match keys (1-2 keys, plus 3 keys when the first is a
+count) and 9 over the structure keys, scored by Sens@1FP and average precision (AP) on M-CSA
+q250 (default, `--sensitive`, mutant `:*`, `--aa-subst blosum62`) and the four motif queries.
+
+| per-match order | M-CSA Sens@1FP | M-CSA AP | motif Sens@1FP |
+| --- | --- | --- | --- |
+| `idf,rmsd` (2.x default) | 0.4518 | 0.5951 | 0.1817 |
+| best plain alternative (`idf,tm_score`) | 0.4523 | 0.5951 | 0.1837 |
+| `node_count,idf,rmsd` | 0.4078 | 0.5645 | 0.1958 |
+| **`coverage_idf,rmsd`** (shipped) | **0.4583** | **0.6024** | **0.2172** |
+
+`coverage_idf` is `idf` times the fraction of query residues the match covers. No lexicographic
+order beat `idf,rmsd` by more than 0.0005 — putting `node_count` first trades M-CSA for the motif
+sets — while the product wins on both. Exponents 0.5 / 2 / 3 on the coverage term scored 0.4559 /
+0.4514 / 0.4445; `idf` divided by node count was much worse (0.3666). `drmsd` as the second key
+was slightly worse than `rmsd` (0.4502 vs 0.4518 with `idf` first).
+
+Per structure, plain coverage wins and the product does not:
+
+| per-structure order | M-CSA Sens@1FP | M-CSA AP | motif Sens@1FP |
+| --- | --- | --- | --- |
+| `idf,min_rmsd` (2.x default) | 0.3535 | 0.5237 | 0.0913 |
+| `idf*coverage^2,min_rmsd` | 0.4045 | 0.5782 | 0.1192 |
+| **`max_node_count,min_rmsd`** (shipped) | **0.4301** | **0.5920** | **0.1671** |
+
+### 15.2 `--confident`
+
+Grid over coverage ratio × RMSD × dRMSD, scored as the precision and recall of the returned
+structure set (M-CSA q250, per match):
+
+| filter | precision | recall | F1 | queries with a hit | median hits |
+| --- | --- | --- | --- | --- | --- |
+| none (default output) | 0.055 | 0.741 | 0.081 | 1.00 | 1,804 |
+| coverage ≥ 0.8 only | 0.407 | 0.568 | 0.344 | 0.94 | 94 |
+| coverage = 1.0, RMSD ≤ 1.0 | 0.795 | 0.405 | 0.421 | 0.88 | 13 |
+| **coverage ≥ 0.8, RMSD ≤ 1.0** (shipped) | **0.756** | **0.478** | 0.471 | 0.92 | 21 |
+| coverage ≥ 0.8, RMSD ≤ 0.75 | 0.823 | 0.466 | 0.489 | 0.92 | 16 |
+
+- Coverage 0.8 keeps every residue of a 3-4 residue motif and allows one missing residue from
+  five up; it beats exact-full coverage on F1 and leaves more queries with an answer.
+- A dRMSD cap adds nothing once RMSD is capped (identical rows across `drmsd` 0.75-∞).
+- RMSD 0.75 scores marginally better than 1.0 on M-CSA; 1.0 ships because it keeps more answers
+  (recall 0.478 vs 0.466) and matches the threshold the published protocol uses.
+- Zinc/serine motif queries: precision 0.332 → 0.943, recall 0.966 → 0.687.
+- Both cutoffs are needed at every query size: coverage alone gives precision 0.33 (≤4 residues)
+  to 0.61 (9-12), RMSD raises those to 0.64-0.95. The exception is the 23-residue two-segment
+  zinc query, where true hits are assembled across neighbouring fingers at 8-9 Å RMSD: coverage
+  alone is 0.996 precise there and the RMSD cap empties the list.
+- With `--skip-match` only hash coverage applies, and that alone is weak (precision 0.25 on
+  M-CSA, 0.71 on the motif set).

@@ -16,6 +16,8 @@ pub enum SortKey {
     NodeCount,
     /// IDF score
     Idf,
+    /// IDF scaled by the fraction of query residues matched
+    CoverageIdf,
     /// E-value (from IDF)
     Evalue,
     /// RMSD
@@ -42,6 +44,7 @@ impl SortKey {
         match s.trim().to_lowercase().as_str() {
             "node_count" | "node-count" | "nodes" | "node" | "n" => Ok(Self::NodeCount),
             "idf" | "score" => Ok(Self::Idf),
+            "coverage_idf" | "coverage-idf" | "cov_idf" | "cidf" => Ok(Self::CoverageIdf),
             "evalue" | "e_value" | "e-value" => Ok(Self::Evalue),
             "rmsd" => Ok(Self::Rmsd),
             "tm_score" | "tm-score" | "tmscore" | "tm" => Ok(Self::TmScore),
@@ -61,13 +64,14 @@ impl SortKey {
 
     /// Get all valid key names for help text
     pub fn valid_keys() -> &'static str {
-        "node_count, idf, evalue, rmsd, tm_score, tm_score_strict, gdt_ts, gdt_ha, gdt_strict, chamfer_distance, hausdorff_distance, drmsd, max_dist_deviation"
+        "node_count, idf, coverage_idf, evalue, rmsd, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance, drmsd, max_dist_deviation"
     }
 
     /// Descending for scores (higher is better), ascending for distances and E-value.
     pub fn default_order(&self) -> SortOrder {
         match self {
-            Self::NodeCount | Self::Idf | Self::TmScore | Self::GdtTs | Self::GdtHa => SortOrder::Desc,
+            Self::NodeCount | Self::Idf | Self::CoverageIdf | Self::TmScore | Self::GdtTs
+            | Self::GdtHa => SortOrder::Desc,
             Self::Evalue | Self::Rmsd | Self::ChamferDistance | Self::HausdorffDistance |
             Self::Drmsd | Self::MaxDistDeviation => SortOrder::Asc,
         }
@@ -78,6 +82,7 @@ impl SortKey {
         match self {
             Self::NodeCount => result.node_count as f64,
             Self::Idf => result.idf as f64,
+            Self::CoverageIdf => result.coverage_idf() as f64,
             Self::Evalue => result.evalue,
             Self::Rmsd => result.rmsd as f64,
             Self::TmScore => result.metrics.tm_score as f64,
@@ -198,10 +203,11 @@ impl MatchSortStrategy {
         Ordering::Equal
     }
 
-    /// Default: IDF (desc) -> RMSD (asc)
+    /// Default: coverage-weighted IDF (desc) -> RMSD (asc). Chosen in
+    /// docs/feature_evaluation.md §15.
     pub fn default() -> Self {
         Self::new()
-            .then_by_default(SortKey::Idf)
+            .then_by_default(SortKey::CoverageIdf)
             .then_by_default(SortKey::Rmsd)
     }
 
@@ -425,10 +431,11 @@ impl StructureSortStrategy {
         Ordering::Equal
     }
 
-    /// Default strategy: IDF (desc) -> MinRmsd (asc)
+    /// Default: matched residues (desc) -> RMSD of that match (asc). Chosen in
+    /// docs/feature_evaluation.md §15.
     pub fn default() -> Self {
         Self::new()
-            .then_by_default(StructureSortKey::Idf)
+            .then_by_default(StructureSortKey::MaxNodeCount)
             .then_by_default(StructureSortKey::MinRmsd)
     }
     

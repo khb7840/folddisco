@@ -67,6 +67,9 @@ search parameters:
 query expansion:
  --expand-radius <INT>            Feature dimensions of a residue pair allowed in a neighbouring bin at once [1]
  --sensitive                      Wider, slower search for deformed motifs: --expand-radius 2. Pair with --max-node <n_residues>
+ --confident                      Keep only confident, full matches: at least CONFIDENT_COVERAGE of the query
+                                  residues matched (all of them for 3-4 residue motifs) within CONFIDENT_RMSD A.
+                                  Filters given explicitly win. With --skip-match only the coverage applies
  --aa-subst <MODE>                Substitute every query residue without an explicit :ALT. Also sets the scheme for :*
                                   - blosum62: positive BLOSUM62 score (default for :*)
                                   - group: same class (RHK, DE, NQST, FWY, AVLIMC, GP)
@@ -100,14 +103,17 @@ display options:
  --per-structure                  Print output per structure
  --per-match                      Print output per match. Not working with --skip-match
  --format-output <KEYS>           Comma-separated column names to output
-                                  - Per-match: qid, tid, nid, db_key, node_count, idf, rmsd, matching_residues, u_matrix, t_vector,
+                                  - Per-match: qid, tid, nid, db_key, node_count, idf, coverage_idf, rmsd, matching_residues,
+                                    u_matrix, t_vector,
                                     matching_coordinates, query_residues, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance,
                                     drmsd, max_dist_deviation
                                   - Per-structure: qid, tid, nid, db_key, total_match_count, node_count, edge_count, idf, nres, plddt,
                                     max_node_cov, min_rmsd, min_drmsd, matching_residues, query_residues
                                   - Example: --format-output tid,idf,rmsd,tm_score
- --sort-by <KEYS>                 Comma-separated sort keys with optional :asc or :desc [idf:desc,rmsd:asc]
-                                  - Per-match: node_count, idf, rmsd, tm_score, gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance,
+ --sort-by <KEYS>                 Comma-separated sort keys with optional :asc or :desc
+                                  [per-match coverage_idf:desc,rmsd:asc; per-structure max_node_count:desc,min_rmsd:asc]
+                                  - Per-match: node_count, idf, coverage_idf (idf x matched fraction), rmsd, tm_score,
+                                    gdt_ts, gdt_ha, chamfer_distance, hausdorff_distance,
                                     drmsd, max_dist_deviation
                                   - Per-structure: max_node_count, node_count, idf, min_rmsd, min_drmsd, total_match_count, edge_count, nres, plddt
                                   - Example: --sort-by tm_score,rmsd or --sort-by idf:desc
@@ -132,7 +138,7 @@ general options:
  -h, --help                       Print this help menu
 
 examples:
-# Search with default settings (sorted by IDF, then RMSD)
+# Search with default settings (sorted by coverage-weighted IDF, then RMSD)
 folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6
 
 # Print custom columns (tid, idf, RMSD, and TM-score only)
@@ -167,6 +173,9 @@ folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --cov
 folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --sensitive \\
   --sort-by node_count,drmsd --format-output tid,node_count,idf,rmsd,drmsd,matching_residues
 
+# Only confident, full matches (>= 80% of the query residues within 1 A)
+folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --confident
+
 # Novelty evidence for designed motifs, one row per design
 folddisco query -q designs.txt -i index/pdb_folddisco -t 6 --novelty-mode --header
 ";
@@ -180,6 +189,12 @@ const SENSITIVE_EXPAND_RADIUS: usize = 2;
 const DEFAULT_EXPAND_RADIUS: usize = 1;
 const DEFAULT_DIST_THRESHOLD: &str = "0.5";
 const DEFAULT_ANGLE_THRESHOLD: &str = "5.0";
+
+/// `--confident`: fraction of query residues a match must cover. 0.8 keeps every residue of a
+/// 3-4 residue motif and allows one missing residue from five residues up.
+const CONFIDENT_COVERAGE: f32 = 0.8;
+/// `--confident`: RMSD cap on the matched residues, in Angstroms.
+const CONFIDENT_RMSD: f32 = 1.0;
 
 /// Column names of a `--novelty-mode` row.
 const NOVELTY_HEADER: &str = "query_id\tstatus\tcandidates\thits\tindex_coverage\tbest_hit\tbest_coverage\tbest_rmsd\tquery_residues";
@@ -198,6 +213,7 @@ pub fn query_pdb(env: AppArgs) {
             ca_dist_threshold,
             expand_radius,
             sensitive,
+            confident,
             aa_subst,
             total_match_count,
             covered_node_count,
@@ -378,6 +394,12 @@ pub fn query_pdb(env: AppArgs) {
                 print_log_msg(FAIL, &format!("Unknown --aa-subst '{}'; use blosum62, group or size", mode));
                 std::process::exit(1);
             }));
+
+            let (covered_node_ratio, max_matching_node_ratio, connected_node_ratio, rmsd_cutoff) =
+                confident_filters(
+                    confident, skip_match, covered_node_ratio, max_matching_node_ratio,
+                    connected_node_ratio, rmsd_cutoff,
+                );
 
             let index_expansion = config.expansion.clone();
             let tolerance = query_tolerance(
@@ -711,6 +733,24 @@ fn query_tolerance(
     )
 }
 
+/// Coverage and RMSD filters `--confident` sets, leaving any filter given explicitly alone.
+/// With `--skip-match` only hash coverage can be checked.
+fn confident_filters(
+    confident: bool, skip_match: bool, covered_node_ratio: f32, max_matching_node_ratio: f32,
+    connected_node_ratio: f32, rmsd_cutoff: f32,
+) -> (f32, f32, f32, f32) {
+    if !confident {
+        return (covered_node_ratio, max_matching_node_ratio, connected_node_ratio, rmsd_cutoff);
+    }
+    let or_default = |given: f32, preset: f32| if given > 0.0 { given } else { preset };
+    (
+        if skip_match { or_default(covered_node_ratio, CONFIDENT_COVERAGE) } else { covered_node_ratio },
+        or_default(max_matching_node_ratio, CONFIDENT_COVERAGE),
+        or_default(connected_node_ratio, CONFIDENT_COVERAGE),
+        or_default(rmsd_cutoff, CONFIDENT_RMSD),
+    )
+}
+
 /// Fraction of the query's residues that `nodes` covers; 0 for an empty query.
 fn residue_coverage(nodes: usize, query_residue_count: usize) -> f32 {
     if query_residue_count > 0 {
@@ -819,6 +859,7 @@ mod tests {
             ca_dist_threshold: 1.0,
             expand_radius: None,
             sensitive: false,
+            confident: false,
             aa_subst: None,
             total_match_count: 0,
             covered_node_count: 0,
@@ -879,6 +920,7 @@ mod tests {
                 ca_dist_threshold: 1.0,
                 expand_radius: None,
                 sensitive: false,
+                confident: false,
                 aa_subst: None,
                 total_match_count: 0,
                 covered_node_count: 0,
@@ -939,6 +981,7 @@ mod tests {
             ca_dist_threshold: 1.0,
             expand_radius: None,
             sensitive: false,
+            confident: false,
             aa_subst: None,
             total_match_count: 0,
             covered_node_count: 0,
@@ -979,6 +1022,27 @@ mod tests {
             help: false,
         };
         query_pdb(env);
+    }
+
+    #[test]
+    fn confident_preset_leaves_explicit_filters_alone() {
+        // Off: every value passes through
+        assert_eq!(confident_filters(false, false, 0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0));
+        // On: coverage on both filter stages, RMSD cap, no pre-match coverage while matching
+        assert_eq!(
+            confident_filters(true, false, 0.0, 0.0, 0.0, 0.0),
+            (0.0, CONFIDENT_COVERAGE, CONFIDENT_COVERAGE, CONFIDENT_RMSD)
+        );
+        // --skip-match: hash coverage is all there is
+        assert_eq!(
+            confident_filters(true, true, 0.0, 0.0, 0.0, 0.0),
+            (CONFIDENT_COVERAGE, CONFIDENT_COVERAGE, CONFIDENT_COVERAGE, CONFIDENT_RMSD)
+        );
+        // Explicit values win
+        assert_eq!(
+            confident_filters(true, true, 0.5, 1.0, 0.9, 2.0),
+            (0.5, 1.0, 0.9, 2.0)
+        );
     }
 
     #[test]

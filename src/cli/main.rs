@@ -63,6 +63,7 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             expand_radius: args.opt_value_from_str("--expand-radius")?,
             sensitive: args.contains("--sensitive"),
             aa_subst: args.opt_value_from_str("--aa-subst")?,
+            confident: args.contains("--confident"),
             total_match_count: args.value_from_str("--total-match").unwrap_or(0),
             covered_node_count: args.value_from_str("--covered-node").unwrap_or(0),
             covered_node_ratio: args.value_from_str("--covered-node-ratio").unwrap_or(0.0),
