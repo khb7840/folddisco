@@ -6,8 +6,9 @@ State of `feature-integration`. Measurements live in `feature_evaluation.md`; us
 
 ### Default filtering and sorting (latest)
 - `--confident`: coverage ratio 0.8 on both filter stages (all residues for a 3-4 residue motif,
-  one may be missing from five up) and RMSD ≤ 1.0 Å; explicit filters win, `--skip-match` gets
-  coverage only. `confident_filters` in `query_pdb.rs`.
+  one may be missing from five up) and RMSD ≤ 1.0 Å for queries of at most 12 residues; longer
+  queries keep coverage only. Explicit filters win, `--skip-match` gets coverage only.
+  `confident_filters` in `query_pdb.rs`.
 - Default sort is now `coverage_idf:desc,rmsd:asc` per match and
   `max_node_count:desc,min_rmsd:asc` per structure. `coverage_idf` = `idf` × matched fraction,
   a new sort key and output column (`MatchResult::coverage_idf`).

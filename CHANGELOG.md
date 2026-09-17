@@ -10,8 +10,8 @@ Indices built with 2.x are read unchanged.
 - `query --aa-subst blosum62|group|size` and per-residue `:*`: substitution schemes.
   Substituted residues score below exact ones, so exact matches rank first.
 - `index --expand-radius/--expand-distance/--expand-angle/--aa-subst`: index-time expansion.
-- `query --confident`: keep only confident, full matches (≥ 80% of query residues within 1 Å);
-  filters given explicitly are left alone.
+- `query --confident`: keep only confident, full matches (≥ 80% of query residues within 1 Å;
+  coverage only past 12 residues); filters given explicitly are left alone.
 - `query --novelty-mode`: one evidence row per query (coverage, best hit, RMSD).
 - Multi-character and numeric chain IDs (`AA_250`, `10_250`); `--chain-sep`.
 - Superposition-free `drmsd` and `max_dist_deviation` (columns, sort keys, `--drmsd`).

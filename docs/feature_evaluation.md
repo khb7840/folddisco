@@ -451,6 +451,12 @@ sets — while the product wins on both. Exponents 0.5 / 2 / 3 on the coverage t
 0.4514 / 0.4445; `idf` divided by node count was much worse (0.3666). `drmsd` as the second key
 was slightly worse than `rmsd` (0.4502 vs 0.4518 with `idf` first).
 
+**Held out** (the 492 runnable q755 queries outside q250, paired, 95% bootstrap CI): AP rises on
+all three configs — default +0.0095 [+0.006, +0.013] (262 wins / 137 losses), `--sensitive`
++0.0046 [+0.001, +0.008], mutant `:*` +0.0100 [+0.007, +0.013] — while Sens@1FP is unchanged
+within noise (+0.0015, −0.0029, +0.0002; all CIs span 0). The Sens@1FP gain on the selection set
+did not reproduce, so the shipped claim is a better overall ranking, not a better first-FP cut.
+
 Per structure, plain coverage wins and the product does not:
 
 | per-structure order | M-CSA Sens@1FP | M-CSA AP | motif Sens@1FP |
@@ -473,14 +479,27 @@ structure set (M-CSA q250, per match):
 | coverage ≥ 0.8, RMSD ≤ 0.75 | 0.823 | 0.466 | 0.489 | 0.92 | 16 |
 
 - Coverage 0.8 keeps every residue of a 3-4 residue motif and allows one missing residue from
-  five up; it beats exact-full coverage on F1 and leaves more queries with an answer.
+  five up; it beats exact-full coverage on F1 and leaves more queries with an answer. Ratios
+  0.65 / 0.70 / 0.75 / 0.80 / 0.90 score F1 0.372 / 0.439 / 0.435 / **0.474** / 0.431 on M-CSA
+  (precision 0.50 / 0.61 / 0.61 / 0.76 / 0.80), so 0.8 is the best single value there. On the
+  four motif queries a looser 0.70 scores higher (F1 0.898 vs 0.827) because the 23-residue
+  query recovers recall; `--confident --max-node-ratio 0.65` reproduces the published protocol
+  for such segment queries.
 - A dRMSD cap adds nothing once RMSD is capped (identical rows across `drmsd` 0.75-∞).
 - RMSD 0.75 scores marginally better than 1.0 on M-CSA; 1.0 ships because it keeps more answers
   (recall 0.478 vs 0.466) and matches the threshold the published protocol uses.
 - Zinc/serine motif queries: precision 0.332 → 0.943, recall 0.966 → 0.687.
-- Both cutoffs are needed at every query size: coverage alone gives precision 0.33 (≤4 residues)
-  to 0.61 (9-12), RMSD raises those to 0.64-0.95. The exception is the 23-residue two-segment
-  zinc query, where true hits are assembled across neighbouring fingers at 8-9 Å RMSD: coverage
-  alone is 0.996 precise there and the RMSD cap empties the list.
+- Both cutoffs are needed up to 12 residues: coverage alone gives precision 0.33 (≤4 residues)
+  to 0.61 (9-12), and the RMSD cap raises those to 0.64-0.95. Past 12 residues coverage alone is
+  already precise (M-CSA 13-21 residues: 0.991 at recall 0.627, versus 1.000 at recall 0.319 with
+  the cap and one of three queries emptied), and on the 23-residue two-segment zinc query true
+  hits are assembled across neighbouring fingers at 8-9 Å RMSD, so the cap empties the list
+  (precision 0.996, recall 0.356 with coverage only). Hence `CONFIDENT_RMSD_MAX_RESIDUES = 12`,
+  supported by four queries only.
 - With `--skip-match` only hash coverage applies, and that alone is weak (precision 0.25 on
   M-CSA, 0.71 on the motif set).
+
+**Held out** (492 M-CSA queries outside q250): coverage ≥ 0.8 with RMSD ≤ 1.0 gives precision
+0.789-0.810, recall 0.464-0.474, median 17-18 hits and 92.3-92.8% of queries with a hit across
+default, `--sensitive` and mutant `:*` — matching the selection set (0.756 / 0.478 / 21 / 92.4%).
+Unfiltered on the same queries: precision 0.045-0.053, median 1,679-1,802 hits.

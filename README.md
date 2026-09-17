@@ -224,8 +224,10 @@ F1 on the human proteome (details in [feature_evaluation.md](docs/feature_evalua
 By default a query returns every structure that matched any part of the motif, partial matches
 included. `--confident` keeps only the confident, full ones: at least 80% of the query residues
 matched — all of them for a 3-4 residue motif, one may be missing from five residues up — within
-1 Å RMSD. Filters you give explicitly are left alone, so `--confident --rmsd 0.5` tightens only
-the RMSD. With `--skip-match` there is no superposition, so only the coverage applies.
+1 Å RMSD. Past 12 residues only the coverage is required, because such matches are assembled
+from several parts and run to several Å while the coverage alone is already precise. Filters you
+give explicitly are left alone, so `--confident --rmsd 0.5` tightens only the RMSD. With
+`--skip-match` there is no superposition, so only the coverage applies.
 
 ```bash
 folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --confident

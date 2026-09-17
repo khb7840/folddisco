@@ -67,9 +67,10 @@ search parameters:
 query expansion:
  --expand-radius <INT>            Feature dimensions of a residue pair allowed in a neighbouring bin at once [1]
  --sensitive                      Wider, slower search for deformed motifs: --expand-radius 2. Pair with --max-node <n_residues>
- --confident                      Keep only confident, full matches: at least CONFIDENT_COVERAGE of the query
-                                  residues matched (all of them for 3-4 residue motifs) within CONFIDENT_RMSD A.
-                                  Filters given explicitly win. With --skip-match only the coverage applies
+ --confident                      Keep only confident, full matches: at least 80% of the query residues
+                                  matched (all of them for a 3-4 residue motif) within 1.0 A RMSD.
+                                  Past 12 residues only the coverage is required; filters given explicitly
+                                  win, and with --skip-match only the coverage applies
  --aa-subst <MODE>                Substitute every query residue without an explicit :ALT. Also sets the scheme for :*
                                   - blosum62: positive BLOSUM62 score (default for :*)
                                   - group: same class (RHK, DE, NQST, FWY, AVLIMC, GP)
@@ -195,6 +196,10 @@ const DEFAULT_ANGLE_THRESHOLD: &str = "5.0";
 const CONFIDENT_COVERAGE: f32 = 0.8;
 /// `--confident`: RMSD cap on the matched residues, in Angstroms.
 const CONFIDENT_RMSD: f32 = 1.0;
+/// Longest query `--confident` caps the RMSD of. Above it, matches are assembled from several
+/// parts and run to several Angstroms while coverage alone is already precise
+/// (docs/feature_evaluation.md §15).
+const CONFIDENT_RMSD_MAX_RESIDUES: usize = 12;
 
 /// Column names of a `--novelty-mode` row.
 const NOVELTY_HEADER: &str = "query_id\tstatus\tcandidates\thits\tindex_coverage\tbest_hit\tbest_coverage\tbest_rmsd\tquery_residues";
@@ -395,12 +400,6 @@ pub fn query_pdb(env: AppArgs) {
                 std::process::exit(1);
             }));
 
-            let (covered_node_ratio, max_matching_node_ratio, connected_node_ratio, rmsd_cutoff) =
-                confident_filters(
-                    confident, skip_match, covered_node_ratio, max_matching_node_ratio,
-                    connected_node_ratio, rmsd_cutoff,
-                );
-
             let index_expansion = config.expansion.clone();
             let tolerance = query_tolerance(
                 dist_threshold, angle_threshold, expand_radius, sensitive, index_expansion.as_ref(),
@@ -472,6 +471,12 @@ pub fn query_pdb(env: AppArgs) {
                     // query_residues.sort();
                     res_chain_to_string(&query_residues, chain_separator)
                 };
+
+                let (covered_node_ratio, max_matching_node_ratio, connected_node_ratio, rmsd_cutoff) =
+                    confident_filters(
+                        confident, skip_match, residue_count, covered_node_ratio,
+                        max_matching_node_ratio, connected_node_ratio, rmsd_cutoff,
+                    );
 
                 let hash_type = config.hash_type;
                 let num_bin_dist = config.num_bin_dist;
@@ -733,21 +738,23 @@ fn query_tolerance(
     )
 }
 
-/// Coverage and RMSD filters `--confident` sets, leaving any filter given explicitly alone.
-/// With `--skip-match` only hash coverage can be checked.
+/// Coverage and RMSD filters `--confident` sets for a query of `residue_count` residues,
+/// leaving any filter given explicitly alone. With `--skip-match` only hash coverage can be
+/// checked, and above `CONFIDENT_RMSD_MAX_RESIDUES` residues only coverage is required.
 fn confident_filters(
-    confident: bool, skip_match: bool, covered_node_ratio: f32, max_matching_node_ratio: f32,
-    connected_node_ratio: f32, rmsd_cutoff: f32,
+    confident: bool, skip_match: bool, residue_count: usize, covered_node_ratio: f32,
+    max_matching_node_ratio: f32, connected_node_ratio: f32, rmsd_cutoff: f32,
 ) -> (f32, f32, f32, f32) {
     if !confident {
         return (covered_node_ratio, max_matching_node_ratio, connected_node_ratio, rmsd_cutoff);
     }
     let or_default = |given: f32, preset: f32| if given > 0.0 { given } else { preset };
+    let rmsd_preset = if residue_count <= CONFIDENT_RMSD_MAX_RESIDUES { CONFIDENT_RMSD } else { 0.0 };
     (
         if skip_match { or_default(covered_node_ratio, CONFIDENT_COVERAGE) } else { covered_node_ratio },
         or_default(max_matching_node_ratio, CONFIDENT_COVERAGE),
         or_default(connected_node_ratio, CONFIDENT_COVERAGE),
-        or_default(rmsd_cutoff, CONFIDENT_RMSD),
+        or_default(rmsd_cutoff, rmsd_preset),
     )
 }
 
@@ -1027,20 +1034,25 @@ mod tests {
     #[test]
     fn confident_preset_leaves_explicit_filters_alone() {
         // Off: every value passes through
-        assert_eq!(confident_filters(false, false, 0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(confident_filters(false, false, 3, 0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0));
         // On: coverage on both filter stages, RMSD cap, no pre-match coverage while matching
         assert_eq!(
-            confident_filters(true, false, 0.0, 0.0, 0.0, 0.0),
+            confident_filters(true, false, 3, 0.0, 0.0, 0.0, 0.0),
             (0.0, CONFIDENT_COVERAGE, CONFIDENT_COVERAGE, CONFIDENT_RMSD)
         );
         // --skip-match: hash coverage is all there is
         assert_eq!(
-            confident_filters(true, true, 0.0, 0.0, 0.0, 0.0),
+            confident_filters(true, true, 3, 0.0, 0.0, 0.0, 0.0),
             (CONFIDENT_COVERAGE, CONFIDENT_COVERAGE, CONFIDENT_COVERAGE, CONFIDENT_RMSD)
+        );
+        // A long query keeps the coverage rule and drops the RMSD cap
+        assert_eq!(
+            confident_filters(true, false, CONFIDENT_RMSD_MAX_RESIDUES + 1, 0.0, 0.0, 0.0, 0.0),
+            (0.0, CONFIDENT_COVERAGE, CONFIDENT_COVERAGE, 0.0)
         );
         // Explicit values win
         assert_eq!(
-            confident_filters(true, true, 0.5, 1.0, 0.9, 2.0),
+            confident_filters(true, true, 23, 0.5, 1.0, 0.9, 2.0),
             (0.5, 1.0, 0.9, 2.0)
         );
     }
