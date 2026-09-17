@@ -18,6 +18,14 @@ opt-level = 3
 name = "folddisco"
 path = "src/cli/main.rs"
 
+[[example]]
+name = "seqdump"
+required-features = ["foldcomp"]
+
+[[example]]
+name = "fc_lookup_bench"
+required-features = ["foldcomp"]
+
 [dependencies]
 pico-args = { version = "0.5.0", features = ["combined-flags"], path = "lib/pico-args" }
 pdbtbx-cif = { version = "0.12.0", path = "lib/pdbtbx-cif" }

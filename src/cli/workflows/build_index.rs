@@ -22,8 +22,6 @@ use std::path::PathBuf;
 #[cfg(feature= "foldcomp")] 
 use crate::structure::io::fcz::*;
 
-#[cfg(feature = "foldcomp")]
-
 pub const HELP_INDEX: &str = "\
 usage: folddisco index -p <i:PDB_DIR>|<i:FOLDCOMP_DB> -i <o:INDEX_PATH> [OPTIONS]
 
