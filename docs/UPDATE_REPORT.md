@@ -9,7 +9,9 @@ State of `feature-integration`. Measurements live in `feature_evaluation.md`; us
   (0.75) per substituted side. A substituted hash's IDF is capped at the observed pair's.
 - `count_query`: substituted hits add `weight · IDF` once per query edge (best hash), and only
   to targets without an exact hit on that edge.
-- Per-match IDF: substituted edges are weighted and count only between the matched residues.
+- Per-match IDF: substituted and neighbouring-bin edges count only between the matched residues
+  (`QueryHash::observed` marks the observed geometry); substituted ones are also weighted.
+  Candidate scoring keeps summing neighbour hits: capping them there cost zinc-finger recall.
 - An exact hash is no longer shadowed by another pair's substitution.
 - Matching: above 200 query hashes the residue prefilter uses amino acid codes from
   `aa_dist_map` instead of scanning every pair; output is byte-identical.
@@ -105,6 +107,7 @@ Also:
 
 What to fix, in order:
 1. Score the subgraph induced by the reported residues, bounding it by `C(node_count, 2) · log2(N)`.
+   Done for substituted and neighbouring-bin edges (§1); exact edges still sum over the component.
 2. Use one IDF convention (per-hash recompute or inherited), not both.
 3. Rename one of the two `idf` columns.
 

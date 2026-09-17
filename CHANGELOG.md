@@ -18,6 +18,8 @@ Indices built with 2.x are read unchanged.
 
 ### Changed
 - Matching prefilters target residues by amino acid code for large queries (same output, faster).
+- Per-match IDF counts edges from neighbouring bins and substitutions only between the matched
+  residues, so large components of similar residues no longer rank first.
 - A residue that ends a chain is no longer labelled with the next chain's ID.
 - `-d`/`-a` with several values use only the widest one.
 - `-q` ranges may repeat the chain (`F204-F215`); malformed queries are reported, not panicked on.

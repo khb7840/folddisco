@@ -6,7 +6,7 @@ Measurement record for the `feature-integration` branch. It ships:
 2. **Binary lookup cache**: automatic, no flag (§5)
 3. **Novelty evidence mode**: `--novelty-mode`, one evidence row per query, no verdict (§10)
 4. **Amino acid substitution schemes**: `--aa-subst blosum62|group|size` and per-residue `:*`, with substitution-aware scoring (§14)
-5. **Index-time expansion**: `folddisco index --expand-radius/--expand-distance/--expand-angle/--aa-subst`. Not benchmarked yet.
+5. **Index-time expansion**: `folddisco index --expand-radius/--expand-distance/--expand-angle/--aa-subst` (§14)
 
 Also: superposition-free deformation metrics (`drmsd`, `min_drmsd`, §9) and a fixed `-q F204-F215` parse (§12).
 
@@ -157,7 +157,7 @@ Per-query direction is balanced (295 higher, 258 lower, 26.5% identical): corpus
 | wide `-d`/`-a`, same cap | 0.3599 | 0.2608 | 15 | 38 / 137 / 75 |
 | wide `-d`/`-a` + `--sensitive` | 0.3538 | 0.2500 | **43** | 55 / 129 / 66 |
 
-Branch default is byte-identical to master on 25 of 25 M-CSA queries.
+Branch default was byte-identical to master on 25 of 25 M-CSA queries (before 5ae7321, §14).
 
 ### 3.1 `--sensitive` here
 
@@ -182,6 +182,7 @@ the same query is correct. Use a node-count floor. Prefilter 0.11 s warm; matche
 
 With the rare-hash filter removed, the default is byte-identical (`cmp`) to master on all
 eight commands (A1 814 lines, A2 746, B1 767, B2 756, C1 107, C2 113, D1 800, D2 697).
+Per-match output (M-CSA) differs from master since 5ae7321 by design (§14).
 
 Not a no-op at wider tolerance (A1):
 
@@ -336,7 +337,7 @@ chain on the end is rejected with a message.
 - Fragility analysis perturbs answer sets, not indices or queries.
 - `-d 2.0 -a 20` in §4 is outside the author's protocol.
 - §9, §10 and the last five rows of §8 predate the author's protocol.
-- Index-time expansion has no benchmark yet. Substitution was measured on M-CSA only (§14).
+- Substitution and index-time expansion were measured on M-CSA only (§14).
 - Single machine, 20 cores, local NVMe, warm cache.
 
 ## 14. Amino acid substitution
@@ -378,21 +379,47 @@ and 10.6 s for aa5542d `:*`.
 Matching above 200 query hashes now prefilters target residues by amino acid code; outputs
 were byte-identical on q60 (blosum62) and runtime fell 17.1 → 8.3 s per query.
 
-**Shipped (78bb4a6), exact M-CSA q250** (Δ vs default 0.4465; seconds per query):
+**Neighbouring bins** (5ae7321). Geometry-only expanded hashes were scored as exact: own IDF,
+every hit summed, all component edges in per-match IDF. Variants (q250; motif = human index):
 
-| flags | Sens@1FP | Δ (win/loss) | runtime |
+| variant | M-CSA default | M-CSA `--sensitive` | motif |
 | --- | --- | --- | --- |
-| (default) | 0.4465 | — | 2.65 (5.78 at aa5542d) |
-| `--sensitive` | 0.4536 | +0.0071 (95/41) | 3.01 (9.58) |
-| `--aa-subst blosum62` | 0.4447 | −0.0017 (44/40) | 5.67 |
-| `--aa-subst group` | 0.4468 | +0.0004 (44/38) | 6.53 |
-| `--aa-subst size` | 0.4426 | −0.0039 (46/55) | 6.76 |
-| `--sensitive --aa-subst blosum62` | 0.4507 | +0.0043 (95/61) | 5.48 |
+| unchanged | 0.4465 | 0.4536 | — |
+| like substitutions (cap, one hit per edge, matched-only) | 0.4584 | 0.4659 | A1 Sens@50FP 0.895 → 0.369, B1 Sens@10FP 0.720 → 0.189 |
+| same, weight 0.75 | 0.4516 | 0.4650 | similar losses |
+| IDF cap in candidate scoring only | 0.4464 | 0.4536 | — |
+| **matched-only in per-match IDF** (shipped) | **0.4573** | **0.4647** | byte-identical |
 
-- Answers ranked before the first FP: conservative single-substitution 458 → 549 with
-  blosum62, exact 5,747 → 5,531.
+Capping hits per edge removes the advantage of repeat proteins (C2H2 arrays), which are the
+zinc-finger answers. With substitution the shipped variant also helps: mutant `:*` 0.4123 →
+0.4216, mutant blosum62 0.4015 → 0.4116, exact blosum62 0.4447 → 0.4561.
+Data: `fd-branchbench/selection/geometric_sweep.txt`.
+
+**Shipped (5ae7321), q250** (Sens@1FP; seconds per query):
+
+| flags | exact | Δ vs master (win/loss) | mutant | runtime |
+| --- | --- | --- | --- | --- |
+| master | 0.4475 | — | — | 5.34 |
+| (default) | 0.4591 | +0.0116 (27/10) | 0.2936 | 2.67 |
+| `--sensitive` | 0.4690 | +0.0216 (107/35) | — | 3.04 |
+| `:*` on the varying residue | — | — | 0.4216 | 3.40 |
+| `--aa-subst blosum62` | 0.4575 | +0.0100 (61/42) | 0.4119 | 5.72 |
+| `--aa-subst group` | 0.4547 | +0.0073 (58/42) | — | 6.58 |
+| `--aa-subst size` | 0.4532 | +0.0058 (56/57) | — | 6.80 |
+| `--sensitive --aa-subst blosum62` | 0.4670 | +0.0196 (107/56) | — | 5.52 |
+
+- Queries with no true positive: 10 (master) → 3. Motif commands: default byte-identical to master.
+- Answers ranked before the first FP: conservative single-substitution 473 → 560 with
+  blosum62, exact 5,875 → 5,606.
 - Motif commands: substitution keeps default Sens@1FP on C1/C2 (0.2339; aa5542d 0.0000);
   D1/D2 F1 0.66–0.84 (aa5542d 0.005–0.34); D2 runtime 51–77 s → 17–23 s. Set F1 on the
   prefilter commands still falls (C1 0.883 → 0.370), since more structures pass `--covered-node`.
 - Use substitution when the residues may differ; on exact-residue answer sets it is neutral
   at best.
+
+**Index-time expansion** (M-CSA motif-only index, 24,762 motifs; site queries within 12 Å;
+2cd6e60): index-side expansion is not a substitute for query-side expansion. Radius 1 on the
+index vs on the query: Sens@1FP −0.025 [−0.040, −0.012], returned motifs overlap (Jaccard) 0.58;
+the index grows 3.5× (r1), 6× (r2), 9× (blosum62), 32× (both). An expanded index is looked up
+exactly, so candidate scoring cannot tell its substituted entries from exact ones.
+Details: `fd-branchbench/index_expansion/README.md`.
