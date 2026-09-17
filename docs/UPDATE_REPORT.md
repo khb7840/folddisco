@@ -42,9 +42,9 @@ State of `feature-integration`. Measurements live in `feature_evaluation.md`; us
   documents; restored, with a different chain rejected.
 - Query help and README now state the real default sort, `idf:desc,rmsd:asc`.
 
-## 2. Non-rigid motif search
+## 2. Sensitive search
 
-`--expand-radius` (default 1) and `--nonrigid` (= 2), `src/controller/expand.rs`.
+`--expand-radius` (default 1) and `--sensitive` (= 2), `src/controller/expand.rs`.
 
 - `PDBTrRosetta` hashes `[aa1, aa2, ca_dist, cb_dist, ca_cb_angle, theta1, theta2]` into 30 bits:
   residue identities exact; two distances at 1.2 Å per bin (16 bins over 2–20 Å); three angles as
@@ -59,7 +59,7 @@ State of `feature-integration`. Measurements live in `feature_evaluation.md`; us
 - All quality filters default to off, and expansion only wins with `--max-node` (F1 0.9421 →
   0.9641 with it, 0.9265 → 0.9226 without). Cost +11% (human proteome) to ~73% (M-CSA).
 - Removed: `--enm-sample` and the rare-hash IDF filter. `is_primary` survives with no production
-  consumer. `fd-bench/nonrigid_search.md` predates both removals; do not cite it.
+  consumer. Older reports that say `--nonrigid` predate both removals.
 
 Open concerns:
 1. `MAX_SUBSTEPS = 8` clamps beyond 8 bins of tolerance (`-d > 9.6 Å`), reintroducing bin gaps.

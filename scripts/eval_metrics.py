@@ -36,11 +36,11 @@ the number.
 Usage:
   python3 scripts/eval_metrics.py <result.tsv> <answer.tsv> <index.lookup>
 
-Reproduce a documented row (matched 4-residue zinc query, --nonrigid, F1 0.9641):
+Reproduce a documented row (matched 4-residue zinc query, --sensitive, F1 0.9641):
 
   IDX=index/h_sapiens_folddisco
   folddisco query -i $IDX -p query/1G2F.pdb -q F207,F212,F225,F229 -t 12 \
-    --covered-node 3 --max-node 4 --rmsd 1.0 --per-structure --nonrigid > result.tsv
+    --covered-node 3 --max-node 4 --rmsd 1.0 --per-structure --sensitive > result.tsv
   python3 scripts/eval_metrics.py result.tsv <zinc answers>.tsv $IDX.lookup
 """
 import sys, json

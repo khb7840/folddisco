@@ -46,7 +46,7 @@ pub enum AppArgs {
         angle_threshold: Option<String>,
         ca_dist_threshold: f32,
         expand_radius: Option<usize>, // feature dimensions allowed to deviate at once
-        nonrigid: bool,               // preset that raises the expansion radius
+        sensitive: bool,              // preset that raises the expansion radius
         aa_subst: Option<String>,     // substitution scheme applied to every residue
         // Structure-level filters
         total_match_count: usize, 

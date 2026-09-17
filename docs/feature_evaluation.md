@@ -2,7 +2,7 @@
 
 Measurement record for the `feature-integration` branch. It ships:
 
-1. **Non-rigid motif search**: joint bin expansion, `--nonrigid` / `--expand-radius` (§2–§4)
+1. **Sensitive search**: joint bin expansion, `--sensitive` / `--expand-radius` (§2–§4)
 2. **Binary lookup cache**: automatic, no flag (§5)
 3. **Novelty evidence mode**: `--novelty-mode`, one evidence row per query, no verdict (§10)
 4. **Amino acid substitution schemes**: `--aa-subst blosum62|group|size` and per-residue `:*`. Not benchmarked yet.
@@ -13,7 +13,7 @@ Also: superposition-free deformation metrics (`drmsd`, `min_drmsd`, §9) and a f
 Sensitivity was measured with the repository author's protocol (commands, answer sets,
 Sens@1FP and F1; §2) and on the M-CSA catalytic-site benchmark over a rebuilt 62,122-entry
 PDB index (§3). Conclusions that changed the code: the rare-hash IDF filter was removed (§8),
-and `--nonrigid` needs `--max-node` to pay off (§2.1) and costs more at scale (§2.3).
+and `--sensitive` needs `--max-node` to pay off (§2.1) and costs more at scale (§2.3).
 Largest open question: §3.2.
 
 ## 1. Method
@@ -54,28 +54,28 @@ folddisco benchmark -r result.tsv -a <answers>.tsv -i $IDX --afdb-to-uniprot    
 python3 scripts/eval_metrics.py result.tsv <answers>.tsv $IDX.lookup                  # + TP@kFP
 ```
 
-## 2. `--nonrigid`
+## 2. `--sensitive`
 
 `default` = this branch without flags, byte-identical to master (2a756d9) on all eight commands (§4).
 
 | cmd | config | hits | TP@1FP | Sens@1FP | precision | recall | F1 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **A1** 4-res, prefilter | master = default | 814 | 31 | 0.0407 | 0.9100 | 0.9435 | **0.9265** |
-| | `--nonrigid` | 878 | **42** | 0.0552 | 0.8787 | **0.9711** | 0.9226 |
+| | `--sensitive` | 878 | **42** | 0.0552 | 0.8787 | **0.9711** | 0.9226 |
 | **A2** 4-res, matched | master = default | 746 | 31 | 0.0407 | 0.9655 | 0.9198 | 0.9421 |
-| | `--nonrigid` | 802 | **42** | 0.0552 | 0.9584 | **0.9698** | **0.9641** |
+| | `--sensitive` | 802 | **42** | 0.0552 | 0.9584 | **0.9698** | **0.9641** |
 | **B1** 3-res, prefilter | master = default | 767 | **43** | 0.0565 | 0.9489 | 0.9277 | 0.9382 |
-| | `--nonrigid` | 826 | 22 | 0.0289 | 0.9328 | **0.9671** | **0.9497** |
+| | `--sensitive` | 826 | 22 | 0.0289 | 0.9328 | **0.9671** | **0.9497** |
 | **B2** 3-res, matched | master = default | 756 | **43** | 0.0565 | 0.9591 | 0.9251 | 0.9418 |
-| | `--nonrigid` | 813 | 22 | 0.0289 | 0.9485 | **0.9671** | **0.9577** |
+| | `--sensitive` | 813 | 22 | 0.0289 | 0.9485 | **0.9671** | **0.9577** |
 | **C1** Ser-His-Asp, prefilter | master = default | 107 | 29 | 0.2339 | 0.9533 | 0.8226 | 0.8831 |
-| | `--nonrigid` | 114 | **32** | 0.2581 | **0.9561** | **0.8790** | **0.9160** |
+| | `--sensitive` | 114 | **32** | 0.2581 | **0.9561** | **0.8790** | **0.9160** |
 | **C2** Ser-His-Asp, matched | master = default | 113 | 29 | 0.2339 | 0.9640 | 0.8629 | 0.9106 |
-| | `--nonrigid` | 113 | **32** | 0.2581 | 0.9640 | 0.8629 | 0.9106 |
+| | `--sensitive` | 113 | **32** | 0.2581 | 0.9640 | 0.8629 | 0.9106 |
 | **D1** 23-res segments, prefilter | master = default | 800 | **26** | 0.0342 | 0.8819 | 0.8830 | **0.8825** |
-| | `--nonrigid` | 800 | 25 | 0.0329 | 0.8729 | 0.8752 | 0.8740 |
+| | `--sensitive` | 800 | 25 | 0.0329 | 0.8729 | 0.8752 | 0.8740 |
 | **D2** 23-res segments, matched | master = default | 697 | **26** | 0.0342 | 0.9722 | 0.8739 | **0.9204** |
-| | `--nonrigid` | 705 | 25 | 0.0329 | 0.9594 | 0.8686 | 0.9117 |
+| | `--sensitive` | 705 | 25 | 0.0329 | 0.9594 | 0.8686 | 0.9117 |
 
 Recall always rises (+0.026 to +0.056) and precision always falls:
 
@@ -96,7 +96,7 @@ Every F1 delta is robust; no Sens@1FP delta is.
 
 4-residue query, author's filters added one at a time (F1, 761 set):
 
-| variant | default | `--nonrigid` | Δ |
+| variant | default | `--sensitive` | Δ |
 | --- | --- | --- | --- |
 | `--skip-match`, no filters | 0.6511 | 0.5979 | **−0.0532** |
 | `--covered-node 3 --skip-match` | 0.9265 | 0.9226 | −0.0039 |
@@ -110,9 +110,9 @@ Every F1 delta is robust; no Sens@1FP delta is.
 
 ### 2.2 Not tolerance widening
 
-Across a `-d`/`-a` grid on all eight commands, widening never reaches `--nonrigid`'s F1 (best
+Across a `-d`/`-a` grid on all eight commands, widening never reaches `--sensitive`'s F1 (best
 cell +0.0008 over default, worst −0.14) and loses recall (A2: default 0.920, `-d 2.0 -a 20`
-0.894, `--nonrigid` 0.970). `-d`/`-a` set how far one feature moves; `--nonrigid` how many move
+0.894, `--sensitive` 0.970). `-d`/`-a` set how far one feature moves; `--sensitive` how many move
 at once. Wide single-dimension sub-steps also exhaust `MAX_HASHES_PER_PAIR = 4096` before any
 joint variant is emitted. §3 agrees on a different index and metric.
 
@@ -124,7 +124,7 @@ joint variant is emitted. §3 agrees on a different index and metric.
 | --- | --- | --- |
 | master | 9.1 ms (8.5–9.8) | 158.9 ms (154–177) |
 | default | 9.1 ms (8.6–10.3) | 157.4 ms (148–174) |
-| `--nonrigid` | 9.9 ms (8.6–10.4) | 174.7 ms (168–183) |
+| `--sensitive` | 9.9 ms (8.6–10.4) | 174.7 ms (168–183) |
 
 +11% matched here; the prefilter difference is within spread. On M-CSA (§3) it is ~73%
 slower: cost scales with candidate-pool inflation, so with motif and index size.
@@ -153,13 +153,13 @@ Per-query direction is balanced (295 higher, 258 lower, 26.5% identical): corpus
 | config | mean Sens@1FP | median | zero-TP queries | win / loss / tie vs master |
 | --- | --- | --- | --- | --- |
 | master `--top 6000` | 0.4475 | **0.4032** | 10 | — |
-| `--nonrigid` | **0.4536** | 0.3810 | 12 | **94 / 42 / 114** |
+| `--sensitive` | **0.4536** | 0.3810 | 12 | **94 / 42 / 114** |
 | wide `-d`/`-a`, same cap | 0.3599 | 0.2608 | 15 | 38 / 137 / 75 |
-| wide `-d`/`-a` + `--nonrigid` | 0.3538 | 0.2500 | **43** | 55 / 129 / 66 |
+| wide `-d`/`-a` + `--sensitive` | 0.3538 | 0.2500 | **43** | 55 / 129 / 66 |
 
 Branch default is byte-identical to master on 25 of 25 M-CSA queries.
 
-### 3.1 `--nonrigid` here
+### 3.1 `--sensitive` here
 
 Mean and paired count improve, median falls: a modest mixed win. This protocol has no
 `--max-node`. Wall time 5.53 → 9.56 s per query (250 queries, 5 processes × 4 threads).
@@ -168,7 +168,7 @@ Mean and paired count improve, median falls: a modest mixed win. This protocol h
 
 The wide rows are our reconstruction under `--top 6000`, not the author's sensitive preset,
 which ran uncapped (per-query `result_len` up to 44,412, mean 5,671 vs 1,623 default).
-Supported claim: **under a fixed top-N budget, `--nonrigid` beats widening and the two do not
+Supported claim: **under a fixed top-N budget, `--sensitive` beats widening and the two do not
 compose.** Against the uncapped preset: untested (>10 min per query uncapped vs 10–23 s capped).
 
 ### 3.3 IDF alone does not rank at PDB scale
@@ -236,9 +236,9 @@ text). Synthetic AFDB-style lookups, medians of 5 (v2 decode cache):
 2. At k=1 a change is one accession (an earlier A1 31-vs-27 gap was Q8NB15 moving rank 32 → 28,
    a true positive in the other zinc set).
 3. TP@1FP cannot see `--covered-node`, `--max-node`, `--rmsd` or `--skip-match` (31 default /
-   42 `--nonrigid` in all five §2.1 variants).
+   42 `--sensitive` in all five §2.1 variants).
 
-F1 without `--fp` is rank-blind: on C2 `--nonrigid` returns the same 111 accessions reordered
+F1 without `--fp` is rank-blind: on C2 `--sensitive` returns the same 111 accessions reordered
 (P49862, P08246, Q9P0G3 promoted); F1 stays 0.9106, Sens@1FP 29 → 32. For ranking use
 `--fp 10` or `--fp 100` (TP@100FP sign consistency 1.00 vs 0.28–0.49 at TP@5FP).
 
@@ -249,9 +249,9 @@ Same lists scored against the older `data/zinc_answer.tsv` (1817 accessions):
 | cmd | config | 761-set TP@1FP / F1 | 1817-set TP@1FP / F1 |
 | --- | --- | --- | --- |
 | A1 | default | 31 / 0.9265 | 90 / 0.5902 |
-| A1 | `--nonrigid` | **42** / 0.9226 | 61 / **0.6005** |
+| A1 | `--sensitive` | **42** / 0.9226 | 61 / **0.6005** |
 | A2 | default | 31 / 0.9421 | 89 / 0.5673 |
-| A2 | `--nonrigid` | **42** / **0.9641** | 61 / **0.5922** |
+| A2 | `--sensitive` | **42** / **0.9641** | 61 / **0.5922** |
 
 On A1 both metrics reverse with the answer set alone: F1 is precision-limited on the 761 set
 (recall 0.87–0.97) and recall-limited on the 1817 set (0.40–0.44). Always name the answer set.
@@ -261,7 +261,7 @@ On A1 both metrics reverse with the answer set alone: F1 is precision-limited on
 | feature | verdict |
 | --- | --- |
 | **Rare-hash IDF filter** (`EXPANDED_HASH_IDF_MAX_EXCESS`) | Removed. Margins 0/2/3/5/8/off on eight commands at both radii: shipped 5.0 worse-or-equal in 16/16 cells on both metrics. F1 harm 0.0001–0.0020 (sign consistency 0.91–1.00); no runtime gain (158.7 vs 159.8 ms). Branch `rare-hash-idf-filter`. |
-| **Torsion-angle ENM sampling (`--enm-sample`)** | Removed. vs `--nonrigid`: matched F1 −0.0013 / +0.0006 / 0.0000; C1 prefilter −0.1206 F1 (precision 0.9561 → 0.7630). Runtime 3.34x (zinc) to 46.7x (triad). Conformer count 2/5/12 byte-identical on zinc; on the triad F1 falls 0.8240 → 0.7675 from 2 to 40. Added 17 crates. Branch `enm-torsion-sampling`. |
+| **Torsion-angle ENM sampling (`--enm-sample`)** | Removed. vs `--sensitive`: matched F1 −0.0013 / +0.0006 / 0.0000; C1 prefilter −0.1206 F1 (precision 0.9561 → 0.7630). Runtime 3.34x (zinc) to 46.7x (triad). Conformer count 2/5/12 byte-identical on zinc; on the triad F1 falls 0.8240 → 0.7675 from 2 to 40. Added 17 crates. Branch `enm-torsion-sampling`. |
 | ANM/NMA sampling | Rejected. Never beat torsion-ENM; ~110x slower (1.4 s vs 9 ms). |
 | DMS / PAS / SOS composite ranking | Rejected. Same 1635 candidates; none beat RMSD as tiebreaker after `node_count`. |
 | `--dist-ratio` | Removed. More total recall, fewer true positives at every early-precision depth. |
@@ -277,7 +277,7 @@ available in `--sort-by`, `--format-output`, `--drmsd`, and per structure as `mi
 
 Synthetic hinge (4CHA chains C and G rotated about the chain-C centroid, motif
 `B55-58,C193-196`): at 20° the default returns a 3-residue mis-assignment at 2.81 Å while
-`--nonrigid` recovers all 8 residues at 1.31 Å. Below 10° the default suffices; at 30° radius 2
+`--sensitive` recovers all 8 residues at 1.31 Å. Below 10° the default suffices; at 30° radius 2
 is not enough. Sorting by dRMSD did not beat RMSD after `node_count`.
 
 ## 10. Novelty evidence mode
@@ -314,7 +314,7 @@ Measured facts that still apply (PDB index, human chymotrypsin C triad
 
 `data/serine_answer.tsv` (89 accessions) from `scripts/build_serine_answer.py`: S1 clan by
 PROSITE PS00134/PS00135, sequence-defined and so independent of Folddisco. Tied to
-`index/h_sapiens`; regenerate for other indices. Agreed with MEROPS on the `--nonrigid`
+`index/h_sapiens`; regenerate for other indices. Agreed with MEROPS on the `--sensitive`
 direction. The author's `serinepeptidase_answer.tsv` (124 accessions) and
 `zincfinger_answer.tsv` (761) are the sets of record for §2–§7 and are not committed.
 

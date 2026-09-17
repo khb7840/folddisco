@@ -143,7 +143,7 @@ folddisco query -i <INDEX> -p <QUERY_PDB> [-q <QUERY_RESIDUES> -d <DISTANCE_THRE
 **Important parameter:**
 - `-d`: Distance tolerance in Å, increase sensitivity during the prefilter (default: 0.5)
 - `-a`: Angle tolerance in degrees, increase sensitivity during the prefilter (default: 5)
-- `--nonrigid`: Preset for deformed motifs (see [Non-rigid search](#non-rigid-search))
+- `--sensitive`: Wider, slower search for deformed motifs (see [Sensitive search](#sensitive-search))
 - `--expand-radius`: How many geometric features may fall in a neighbouring bin at once (default: 1)
 - `--aa-subst`: Substitute every query residue by scheme (see [Amino acid substitution](#amino-acid-substitution))
 - `--novelty-mode`: One evidence row per query instead of a hit list (see [Novelty screening](#novelty-screening))
@@ -193,25 +193,25 @@ folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --cov
 folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 -d 0.5 -a 10.0 --ca-distance 1.0 --covered-node-ratio 0.3 --max-node-ratio 0.35 --rmsd 5.0 --tm-score 0.2 --gdt-ts 0.25 --gdt-ha 0.15 --chamfer 5.5 --hausdorff 12.0 --sort-by node_count,gdt_ts,rmsd,idf --format-output tid,node_count,gdt_ts,rmsd,idf,matching_residues,query_residues
 ```
 
-### Non-rigid search
+### Sensitive search
 
 A residue pair whose distance or angle drifts across a bin boundary gets a different hash.
 `--expand-radius` sets how many features of a pair may sit in a neighbouring bin at once
-(default 1, 0 = observed bins only); `--nonrigid` is `--expand-radius 2`.
+(default 1, 0 = observed bins only); `--sensitive` is `--expand-radius 2`.
 
 ```bash
-folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --nonrigid --max-node 3
+folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --sensitive --max-node 3
 ```
 
 - Pair it with `--max-node <n_residues>`: without it the extra recall costs more precision than it gains.
 - Not for long segment queries, which are already saturated.
-- `-d`/`-a` move one feature further; `--nonrigid` lets more features move together.
+- `-d`/`-a` move one feature further; `--sensitive` lets more features move together.
 - Rank deformed motifs by `drmsd` (superposition-free); `drmsd` and `max_dist_deviation` work in
   `--format-output`, `--sort-by` and as filters.
 
-F1 on the human proteome (details in [feature_evaluation.md](feature_evaluation.md)):
+F1 on the human proteome (details in [feature_evaluation.md](docs/feature_evaluation.md)):
 
-| query | default | `--nonrigid` |
+| query | default | `--sensitive` |
 | --- | --- | --- |
 | 4-residue zinc finger, matched | 0.9421 | **0.9641** |
 | 3-residue zinc finger, matched | 0.9418 | **0.9577** |

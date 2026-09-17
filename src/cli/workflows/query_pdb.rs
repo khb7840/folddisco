@@ -66,7 +66,7 @@ search parameters:
 
 query expansion:
  --expand-radius <INT>            Feature dimensions of a residue pair allowed in a neighbouring bin at once [1]
- --nonrigid                       Preset for deformed motifs: --expand-radius 2. Pair with --max-node <n_residues>
+ --sensitive                      Wider, slower search for deformed motifs: --expand-radius 2. Pair with --max-node <n_residues>
  --aa-subst <MODE>                Substitute every query residue without an explicit :ALT. Also sets the scheme for :*
                                   - blosum62: positive BLOSUM62 score (default for :*)
                                   - group: same class (RHK, DE, NQST, FWY, AVLIMC, GP)
@@ -163,8 +163,8 @@ folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --con
 # Coverage based filtering & top N filtering without residue matching
 folddisco query -q query/zinc_finger.txt -i index/h_sapiens_folddisco -t 6 --covered-node 3 --top 1000 --per-structure --skip-match
 
-# Non-rigid search for a deformed motif, ranked by dRMSD
-folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --nonrigid \\
+# Sensitive search for a deformed motif, ranked by dRMSD
+folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco -t 6 --sensitive \\
   --sort-by node_count,drmsd --format-output tid,node_count,idf,rmsd,drmsd,matching_residues
 
 # Novelty evidence for designed motifs, one row per design
@@ -174,9 +174,9 @@ folddisco query -q designs.txt -i index/pdb_folddisco -t 6 --novelty-mode --head
 pub const MIN_CONNECTED_COMPONENT_SIZE: usize = 2;
 pub const MAX_NUM_LINES_FOR_WEB: usize = 1000;
 
-/// Expansion radius `--nonrigid` raises the search to; radius 3 measured no better
-/// (see feature_evaluation.md).
-const NONRIGID_EXPAND_RADIUS: usize = 2;
+/// Expansion radius `--sensitive` raises the search to; radius 3 measured no better
+/// (see docs/feature_evaluation.md).
+const SENSITIVE_EXPAND_RADIUS: usize = 2;
 const DEFAULT_EXPAND_RADIUS: usize = 1;
 const DEFAULT_DIST_THRESHOLD: &str = "0.5";
 const DEFAULT_ANGLE_THRESHOLD: &str = "5.0";
@@ -197,7 +197,7 @@ pub fn query_pdb(env: AppArgs) {
             angle_threshold,
             ca_dist_threshold,
             expand_radius,
-            nonrigid,
+            sensitive,
             aa_subst,
             total_match_count,
             covered_node_count,
@@ -381,7 +381,7 @@ pub fn query_pdb(env: AppArgs) {
 
             let index_expansion = config.expansion.clone();
             let tolerance = query_tolerance(
-                dist_threshold, angle_threshold, expand_radius, nonrigid, index_expansion.as_ref(),
+                dist_threshold, angle_threshold, expand_radius, sensitive, index_expansion.as_ref(),
             );
             // Matching must accept whatever the expanded index returned
             let matching_tolerance = index_expansion.as_ref().map(|expansion| expansion.matching_tolerance(&tolerance));
@@ -694,20 +694,20 @@ pub fn query_pdb(env: AppArgs) {
 
 /// Query-side tolerance. Unset options take their defaults, except on an index that
 /// already stores geometric expansion, where they stay off unless any is given.
-/// `--nonrigid` only raises the radius.
+/// `--sensitive` only raises the radius.
 fn query_tolerance(
     dist_threshold: Option<String>, angle_threshold: Option<String>, expand_radius: Option<usize>,
-    nonrigid: bool, index_expansion: Option<&IndexExpansion>,
+    sensitive: bool, index_expansion: Option<&IndexExpansion>,
 ) -> ToleranceConfig {
     let index_covers_geometry = index_expansion.map_or(false, |e| e.tolerance.radius > 0);
-    let geometry_given = dist_threshold.is_some() || angle_threshold.is_some() || expand_radius.is_some() || nonrigid;
+    let geometry_given = dist_threshold.is_some() || angle_threshold.is_some() || expand_radius.is_some() || sensitive;
     let use_defaults = !index_covers_geometry || geometry_given;
     let default = |value: Option<String>, fallback: &str| value.or(use_defaults.then(|| fallback.to_string()));
     let radius = expand_radius.unwrap_or(if use_defaults { DEFAULT_EXPAND_RADIUS } else { 0 });
     ToleranceConfig::new(
         parse_threshold_string(default(dist_threshold, DEFAULT_DIST_THRESHOLD)),
         parse_threshold_string(default(angle_threshold, DEFAULT_ANGLE_THRESHOLD)),
-        if nonrigid { radius.max(NONRIGID_EXPAND_RADIUS) } else { radius },
+        if sensitive { radius.max(SENSITIVE_EXPAND_RADIUS) } else { radius },
     )
 }
 
@@ -818,7 +818,7 @@ mod tests {
             angle_threshold: None,
             ca_dist_threshold: 1.0,
             expand_radius: None,
-            nonrigid: false,
+            sensitive: false,
             aa_subst: None,
             total_match_count: 0,
             covered_node_count: 0,
@@ -878,7 +878,7 @@ mod tests {
                 angle_threshold: None,
                 ca_dist_threshold: 1.0,
                 expand_radius: None,
-                nonrigid: false,
+                sensitive: false,
                 aa_subst: None,
                 total_match_count: 0,
                 covered_node_count: 0,
@@ -938,7 +938,7 @@ mod tests {
             angle_threshold: None,
             ca_dist_threshold: 1.0,
             expand_radius: None,
-            nonrigid: false,
+            sensitive: false,
             aa_subst: None,
             total_match_count: 0,
             covered_node_count: 0,

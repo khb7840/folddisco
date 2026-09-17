@@ -61,7 +61,7 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             angle_threshold: args.opt_value_from_str(["-a", "--angle"])?,
             ca_dist_threshold: args.value_from_str("--ca-distance").unwrap_or(1.0),
             expand_radius: args.opt_value_from_str("--expand-radius")?,
-            nonrigid: args.contains("--nonrigid"),
+            sensitive: args.contains("--sensitive"),
             aa_subst: args.opt_value_from_str("--aa-subst")?,
             total_match_count: args.value_from_str("--total-match").unwrap_or(0),
             covered_node_count: args.value_from_str("--covered-node").unwrap_or(0),
