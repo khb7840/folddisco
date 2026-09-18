@@ -1,10 +1,10 @@
 # Folddisco 3.0 — update report
 
-Web version: https://claude.ai/artifact/7TutEE3wc55QiXFk5vkfCq (private); its page source is
-`fd-branchbench/report/index.html` and `fd-branchbench/scripts/make_report_pdf.py` renders it to
-`folddisco_3.0_report.pdf`. Figures live in `fd-branchbench/figure/`,
-`fd-branchbench/defaults/figure/` and `fd-branchbench/index_expansion/figure/`; measurement detail is in
-[feature_evaluation.md](feature_evaluation.md), branch state in [UPDATE_REPORT.md](UPDATE_REPORT.md).
+Printable version: [folddisco_3.0_report.pdf](folddisco_3.0_report.pdf). Benchmark scripts, raw
+tables and figures live in [folddisco-analysis](https://github.com/steineggerlab/folddisco-analysis)
+under `fd-branchbench/` (page source `report/index.html`, rendered by `scripts/make_report_pdf.py`);
+measurement detail is in [feature_evaluation.md](feature_evaluation.md), branch state in
+[UPDATE_REPORT.md](UPDATE_REPORT.md).
 
 ## What 3.0 adds
 
@@ -35,7 +35,7 @@ threads each; motif timings are serial medians of 5 repeats.
 
 ## Results
 
-Benchmark rerun at commit b907df5 (master 2a756d9); `fd-branchbench/result/`.
+Benchmark rerun at commit b907df5 (master 2a756d9); tables in `fd-branchbench/result/`.
 
 ### M-CSA, 250 catalytic sites
 
@@ -144,7 +144,7 @@ grows the index 3.5× (radius 1) to 32× (radius 1 + blosum62).
 ## Reproduce
 
 ```bash
-cd fd-branchbench
+cd fd-branchbench   # in the folddisco-analysis checkout
 REPEATS=5 WARMUP=1 ./scripts/run_all.sh 250     # motif, M-CSA, mutant, --confident, figures
 defaults/scripts/collect.sh <binary>            # raw output for sort/filter selection
 defaults/scripts/analyze.py && defaults/scripts/plot.py

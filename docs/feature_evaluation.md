@@ -1,6 +1,8 @@
 # Feature evaluation
 
-Measurement record for the `feature-integration` branch. It ships:
+Measurement record for the `feature-integration` branch. Benchmark scripts and raw tables are in
+[folddisco-analysis](https://github.com/steineggerlab/folddisco-analysis) under `fd-branchbench/`;
+paths below are relative to that directory. It ships:
 
 1. **Sensitive search**: joint bin expansion, `--sensitive` / `--expand-radius` (§2–§4)
 2. **Binary lookup cache**: automatic, no flag (§5)
