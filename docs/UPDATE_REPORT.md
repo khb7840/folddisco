@@ -33,12 +33,12 @@ State of `feature-integration`. Measurements live in `feature_evaluation.md`; us
 ### `--nonrigid` renamed `--sensitive`
 - Same preset (`--expand-radius 2`); the name describes the effect, not a flexible alignment.
 
-### Novelty evidence mode
-- `--novelty-mode` prints one row per query with no verdict:
-  `query_id, status, candidates, hits, index_coverage, best_hit, best_coverage, best_rmsd, query_residues`.
-- `status` is `ok`, `no_candidates`, `filtered_out` or `no_hashes`; `candidates`/`index_coverage`
-  are taken before filters. `--header` prints the column names once per output.
-- Removed: KNOWN/PARTIAL_MATCH/NOVEL tiers, `--novelty-coverage`, `--novelty-rmsd`.
+### Novelty mode
+- `--novelty-mode` prints one verdict row per query:
+  `query_id, verdict, candidates, hits, index_coverage, best_hit, best_coverage, best_rmsd, best_residues, query_residues`.
+- `verdict` is `KNOWN`, `PARTIAL`, `NOVEL` or `NO_HASHES`, gated by `--novelty-coverage` [0.8]
+  and `--novelty-rmsd` [2.0]; `candidates`/`index_coverage` are taken before filters, and
+  `best_residues` gives the residues the best hit matched. `--header` prints the column names once.
 
 ### Amino acid substitution schemes
 - `src/controller/substitution.rs`: `blosum62` (positive score), `group` (RHK, DE, NQST, FWY,

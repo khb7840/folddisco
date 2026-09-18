@@ -13,7 +13,7 @@ Web version: https://claude.ai/artifact/7TutEE3wc55QiXFk5vkfCq (private). Figure
 | Amino acid substitution | `query --aa-subst blosum62\|group\|size`, `:*` per residue | matches chemically similar residues, scored below exact ones |
 | Confident hit list | `query --confident` | keeps only full, low-RMSD matches |
 | Index-time expansion | `index --expand-radius/--expand-distance/--expand-angle/--aa-subst` | stores the neighbourhood in the index instead of expanding the query |
-| Novelty evidence | `query --novelty-mode` | one evidence row per query: coverage, best hit, RMSD |
+| Novelty screening | `query --novelty-mode` | one KNOWN/PARTIAL/NOVEL row per query with its evidence and the best hit’s residues |
 | Multi-character chain IDs | `-q AA_250`, `10_250`, `--chain-sep` | mmCIF chains that are not a single letter |
 | Deformation metrics | `drmsd`, `max_dist_deviation` | superposition-free deviation, as column, sort key and filter |
 | Mapped lookup caches | automatic | `*.lookup.cache`, `*.fdcache` built on first use |

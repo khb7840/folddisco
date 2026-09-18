@@ -88,8 +88,10 @@ pub enum AppArgs {
         // Always write CHAIN_RESIDUE
         chain_separator: bool,
         output: String,
-        // One evidence row per query instead of the hit list
+        // One verdict row per query instead of the hit list
         novelty_mode: bool,
+        novelty_coverage_threshold: f32,
+        novelty_rmsd_threshold: f32,
         verbose: bool,
         help: bool,
     },

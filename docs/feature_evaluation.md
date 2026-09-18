@@ -4,7 +4,7 @@ Measurement record for the `feature-integration` branch. It ships:
 
 1. **Sensitive search**: joint bin expansion, `--sensitive` / `--expand-radius` (§2–§4)
 2. **Binary lookup cache**: automatic, no flag (§5)
-3. **Novelty evidence mode**: `--novelty-mode`, one evidence row per query, no verdict (§10)
+3. **Novelty mode**: `--novelty-mode`, one KNOWN/PARTIAL/NOVEL row per query with its evidence (§10)
 4. **Amino acid substitution schemes**: `--aa-subst blosum62|group|size` and per-residue `:*`, with substitution-aware scoring (§14)
 5. **Index-time expansion**: `folddisco index --expand-radius/--expand-distance/--expand-angle/--aa-subst` (§14)
 
@@ -283,16 +283,23 @@ is not enough. Sorting by dRMSD did not beat RMSD after `node_count`.
 
 ## 10. Novelty evidence mode
 
-`--novelty-mode` prints one tab-separated row per query and makes no novelty call. The earlier
-verdict (KNOWN / PARTIAL_MATCH / NOVEL / FILTERED_OUT / NO_HASHES, with `--novelty-coverage`
-and `--novelty-rmsd`) was removed. Columns:
+`--novelty-mode` prints one tab-separated verdict row per query, with the evidence behind it:
 
-`query_id, status, candidates, hits, index_coverage, best_hit, best_coverage, best_rmsd, query_residues`
+`query_id, verdict, candidates, hits, index_coverage, best_hit, best_coverage, best_rmsd, best_residues, query_residues`
 
-- `status`: `ok`, `no_candidates`, `filtered_out` (candidates existed, filters kept none; also
-  warned on stderr), `no_hashes` (residues farther apart than the index cutoff).
+- `verdict`: `KNOWN` (best hit covers ≥ `--novelty-coverage` [0.8] of the query within
+  `--novelty-rmsd` [2.0 Å]), `PARTIAL` (covered, but under either threshold), `NOVEL` (nothing
+  covered; also warned on stderr when candidates existed and filters kept none), `NO_HASHES`
+  (residues farther apart than the index cutoff).
 - `candidates` / `index_coverage`: from the inverted index before any filter.
-- `hits` / `best_*`: after filters and matching; `best_rmsd` is `NA` with `--skip-match`.
+- `hits` / `best_*`: after filters and matching; `best_rmsd` and `best_residues` are `NA` with
+  `--skip-match`. `best_residues` writes `_` for a query residue the hit did not match.
+
+Coverage alone does not make a motif known: the same residues in another arrangement cover
+everything. Measured on the 62,122-entry M-CSA index, 3-4 residue motifs reach coverage 1.0
+against something in nearly every case, so the RMSD threshold is what separates the tiers —
+`query/2N6N.pdb A5,A10,A15` is KNOWN at the default 2.0 Å (best 0.654 Å) and PARTIAL at
+`--novelty-rmsd 0.5`.
 
 Measured facts that still apply (PDB index, human chymotrypsin C triad
 `data/AF-P17538-F1-model_v4.pdb -q A57,A102,A195`, `--top 6000`):

@@ -101,6 +101,8 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             chain_separator: args.contains("--chain-sep"),
             output: args.value_from_str(["-o", "--output"]).unwrap_or("".into()),
             novelty_mode: args.contains("--novelty-mode"),
+            novelty_coverage_threshold: args.opt_value_from_str("--novelty-coverage")?.unwrap_or(query_pdb::NOVELTY_COVERAGE),
+            novelty_rmsd_threshold: args.opt_value_from_str("--novelty-rmsd")?.unwrap_or(query_pdb::NOVELTY_RMSD),
             verbose: args.contains(["-v", "--verbose"]),
             help: args.contains(["-h", "--help"]),
         }),

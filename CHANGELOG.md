@@ -12,7 +12,8 @@ Indices built with 2.x are read unchanged.
 - `index --expand-radius/--expand-distance/--expand-angle/--aa-subst`: index-time expansion.
 - `query --confident`: keep only confident, full matches (≥ 80% of query residues within 1 Å;
   coverage only past 12 residues); filters given explicitly are left alone.
-- `query --novelty-mode`: one evidence row per query (coverage, best hit, RMSD).
+- `query --novelty-mode` with `--novelty-coverage`/`--novelty-rmsd`: one KNOWN/PARTIAL/NOVEL
+  row per query, with candidates, coverage, best hit, RMSD and the best hit's matched residues.
 - Multi-character and numeric chain IDs (`AA_250`, `10_250`); `--chain-sep`.
 - Superposition-free `drmsd` and `max_dist_deviation` (columns, sort keys, `--drmsd`).
 - Memory-mapped caches for index and Foldcomp lookups (`*.lookup.cache`, `*.fdcache`),

@@ -12,6 +12,7 @@ use rayon::prelude::*;
 use crate::cli::config::read_index_config_from_file;
 use crate::controller::filter::{MatchFilter, StructureFilter};
 use crate::controller::mode::QueryMode;
+use crate::controller::ResidueMatch;
 use crate::controller::sort::{MatchSortStrategy, StructureSortStrategy};
 use crate::cli::*;
 use crate::controller::io::{
@@ -25,7 +26,7 @@ use crate::controller::query::{index_matching_substitutions, make_query_map, par
 use crate::controller::substitution::SubstitutionScheme;
 use crate::controller::count_query::count_query;
 use crate::controller::result::{
-    convert_structure_query_result_to_match_query_results, 
+    convert_structure_query_result_to_match_query_results, format_residue_matches,
     sort_and_print_match_query_result, sort_and_print_structure_query_result, StructureResult
 };
 use crate::controller::retrieve::retrieval_wrapper;
@@ -127,14 +128,19 @@ display options:
  --superpose                      Print U, T, CA of matching residues
 
 novelty screening:
- --novelty-mode                   One evidence row per query instead of the hit list. No verdict is made;
-                                  columns: query_id, status, candidates, hits, index_coverage, best_hit,
-                                  best_coverage, best_rmsd, query_residues
-                                  - status: ok, no_candidates (index covered no residue), filtered_out
-                                    (candidates existed, filters kept none), no_hashes (query not searchable)
+ --novelty-mode                   One verdict row per query instead of the hit list. Columns: query_id,
+                                  verdict, candidates, hits, index_coverage, best_hit, best_coverage,
+                                  best_rmsd, best_residues, query_residues
+                                  - verdict: KNOWN (best hit covers enough, close enough), PARTIAL
+                                    (covered but under either threshold), NOVEL (nothing covered),
+                                    NO_HASHES (query not searchable)
                                   - index_coverage: best --covered-node ratio before filters (hash level)
-                                  - best_coverage/best_rmsd: best hit after filters; RMSD is NA with --skip-match
+                                  - best_*: best hit after filters, its matched residues included;
+                                    RMSD and residues are NA with --skip-match
                                   Filters such as a high --max-node remove partial matches; screen with low ones
+ --novelty-coverage <FLOAT>       Residue coverage of the best hit needed to call a motif KNOWN [0.8]
+ --novelty-rmsd <FLOAT>           Best-hit RMSD, in Angstroms, still allowed for KNOWN [2.0]. Covered but
+                                  over the limit is PARTIAL. With --skip-match coverage alone decides
 
 general options:
  -v, --verbose                    Print verbose messages
@@ -204,7 +210,11 @@ const CONFIDENT_RMSD: f32 = 1.0;
 const CONFIDENT_RMSD_MAX_RESIDUES: usize = 12;
 
 /// Column names of a `--novelty-mode` row.
-const NOVELTY_HEADER: &str = "query_id\tstatus\tcandidates\thits\tindex_coverage\tbest_hit\tbest_coverage\tbest_rmsd\tquery_residues";
+const NOVELTY_HEADER: &str = "query_id\tverdict\tcandidates\thits\tindex_coverage\tbest_hit\tbest_coverage\tbest_rmsd\tbest_residues\tquery_residues";
+/// `--novelty-coverage` default: residue coverage of the best hit needed to call a motif KNOWN.
+pub const NOVELTY_COVERAGE: f32 = 0.8;
+/// `--novelty-rmsd` default, in Angstroms: best-hit RMSD still allowed for KNOWN.
+pub const NOVELTY_RMSD: f32 = 2.0;
 
 /// Run `folddisco query` for parsed `AppArgs::Query`.
 pub fn query_pdb(env: AppArgs) {
@@ -257,6 +267,8 @@ pub fn query_pdb(env: AppArgs) {
             chain_separator,
             output,
             novelty_mode,
+            novelty_coverage_threshold,
+            novelty_rmsd_threshold,
             verbose,
             help: _,
         } => {
@@ -641,12 +653,14 @@ pub fn query_pdb(env: AppArgs) {
                                 |a, b| a.node_count.cmp(&b.node_count).then_with(
                                     || b.rmsd.partial_cmp(&a.rmsd).unwrap_or(std::cmp::Ordering::Equal)
                                 )
-                            ).map(|v| (v.tid, v.node_count, Some(v.rmsd)));
+                            ).map(|v| (v.tid, v.node_count, Some(v.rmsd),
+                                       format_residue_matches(&v.matching_residues, chain_separator)));
                             let hits = match_results.iter().filter(|(_, v)| v.node_count > 0)
                                 .map(|(_, v)| v.tid).collect::<std::collections::HashSet<_>>().len();
                             novelty_evidence(
                                 &pdb_path, &query_string, residue_count, novelty_candidates, hits,
-                                novelty_index_coverage, best, &output_path,
+                                novelty_index_coverage, novelty_coverage_threshold,
+                                novelty_rmsd_threshold, best, &output_path,
                             );
                         } else {
                             sort_and_print_match_query_result(
@@ -684,16 +698,18 @@ pub fn query_pdb(env: AppArgs) {
                                         .unwrap_or(std::cmp::Ordering::Equal)
                                 )
                             }).map(|v| if skip_match {
-                                (v.tid, v.node_count, None)
+                                (v.tid, v.node_count, None, String::new())
                             } else {
-                                (v.tid, v.max_matching_node_count, Some(v.min_rmsd_with_max_match))
+                                (v.tid, v.max_matching_node_count, Some(v.min_rmsd_with_max_match),
+                                 best_component_residues(v, chain_separator))
                             });
                             let hits = queried_from_indices.iter().filter(|(_, v)| {
                                 if skip_match { v.node_count > 0 } else { v.max_matching_node_count > 0 }
                             }).count();
                             novelty_evidence(
                                 &pdb_path, &query_string, residue_count, novelty_candidates,
-                                hits, novelty_index_coverage, best, &output_path,
+                                hits, novelty_index_coverage, novelty_coverage_threshold,
+                                novelty_rmsd_threshold, best, &output_path,
                             );
                         } else {
                             sort_and_print_structure_query_result(
@@ -769,21 +785,43 @@ fn residue_coverage(nodes: usize, query_residue_count: usize) -> f32 {
     }
 }
 
-/// Novelty row for a query that produced no hashes and so could not be searched.
+/// Residues of the best connected component of a per-structure hit: most matched residues
+/// first, lower RMSD breaking ties - the component `max_matching_node_count` counts.
+fn best_component_residues(result: &StructureResult, chain_separator: bool) -> String {
+    let components = if result.matching_residues_processed.is_empty() {
+        &result.matching_residues
+    } else {
+        &result.matching_residues_processed
+    };
+    components.iter()
+        .max_by(|a, b| {
+            let matched = |r: &Vec<ResidueMatch>| r.iter().filter(|x| x.is_some()).count();
+            matched(&a.0).cmp(&matched(&b.0))
+                .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+        })
+        .map_or(String::new(), |(residues, _, _, _, _, _, _)| {
+            format_residue_matches(residues, chain_separator)
+        })
+}
+
+/// Novelty row for a query that produced no hashes and so could not be searched. Kept
+/// distinct from NOVEL: an unrepresentable query is not a discovery.
 fn novelty_no_hash_row(query_id: &str, query_residues: &str) -> String {
-    format!("{}\tno_hashes\t0\t0\t0.0000\tNA\tNA\tNA\t{}", query_id, query_residues)
+    format!("{}\tNO_HASHES\t0\t0\t0.0000\tNA\tNA\tNA\tNA\t{}", query_id, query_residues)
 }
 
 /// Print a novelty row, warning when candidates existed but none survived.
 fn novelty_evidence(
     query_id: &str, query_residues: &str, query_residue_count: usize,
     candidates: usize, hits: usize, index_coverage: usize,
-    best: Option<(&str, usize, Option<f32>)>, output_path: &str,
+    coverage_threshold: f32, rmsd_threshold: f32,
+    best: Option<(&str, usize, Option<f32>, String)>, output_path: &str,
 ) {
-    let row = novelty_evidence_row(
-        query_id, query_residues, query_residue_count, candidates, hits, index_coverage, best,
+    let row = novelty_verdict_row(
+        query_id, query_residues, query_residue_count, candidates, hits, index_coverage,
+        coverage_threshold, rmsd_threshold, best,
     );
-    if row.split('\t').nth(1) == Some("filtered_out") {
+    if row.split('\t').nth(1) == Some("NOVEL") && index_coverage > 0 {
         print_log_msg(WARN, &format!(
             "{}:{} - {} candidates covered up to {} of {} residues, but filters and matching kept none",
             query_id, query_residues, candidates, index_coverage, query_residue_count
@@ -792,28 +830,38 @@ fn novelty_evidence(
     print_novelty_row(&row, output_path);
 }
 
-/// Evidence for how much of a motif the index covers, without a novelty verdict.
+/// One verdict row per query, with the evidence behind it. Columns follow `NOVELTY_HEADER`.
 ///
-/// Columns follow `NOVELTY_HEADER`. `best` is the highest-coverage hit after filters as
-/// (target, covered residues, RMSD); RMSD is `None` when matching was skipped.
-fn novelty_evidence_row(
+/// KNOWN needs both enough coverage and a close enough best hit; anything covered but
+/// failing either is PARTIAL; no covered hit at all is NOVEL. Coverage alone does not make
+/// a motif known - the same residues in another arrangement cover everything and are still
+/// a different motif - so the RMSD the row prints gates the verdict too. With `--skip-match`
+/// there is no RMSD and coverage is all there is.
+///
+/// `best` is the highest-coverage hit after filters as (target, covered residues, RMSD,
+/// matched residues); RMSD and residues are absent when matching was skipped.
+fn novelty_verdict_row(
     query_id: &str, query_residues: &str, query_residue_count: usize,
     candidates: usize, hits: usize, index_coverage: usize,
-    best: Option<(&str, usize, Option<f32>)>,
+    coverage_threshold: f32, rmsd_threshold: f32,
+    best: Option<(&str, usize, Option<f32>, String)>,
 ) -> String {
     let index_coverage_ratio = residue_coverage(index_coverage, query_residue_count);
-    let (status, best_hit, best_coverage, best_rmsd) = match best {
-        _ if candidates == 0 || index_coverage == 0 => ("no_candidates", "NA", "NA".to_string(), "NA".to_string()),
-        Some((tid, covered, rmsd)) if covered > 0 => (
-            "ok", tid,
-            format!("{:.4}", residue_coverage(covered, query_residue_count)),
-            rmsd.map_or("NA".to_string(), |rmsd| format!("{:.4}", rmsd)),
-        ),
-        _ => ("filtered_out", "NA", "NA".to_string(), "NA".to_string()),
+    let (verdict, best_hit, best_coverage, best_rmsd, best_residues) = match best {
+        Some((tid, covered, rmsd, residues)) if covered > 0 => {
+            let coverage = residue_coverage(covered, query_residue_count);
+            let close_enough = rmsd.map_or(true, |rmsd| rmsd <= rmsd_threshold);
+            let verdict = if coverage >= coverage_threshold && close_enough { "KNOWN" } else { "PARTIAL" };
+            (verdict, tid.to_string(), format!("{:.4}", coverage),
+             rmsd.map_or("NA".to_string(), |rmsd| format!("{:.4}", rmsd)),
+             if residues.is_empty() { "NA".to_string() } else { residues })
+        }
+        _ => ("NOVEL", "NA".to_string(), "0.0000".to_string(), "NA".to_string(), "NA".to_string()),
     };
     format!(
-        "{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}",
-        query_id, status, candidates, hits, index_coverage_ratio, best_hit, best_coverage, best_rmsd, query_residues
+        "{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}",
+        query_id, verdict, candidates, hits, index_coverage_ratio, best_hit, best_coverage,
+        best_rmsd, best_residues, query_residues
     )
 }
 
@@ -905,6 +953,8 @@ mod tests {
             chain_separator: false,
             output: String::from(""),
             novelty_mode: false,
+            novelty_coverage_threshold: NOVELTY_COVERAGE,
+            novelty_rmsd_threshold: NOVELTY_RMSD,
             verbose: true,
             help: false,
         };
@@ -965,6 +1015,8 @@ mod tests {
                 chain_separator: false,
                 output: String::from(""),
                 novelty_mode: false,
+                novelty_coverage_threshold: NOVELTY_COVERAGE,
+                novelty_rmsd_threshold: NOVELTY_RMSD,
                 verbose: true,
                 partial_fit: false,
                 help: false,
@@ -1027,6 +1079,8 @@ mod tests {
             chain_separator: false,
             output: String::from(""),
             novelty_mode: false,
+            novelty_coverage_threshold: NOVELTY_COVERAGE,
+            novelty_rmsd_threshold: NOVELTY_RMSD,
             verbose: true,
             help: false,
         };
@@ -1080,47 +1134,48 @@ mod tests {
     }
 
     #[test]
-    fn novelty_row_reports_evidence_without_a_verdict() {
+    fn novelty_verdict_needs_both_coverage_and_a_close_hit() {
         let residues = "A10,A20,A30";
-        let row = |candidates, hits, cov, best| novelty_evidence_row("d.pdb", residues, 3, candidates, hits, cov, best);
-        // Nothing in the index covered a residue
-        assert_eq!(row(0, 0, 0, None), "d.pdb\tno_candidates\t0\t0\t0.0000\tNA\tNA\tNA\tA10,A20,A30");
-        // Matched hit: coverage and RMSD are reported, not judged
-        assert_eq!(
-            row(12, 4, 3, Some(("1abc", 3, Some(2.5)))),
-            "d.pdb\tok\t12\t4\t1.0000\t1abc\t1.0000\t2.5000\tA10,A20,A30"
-        );
-        assert_eq!(
-            row(12, 4, 3, Some(("1abc", 2, Some(0.02)))),
-            "d.pdb\tok\t12\t4\t1.0000\t1abc\t0.6667\t0.0200\tA10,A20,A30"
-        );
-        // --skip-match: RMSD was never computed
-        assert_eq!(
-            row(5, 5, 2, Some(("1abc", 2, None))),
-            "d.pdb\tok\t5\t5\t0.6667\t1abc\t0.6667\tNA\tA10,A20,A30"
-        );
+        let row = |best| novelty_verdict_row("d.pdb", residues, 3, 12, 4, 3, 0.8, 2.0, best);
+        let hit = |covered, rmsd, res: &str| Some(("1abc", covered, rmsd, res.to_string()));
+        // Full coverage within the RMSD limit is KNOWN, and the matched residues come with it
+        assert_eq!(row(hit(3, Some(1.5), "B10,B20,B30")),
+            "d.pdb\tKNOWN\t12\t4\t1.0000\t1abc\t1.0000\t1.5000\tB10,B20,B30\tA10,A20,A30");
+        // Same residues in another arrangement: covered, but too far to be the same motif
+        assert_eq!(row(hit(3, Some(4.2), "B10,B20,B30")),
+            "d.pdb\tPARTIAL\t12\t4\t1.0000\t1abc\t1.0000\t4.2000\tB10,B20,B30\tA10,A20,A30");
+        // Close, but not enough of the motif
+        assert_eq!(row(hit(2, Some(0.02), "B10,_,B30")),
+            "d.pdb\tPARTIAL\t12\t4\t1.0000\t1abc\t0.6667\t0.0200\tB10,_,B30\tA10,A20,A30");
+        // --skip-match: no RMSD and no residues, so coverage alone decides
+        assert_eq!(novelty_verdict_row("d.pdb", residues, 3, 5, 5, 2, 0.8, 2.0,
+                                       Some(("1abc", 3, None, String::new()))),
+            "d.pdb\tKNOWN\t5\t5\t0.6667\t1abc\t1.0000\tNA\tNA\tA10,A20,A30");
     }
 
     #[test]
-    fn filters_that_empty_the_result_are_not_reported_as_absent() {
-        // Candidates existed (2 of 3 residues) but filters kept none
+    fn nothing_covered_is_novel_whether_or_not_candidates_existed() {
         let residues = "A57,A102,A195";
-        let expected = "c.pdb\tfiltered_out\t7\t0\t0.6667\tNA\tNA\tNA\tA57,A102,A195";
-        assert_eq!(novelty_evidence_row("c.pdb", residues, 3, 7, 0, 2, None), expected);
-        assert_eq!(novelty_evidence_row("c.pdb", residues, 3, 7, 1, 2, Some(("1ab9", 0, Some(0.0)))),
-            "c.pdb\tfiltered_out\t7\t1\t0.6667\tNA\tNA\tNA\tA57,A102,A195");
-        // An empty query never divides by zero
-        assert_eq!(novelty_evidence_row("c.pdb", "", 0, 1, 1, 1, Some(("1abc", 0, None))),
-            "c.pdb\tfiltered_out\t1\t1\t0.0000\tNA\tNA\tNA\t");
+        // Candidates existed (2 of 3 residues) but filters kept none: still NOVEL, and the
+        // caller warns about the filters
+        let expected = "c.pdb\tNOVEL\t7\t0\t0.6667\tNA\t0.0000\tNA\tNA\tA57,A102,A195";
+        assert_eq!(novelty_verdict_row("c.pdb", residues, 3, 7, 0, 2, 0.8, 2.0, None), expected);
+        assert_eq!(novelty_verdict_row("c.pdb", residues, 3, 7, 1, 2, 0.8, 2.0,
+                                       Some(("1ab9", 0, Some(0.0), String::new()))),
+            "c.pdb\tNOVEL\t7\t1\t0.6667\tNA\t0.0000\tNA\tNA\tA57,A102,A195");
+        // An empty query never divides by zero, and is never KNOWN
+        assert_eq!(novelty_verdict_row("c.pdb", "", 0, 1, 1, 1, 0.8, 2.0,
+                                       Some(("1abc", 0, None, String::new()))),
+            "c.pdb\tNOVEL\t1\t1\t0.0000\tNA\t0.0000\tNA\tNA\t");
     }
 
     #[test]
     fn no_hash_row_and_header_have_the_same_columns() {
         let row = novelty_no_hash_row("query/1SU6.pdb", "A4,A39,A70");
-        assert_eq!(row, "query/1SU6.pdb\tno_hashes\t0\t0\t0.0000\tNA\tNA\tNA\tA4,A39,A70");
+        assert_eq!(row, "query/1SU6.pdb\tNO_HASHES\t0\t0\t0.0000\tNA\tNA\tNA\tNA\tA4,A39,A70");
         let columns = NOVELTY_HEADER.split('\t').count();
         assert_eq!(row.split('\t').count(), columns);
-        assert_eq!(novelty_evidence_row("q", "A1", 1, 0, 0, 0, None).split('\t').count(), columns);
+        assert_eq!(novelty_verdict_row("q", "A1", 1, 0, 0, 0, 0.8, 2.0, None).split('\t').count(), columns);
     }
 
 }

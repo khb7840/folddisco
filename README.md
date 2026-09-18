@@ -147,7 +147,7 @@ folddisco query -i <INDEX> -p <QUERY_PDB> [-q <QUERY_RESIDUES> -d <DISTANCE_THRE
 - `--expand-radius`: How many geometric features may fall in a neighbouring bin at once (default: 1)
 - `--confident`: Keep only confident, full matches (see [Confident hits](#confident-hits))
 - `--aa-subst`: Substitute every query residue by scheme (see [Amino acid substitution](#amino-acid-substitution))
-- `--novelty-mode`: One evidence row per query instead of a hit list (see [Novelty screening](#novelty-screening))
+- `--novelty-mode`: One KNOWN/PARTIAL/NOVEL row per query instead of a hit list (see [Novelty screening](#novelty-screening))
 - `--skip-match`: Skips residue matching and RMSD calculation (prefilter only, much faster with same ranking)
 - `--top`: Only report top N hits from the prefilter (controls speed and size of result)
 - `-t`: Threads used for search
@@ -257,8 +257,8 @@ folddisco query -p query/4CHA.pdb -q B57,B102,C195 -i index/h_sapiens_folddisco 
 
 ### Novelty screening
 
-`--novelty-mode` prints one evidence row per query instead of a hit list. It does not
-call a motif novel or known; read the columns and decide.
+`--novelty-mode` prints one verdict row per query instead of a hit list, with the evidence
+behind the verdict.
 
 ```bash
 folddisco query -q designs.txt -i index/pdb_folddisco -t 6 --novelty-mode --header
@@ -266,11 +266,15 @@ folddisco query -q designs.txt -i index/pdb_folddisco -t 6 --novelty-mode --head
 
 | column | meaning |
 | --- | --- |
-| `status` | `ok`, `no_candidates` (index covered no residue), `filtered_out` (candidates existed, filters kept none), `no_hashes` (residues too far apart to search) |
+| `verdict` | `KNOWN` (best hit covers ≥ `--novelty-coverage` of the query within `--novelty-rmsd`), `PARTIAL` (covered but under either threshold), `NOVEL` (nothing covered), `NO_HASHES` (residues too far apart to search) |
 | `candidates` | structures the index returned, before filters |
 | `hits` | structures left after filters and matching |
 | `index_coverage` | best hash-level residue coverage among candidates |
 | `best_hit`, `best_coverage`, `best_rmsd` | highest-coverage hit after filters; RMSD is `NA` with `--skip-match` |
+| `best_residues` | residues that hit matched, `_` where the query residue went unmatched |
+
+Defaults are `--novelty-coverage 0.8` and `--novelty-rmsd 2.0`. A 3-4 residue motif covers
+1.0 against something almost anywhere, so tighten `--novelty-rmsd` when screening short motifs.
 
 Rows append to `-o`, so batch queries can share one file; rerunning replaces it. Filters
 such as a high `--max-node` drop partial matches, which are often the most useful evidence.
