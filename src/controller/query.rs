@@ -321,7 +321,8 @@ fn parse_residue_number(token: &str, chain: ChainId, segment: &str) -> Result<u6
     let digits = match split_chain_and_rest(token) {
         (Some(token_chain), rest) if token_chain == chain => rest,
         (Some(token_chain), _) => return Err(format!(
-            "Query '{}' mixes chain '{}' and chain '{}' in '{}'; a range stays in one chain",
+            "Query '{}' names chain '{}' and chain '{}' in '{}'. A range stays in one chain, and a \
+             multi-character or numeric chain needs the separator, as in 'AA_250'",
             segment, chain, token_chain, token
         )),
         (None, rest) => rest,

@@ -76,6 +76,36 @@ Motif protocol, F1 of one flag vs filters tuned per query: 0.944 vs 0.942 (zinc 
 0.930 vs 0.942 (zinc 3-residue), 0.911 vs 0.911 (triad), 0.525 vs 0.920 (23-residue segments,
 where `--confident` is precision-first: 0.996 precision at 0.356 recall).
 
+### `--confident` on the published motif protocols
+
+| motif | filter | precision | recall | F1 | hits |
+| --- | --- | --- | --- | --- | --- |
+| Zinc finger, 4 res (`1G2F F207,F212,F225,F229`) | none | 0.492 | 0.974 | 0.654 | 7,425 |
+| | protocol, by hand | 0.966 | 0.920 | 0.942 | 746 |
+| | `--confident` | 0.961 | 0.928 | **0.944** | 4,304 |
+| Zinc finger, 3 res (`1G2F F207,F225,F229`) | protocol | 0.959 | 0.925 | 0.942 | 756 |
+| | `--confident` | 0.903 | 0.958 | 0.930 | 5,744 |
+| Serine triad (`4CHA B57,B102,C195`) | none | 0.245 | 0.919 | 0.387 | 556 |
+| | protocol | 0.964 | 0.863 | 0.911 | 113 |
+| | `--confident` | 0.964 | 0.863 | 0.911 | 116 |
+| Zinc, 23-res segments (`1G2F F204-215,F222-232`) | protocol | 0.972 | 0.874 | 0.920 | 697 |
+| | `--confident` | 0.996 | 0.356 | 0.525 | 407 |
+
+### Multi-character chain IDs
+
+2.x panicked on mmCIF assemblies whose author chain IDs are not single letters
+(`cif.rs: Chain name should be provided`). 3.0 keeps them (up to 8 characters) and accepts them
+in `-q` with a separator:
+
+```
+folddisco query -i complexdir_folddisco -p 4V8S-assembly1.cif.gz -q AR_119,AR_364,AR_392
+4V8S-assembly1.cif.gz   3   21.2189   0.0000   AR_119,AR_364,AR_392
+4AYB-assembly1.cif.gz   3   15.4677   0.1150   B119,B364,B392
+```
+
+Output spells each chain in its own convention (`AR_119` vs `B119`, `_` for an unmatched query
+residue); `--chain-sep` forces `A_81` everywhere. Missing separators are diagnosed.
+
 ### Ranking
 
 Default order is now `match_score` (idf × coverage² × TM-score) per match and `structure_score`
