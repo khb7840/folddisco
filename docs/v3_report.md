@@ -1,8 +1,9 @@
 # Folddisco 3.0 — update report
 
-Web version: https://claude.ai/artifact/7TutEE3wc55QiXFk5vkfCq (private). Figures live in
-`fd-branchbench/figure/`, `fd-branchbench/defaults/figure/` and
-`fd-branchbench/index_expansion/figure/`; measurement detail is in
+Web version: https://claude.ai/artifact/7TutEE3wc55QiXFk5vkfCq (private); its page source is
+`fd-branchbench/report/index.html` and `fd-branchbench/scripts/make_report_pdf.py` renders it to
+`folddisco_3.0_report.pdf`. Figures live in `fd-branchbench/figure/`,
+`fd-branchbench/defaults/figure/` and `fd-branchbench/index_expansion/figure/`; measurement detail is in
 [feature_evaluation.md](feature_evaluation.md), branch state in [UPDATE_REPORT.md](UPDATE_REPORT.md).
 
 ## What 3.0 adds
